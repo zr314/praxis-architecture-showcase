@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "environment": "deterministic-mock",
+  "budgets": [
+    { "metric": "startup", "percentile": "p95", "maximum": 3000, "minimumSamples": 5 },
+    { "metric": "context_construction", "percentile": "p95", "maximum": 100, "minimumSamples": 20 },
+    { "metric": "persistence", "percentile": "p95", "maximum": 100, "minimumSamples": 20 },
+    { "metric": "memory_bytes", "percentile": "max", "maximum": 536870912, "minimumSamples": 5 }
+  ]
+}

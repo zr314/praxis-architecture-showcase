@@ -1,0 +1,25 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "tsBuildInfoFile": "../../.cache/types/runtime.tsbuildinfo",
+    "baseUrl": "../..",
+    "paths": {
+      "@praxis/client": ["packages/client/src/index.ts"],
+      "@praxis/core-sdk": ["packages/core-sdk/src/index.ts"],
+      "@praxis/protocol": ["packages/protocol/src/index.ts"],
+      "@praxis/plugin-protocol": ["packages/plugin-protocol/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/client" },
+    { "path": "../../packages/core-sdk" },
+    { "path": "../../packages/protocol" },
+    { "path": "../../packages/plugin-protocol" }
+  ]
+}

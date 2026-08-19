@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "packages": [
+    {
+      "name": "bun",
+      "reason": "Pinned development binary wrapper; native artifact is verified by release smoke tests."
+    },
+    {
+      "name": "esbuild",
+      "reason": "Pinned build tool downloads its platform binary; output is exercised by package smoke tests."
+    },
+    {
+      "name": "fsevents",
+      "reason": "Pinned optional macOS filesystem dependency; install script selects the matching native artifact."
+    },
+    {
+      "name": "libxmljs2",
+      "reason": "Pinned transitive SBOM dependency; native build is limited to release tooling."
+    }
+  ]
+}

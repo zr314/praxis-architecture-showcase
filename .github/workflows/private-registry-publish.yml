@@ -1,0 +1,99 @@
+name: Private Registry Publish
+
+on:
+  release:
+    types: [published]
+  repository_dispatch:
+    types: [praxis_private_registry_publish]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-registry-${{ github.event.client_payload.tag || github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish private npm packages
+    runs-on: [self-hosted, Windows, X64, praxis-private-registry]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.client_payload.tag || github.event.release.tag_name || inputs.tag }}
+          clean: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Resolve exact release tag
+        shell: powershell
+        env:
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
+          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
+          MANUAL_TAG: ${{ inputs.tag }}
+        run: |
+          $tag = if ($env:DISPATCH_TAG) {
+            $env:DISPATCH_TAG
+          } elseif ($env:RELEASE_EVENT_TAG) {
+            $env:RELEASE_EVENT_TAG
+          } else {
+            $env:MANUAL_TAG
+          }
+          if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
+            throw 'A valid semantic-version release tag is required.'
+          }
+          "PRAXIS_RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - run: npm ci
+      - run: npm run verify:supply-chain
+      - run: npm run package:npm
+      - name: Verify exact release checkout
+        shell: powershell
+        run: npm run release:check -- --tag "$env:PRAXIS_RELEASE_TAG"
+      - name: Check private registry health
+        shell: powershell
+        env:
+          PRAXIS_NPM_REGISTRY_URL: ${{ vars.PRAXIS_NPM_REGISTRY_URL }}
+        run: |
+          if ($env:PRAXIS_NPM_REGISTRY_URL -ne 'http://127.0.0.1:4873/') {
+            throw 'PRAXIS_NPM_REGISTRY_URL must select the loopback Praxis registry.'
+          }
+          Invoke-RestMethod -Uri "$($env:PRAXIS_NPM_REGISTRY_URL)-/ping" -TimeoutSec 10 | Out-Null
+      - name: Publish packages to Verdaccio
+        shell: powershell
+        env:
+          PRAXIS_NPM_REGISTRY_URL: ${{ vars.PRAXIS_NPM_REGISTRY_URL }}
+          NODE_AUTH_TOKEN: ${{ secrets.PRAXIS_NPM_TOKEN }}
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}\praxis-npmrc-${{ github.run_id }}
+        run: |
+          if (-not $env:NODE_AUTH_TOKEN) {
+            throw 'PRAXIS_NPM_TOKEN is required.'
+          }
+          $registry = [Uri]$env:PRAXIS_NPM_REGISTRY_URL
+          $authKey = "//$($registry.Authority)$($registry.AbsolutePath):_authToken=$env:NODE_AUTH_TOKEN"
+          try {
+            @(
+              "@praxis:registry=$($registry.AbsoluteUri)"
+              $authKey
+              'always-auth=true'
+            ) | Set-Content -LiteralPath $env:NPM_CONFIG_USERCONFIG -Encoding utf8
+            npm run release:publish
+            if ($LASTEXITCODE -ne 0) {
+              throw "Private package publication exited with code $LASTEXITCODE."
+            }
+          } finally {
+            Remove-Item -LiteralPath $env:NPM_CONFIG_USERCONFIG -Force -ErrorAction SilentlyContinue
+          }
+      - name: Remove temporary npm credentials
+        if: always()
+        shell: powershell
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}\praxis-npmrc-${{ github.run_id }}
+        run: Remove-Item -LiteralPath $env:NPM_CONFIG_USERCONFIG -Force -ErrorAction SilentlyContinue

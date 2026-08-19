@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@praxis/core-sdk": ["packages/core-sdk/src/index.ts"],
+      "@praxis/protocol": ["packages/protocol/src/index.ts"],
+      "@praxis/plugin-protocol": ["packages/plugin-protocol/src/index.ts"],
+      "@praxis/plugin-sdk": ["packages/plugin-sdk/src/index.ts"],
+      "@praxis/client": ["packages/client/src/index.ts"],
+      "@praxis/runtime/process": ["apps/runtime/src/process.ts"],
+      "@praxis/runtime/run": ["apps/runtime/src/run.ts"],
+      "@praxis/runtime/storage": ["apps/runtime/src/storage.ts"]
+    }
+  },
+  "include": [
+    "apps/**/*.ts",
+    "apps/**/*.tsx",
+    "packages/**/*.ts",
+    "test/**/*.ts",
+    "evals/**/*.json"
+  ]
+}

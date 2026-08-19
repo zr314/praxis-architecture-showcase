@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "id": "tool-permission",
+  "description": "Denies one write, grants one durable write rule, and reuses it without prompting.",
+  "setup": { "tools": ["write"] },
+  "workspaceFixture": { "files": [] },
+  "request": {
+    "provider": "replay",
+    "model": "replay-v1",
+    "prompt": "Exercise controlled write permissions."
+  },
+  "budget": {
+    "maxTurns": 2,
+    "maxToolCalls": 3,
+    "maxTokens": 32,
+    "maxSubagents": 0,
+    "maxDepth": 0
+  },
+  "providerReplay": {
+    "turns": [
+      {
+        "id": "turn-1",
+        "chunks": [
+          {
+            "type": "tool_calls",
+            "calls": [
+              {
+                "id": "denied-write",
+                "name": "write",
+                "input": { "path": "denied.txt", "content": "denied" }
+              },
+              {
+                "id": "allowed-write",
+                "name": "write",
+                "input": { "path": "allowed.txt", "content": "allowed" }
+              },
+              {
+                "id": "allowed-write-again",
+                "name": "write",
+                "input": { "path": "allowed.txt", "content": "allowed-again" }
+              }
+            ]
+          },
+          {
+            "type": "completed",
+            "stopReason": "tool_calls",
+            "usage": { "inputTokens": 5, "outputTokens": 2 }
+          }
+        ]
+      },
+      {
+        "id": "turn-2",
+        "chunks": [
+          { "type": "text_delta", "text": "Permissions enforced." },
+          {
+            "type": "completed",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 6, "outputTokens": 2 }
+          }
+        ]
+      }
+    ]
+  },
+  "permissionDecisions": [
+    {
+      "toolCallId": "denied-write",
+      "decision": { "type": "deny", "reason": "Synthetic denial." }
+    },
+    { "toolCallId": "allowed-write", "decision": { "type": "allow_always" } }
+  ],
+  "assertions": {
+    "terminalEvent": { "type": "prompt_completed", "stopReason": "end_turn" },
+    "eventCounts": { "tool_start": 2, "tool_end": 3, "prompt_completed": 1 },
+    "eventOrder": [
+      "prompt_started",
+      "tool_planning",
+      "tool_end",
+      "tool_planning",
+      "tool_start",
+      "tool_end",
+      "tool_planning",
+      "tool_start",
+      "tool_end",
+      "text_delta",
+      "message_committed",
+      "prompt_completed"
+    ],
+    "committedRoles": ["assistant", "tool", "tool", "tool", "assistant"],
+    "traceKinds": [
+      "run.started",
+      "prompt.manifest",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "tool.started",
+      "permission.decided",
+      "tool.failed",
+      "tool.started",
+      "permission.decided",
+      "tool.completed",
+      "tool.started",
+      "permission.decided",
+      "tool.completed",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "run.completed"
+    ],
+    "usageBounds": {
+      "turns": { "min": 2, "max": 2 },
+      "toolCalls": { "min": 3, "max": 3 },
+      "inputTokens": { "min": 11, "max": 11 },
+      "outputTokens": { "min": 4, "max": 4 }
+    },
+    "filesystemChanges": [
+      {
+        "path": "allowed.txt",
+        "change": "created",
+        "digest": "sha256:4952dde1498ce12095d5d7692fc321de32f301277181254125d6a31db34fe7d0"
+      }
+    ],
+    "remainingReplayTurns": 0
+  }
+}

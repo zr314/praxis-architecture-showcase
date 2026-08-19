@@ -1,0 +1,11 @@
+{
+  "manifestVersion": 1,
+  "id": "example.process-provider",
+  "name": "Example Process Provider",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "entry": "index.mjs",
+  "isolation": "process",
+  "capabilities": [{ "id": "example.provider", "kind": "provider" }],
+  "grants": []
+}

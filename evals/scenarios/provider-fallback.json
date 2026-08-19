@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "id": "provider-fallback",
+  "description": "Falls back from a retryable synthetic primary failure to ReplayProvider.",
+  "setup": {
+    "tools": [],
+    "providerRouting": {
+      "retryAttempts": 0,
+      "fallback": {
+        "provider": "replay",
+        "model": "replay-v1"
+      },
+      "primaryFailure": {
+        "code": "EVALUATION_PRIMARY_RETRYABLE",
+        "retryable": true
+      }
+    }
+  },
+  "workspaceFixture": { "files": [] },
+  "request": {
+    "provider": "primary",
+    "model": "replay-v1",
+    "prompt": "Complete after provider fallback."
+  },
+  "budget": {
+    "maxTurns": 1,
+    "maxToolCalls": 0,
+    "maxTokens": 16,
+    "maxSubagents": 0,
+    "maxDepth": 0
+  },
+  "providerReplay": {
+    "turns": [
+      {
+        "id": "fallback-turn",
+        "chunks": [
+          { "type": "text_delta", "text": "Fallback complete." },
+          {
+            "type": "completed",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 3, "outputTokens": 2 }
+          }
+        ]
+      }
+    ]
+  },
+  "permissionDecisions": [],
+  "assertions": {
+    "terminalEvent": { "type": "prompt_completed", "stopReason": "end_turn" },
+    "eventCounts": { "prompt_completed": 1 },
+    "eventOrder": ["prompt_started", "text_delta", "message_committed", "prompt_completed"],
+    "committedRoles": ["assistant"],
+    "traceKinds": [
+      "run.started",
+      "prompt.manifest",
+      "context.selected",
+      "provider.started",
+      "provider.failed",
+      "provider.fallback",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "run.completed"
+    ],
+    "usageBounds": {
+      "turns": { "min": 1, "max": 1 },
+      "toolCalls": { "min": 0, "max": 0 }
+    },
+    "filesystemChanges": [],
+    "remainingReplayTurns": 0
+  }
+}

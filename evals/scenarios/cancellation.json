@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "id": "cancellation",
+  "description": "Aborts replay at a stream boundary before tool work or message commits.",
+  "setup": {
+    "tools": ["cancel_probe"],
+    "cancellation": {
+      "boundary": "after_first_provider_chunk",
+      "reason": "user_abort"
+    }
+  },
+  "workspaceFixture": { "files": [] },
+  "request": {
+    "provider": "replay",
+    "model": "replay-v1",
+    "prompt": "Cancel before executing replayed tool work."
+  },
+  "budget": {
+    "maxTurns": 1,
+    "maxToolCalls": 1,
+    "maxTokens": 16,
+    "maxSubagents": 0,
+    "maxDepth": 0
+  },
+  "providerReplay": {
+    "turns": [
+      {
+        "id": "cancelled-turn",
+        "chunks": [
+          {
+            "type": "tool_calls",
+            "calls": [{ "id": "must-not-run", "name": "cancel_probe", "input": {} }]
+          },
+          {
+            "type": "completed",
+            "stopReason": "tool_calls",
+            "usage": { "inputTokens": 3, "outputTokens": 1 }
+          }
+        ]
+      }
+    ]
+  },
+  "permissionDecisions": [],
+  "assertions": {
+    "terminalEvent": { "type": "prompt_aborted", "reason": "user_abort" },
+    "eventCounts": {
+      "tool_start": 0,
+      "prompt_completed": 0,
+      "prompt_failed": 0,
+      "prompt_aborted": 1
+    },
+    "eventOrder": ["prompt_started", "prompt_aborted"],
+    "committedRoles": [],
+    "traceKinds": [
+      "run.started",
+      "prompt.manifest",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.failed",
+      "run.aborted"
+    ],
+    "usageBounds": {
+      "turns": { "min": 0, "max": 0 },
+      "toolCalls": { "min": 0, "max": 0 }
+    },
+    "filesystemChanges": [],
+    "remainingReplayTurns": 0,
+    "cancellationEvidence": {
+      "boundaryReached": true,
+      "toolStartsAfterBoundary": 0,
+      "committedMessagesAfterBoundary": 0
+    }
+  }
+}

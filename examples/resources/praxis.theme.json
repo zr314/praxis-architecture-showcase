@@ -1,0 +1,9 @@
+{
+  "name": "Praxis",
+  "colors": {
+    "accent": "#70A5FD",
+    "success": "#78DCE8",
+    "warning": "#FFD866",
+    "error": "#FF6188"
+  }
+}

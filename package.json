@@ -1,0 +1,61 @@
+{
+  "name": "praxis-workspace",
+  "version": "0.2.0",
+  "description": "Praxis terminal frontend shell for an event-driven agent runtime.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/uestc-Praxis/praxis.git"
+  },
+  "homepage": "https://github.com/uestc-Praxis/praxis#readme",
+  "bugs": {
+    "url": "https://github.com/uestc-Praxis/praxis/issues"
+  },
+  "type": "module",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "tsx --tsconfig tsconfig.check.json apps/cli/src/cli.tsx",
+    "eval": "tsx --tsconfig tsconfig.check.json apps/runtime/src/evaluation/cli.ts",
+    "benchmark:session-storage": "tsx --tsconfig tsconfig.check.json scripts/benchmark-session-storage.ts",
+    "audit:prompts": "tsx --tsconfig tsconfig.check.json scripts/audit-prompt-program.ts",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "typecheck": "tsc --project tsconfig.check.json --noEmit",
+    "check": "npm run format:check && npm run lint && npm run typecheck",
+    "test": "node scripts/run-tests.mjs",
+    "test:compat": "node scripts/run-tests.mjs --suite compatibility",
+    "build": "node scripts/clean-dist.mjs all && tsc --build --force --pretty false && node scripts/build-workspaces.mjs all && node scripts/mirror-legacy-dist.mjs",
+    "verify:pack": "node scripts/verify-pack-manifests.mjs",
+    "package:npm": "npm run build && npm run verify:pack",
+    "install:local": "npm run build && npm link --workspace @praxis/cli",
+    "package:binary": "node scripts/package-binary.mjs",
+    "release:check": "node scripts/release-check.mjs",
+    "verify:supply-chain": "node scripts/verify-supply-chain.mjs",
+    "verify:checksums": "node scripts/verify-checksums.mjs",
+    "release:publish": "node scripts/publish-workspaces.mjs",
+    "start": "node dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.4",
+    "@cyclonedx/cyclonedx-npm": "6.0.0",
+    "@types/node": "24.10.2",
+    "@types/react": "19.2.7",
+    "@xterm/headless": "5.5.0",
+    "ajv": "8.20.0",
+    "bun": "1.3.14",
+    "esbuild": "0.27.2",
+    "ink": "6.8.0",
+    "js-yaml": "4.3.0",
+    "react": "19.2.3",
+    "react-devtools-core": "6.1.2",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3"
+  }
+}

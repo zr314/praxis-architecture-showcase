@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "minimumReleaseAgeMinutes": 1440,
+  "installScripts": "deny-unless-allowlisted",
+  "actionReferences": "full-commit-sha"
+}

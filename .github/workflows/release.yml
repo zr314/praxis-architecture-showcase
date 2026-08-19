@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run verify:supply-chain
+      - run: npm run package:npm
+      - run: npm run release:check -- --tag "$GITHUB_REF_NAME"
+
+  binaries:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: windows-x64
+            platform: win32
+            arch: x64
+          - runner: ubuntu-latest
+            target: linux-x64
+            platform: linux
+            arch: x64
+          - runner: macos-15-intel
+            target: darwin-x64
+            platform: darwin
+            arch: x64
+          - runner: macos-15
+            target: darwin-arm64
+            platform: darwin
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+      - run: npm ci
+      - run: npm run build
+      - run: npm run package:binary -- --target ${{ matrix.target }}
+      - run: node scripts/check-binary.mjs artifacts/praxis-${GITHUB_REF_NAME#v}-${{ matrix.target }}.exe win32 x64
+        if: runner.os == 'Windows'
+        shell: bash
+      - run: node scripts/check-binary.mjs artifacts/praxis-${GITHUB_REF_NAME#v}-${{ matrix.target }} ${{ matrix.platform }} ${{ matrix.arch }}
+        if: runner.os != 'Windows'
+        shell: bash
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binary-${{ matrix.target }}
+          path: artifacts/praxis-*
+          if-no-files-found: error
+
+  assemble-release:
+    needs: [verify, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+      - run: npx --no-install cyclonedx-npm --output-file artifacts/praxis.cdx.json
+      - run: node scripts/extract-release-notes.mjs --version "${GITHUB_REF_NAME#v}"
+      - run: node scripts/generate-checksums.mjs
+      - run: npm run verify:checksums
+      - name: Attest public release artifacts
+        if: github.event.repository.private == false
+        uses: actions/attest-build-provenance@78e6cbd37d0ac1a40113c04f2037dacf1ea3f12e # v4
+        with:
+          subject-path: artifacts/praxis-*
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease_flag=""
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease_flag="--prerelease" ;;
+          esac
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            while IFS= read -r asset; do
+              if [[ "$asset" == *.tgz ]]; then
+                gh release delete-asset "$GITHUB_REF_NAME" "$asset" --yes
+              fi
+            done < <(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')
+            gh release edit "$GITHUB_REF_NAME" --draft --notes-file artifacts/RELEASE_NOTES.md
+            gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" artifacts/* --draft --verify-tag \
+              --notes-file artifacts/RELEASE_NOTES.md $prerelease_flag
+          fi
+
+  finalize-release:
+    needs: assemble-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
+            -f event_type=praxis_private_registry_publish \
+            -f "client_payload[tag]=$GITHUB_REF_NAME"

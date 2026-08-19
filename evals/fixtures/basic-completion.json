@@ -1,0 +1,25 @@
+{
+  "turns": [
+    {
+      "id": "turn-1",
+      "expect": {
+        "model": "replay-v1",
+        "tools": []
+      },
+      "chunks": [
+        {
+          "type": "text_delta",
+          "text": "Synthetic completion."
+        },
+        {
+          "type": "completed",
+          "stopReason": "end_turn",
+          "usage": {
+            "inputTokens": 3,
+            "outputTokens": 2
+          }
+        }
+      ]
+    }
+  ]
+}

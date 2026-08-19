@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "praxis://schemas/events-v1.json",
+  "$defs": {
+    "notification": {
+      "type": "object",
+      "required": ["jsonrpc", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "method": { "const": "event" },
+        "params": {
+          "type": "object",
+          "required": ["subscriptionId", "sequence", "timestamp", "event"],
+          "properties": {
+            "subscriptionId": { "type": "string", "minLength": 1 },
+            "sequence": { "type": "integer", "minimum": 1 },
+            "timestamp": { "type": "string" },
+            "sessionId": { "type": "string" },
+            "runId": { "type": "string" },
+            "event": { "$ref": "#/$defs/sessionEvent" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "sessionEvent": {
+      "oneOf": [
+        { "$ref": "#/$defs/runtimeReady" }, { "$ref": "#/$defs/loginAction" }, { "$ref": "#/$defs/authChanged" }, { "$ref": "#/$defs/runtimeWarning" },
+        { "$ref": "#/$defs/promptStarted" }, { "$ref": "#/$defs/thinkingDelta" }, { "$ref": "#/$defs/textDelta" },
+        { "$ref": "#/$defs/toolPlanning" }, { "$ref": "#/$defs/permissionRequest" }, { "$ref": "#/$defs/toolStart" }, { "$ref": "#/$defs/toolUpdate" }, { "$ref": "#/$defs/toolEnd" },
+        { "$ref": "#/$defs/steerQueued" }, { "$ref": "#/$defs/steerApplied" }, { "$ref": "#/$defs/messageCommitted" }, { "$ref": "#/$defs/promptCompleted" }, { "$ref": "#/$defs/promptFailed" }, { "$ref": "#/$defs/promptAborted" }, { "$ref": "#/$defs/supervisorUpdateEvent" }, { "$ref": "#/$defs/workflowUpdateEvent" }
+      ]
+    },
+    "runtimeReady": { "type": "object", "required": ["type", "runtimeId"], "properties": { "type": { "const": "runtime_ready" }, "runtimeId": { "type": "string" } }, "additionalProperties": false },
+    "loginAction": { "type": "object", "required": ["type", "loginId", "action"], "properties": { "type": { "const": "auth_login_action" }, "loginId": { "type": "string" }, "action": { "enum": ["open_url", "device_code"] }, "url": { "type": "string" }, "deviceCode": { "type": "string" } }, "additionalProperties": false },
+    "authChanged": { "type": "object", "required": ["type", "provider", "status"], "properties": { "type": { "const": "auth_status_changed" }, "provider": { "type": "string" }, "status": { "enum": ["authenticated", "unauthenticated", "expired", "unavailable"] }, "accountLabel": { "type": "string" } }, "additionalProperties": false },
+    "runtimeWarning": { "type": "object", "required": ["type", "code", "message"], "properties": { "type": { "const": "runtime_warning" }, "code": { "type": "string" }, "message": { "type": "string" } }, "additionalProperties": false },
+    "promptStarted": { "type": "object", "required": ["type", "sessionId", "runId", "prompt"], "properties": { "type": { "const": "prompt_started" }, "sessionId": { "type": "string" }, "runId": { "type": "string" }, "prompt": { "type": "string" }, "promptKind": { "enum": ["prompt", "follow_up"] } }, "additionalProperties": false },
+    "thinkingDelta": { "type": "object", "required": ["type", "runId", "text"], "properties": { "type": { "const": "thinking_delta" }, "runId": { "type": "string" }, "text": { "type": "string" } }, "additionalProperties": false },
+    "textDelta": { "type": "object", "required": ["type", "runId", "text"], "properties": { "type": { "const": "text_delta" }, "runId": { "type": "string" }, "text": { "type": "string" } }, "additionalProperties": false },
+    "toolPlanning": { "type": "object", "required": ["type", "runId", "toolCallId", "name", "input"], "properties": { "type": { "const": "tool_planning" }, "runId": { "type": "string" }, "toolCallId": { "type": "string" }, "name": { "type": "string" }, "input": {} }, "additionalProperties": false },
+    "permissionRequest": { "type": "object", "required": ["type", "runId", "requestId", "toolCallId", "tool", "input"], "properties": { "type": { "const": "permission_request" }, "runId": { "type": "string" }, "requestId": { "type": "string" }, "toolCallId": { "type": "string" }, "tool": { "type": "string" }, "input": {}, "risk": { "enum": ["low", "medium", "high"] }, "target": { "type": "string" }, "rule": { "type": "string" }, "parentRunId": { "type": "string" }, "childRunId": { "type": "string" }, "childAgentRunId": { "type": "string" }, "childRequestId": { "type": "string" } }, "additionalProperties": false },
+    "toolStart": { "type": "object", "required": ["type", "runId", "toolCallId", "name", "input"], "properties": { "type": { "const": "tool_start" }, "runId": { "type": "string" }, "toolCallId": { "type": "string" }, "name": { "type": "string" }, "input": {} }, "additionalProperties": false },
+    "toolUpdate": { "type": "object", "required": ["type", "runId", "toolCallId", "message"], "properties": { "type": { "const": "tool_update" }, "runId": { "type": "string" }, "toolCallId": { "type": "string" }, "message": { "type": "string" }, "stream": { "enum": ["stdout", "stderr"] }, "delta": { "type": "string", "maxLength": 4096 }, "bytes": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+    "toolEnd": { "type": "object", "required": ["type", "runId", "toolCallId", "ok"], "properties": { "type": { "const": "tool_end" }, "runId": { "type": "string" }, "toolCallId": { "type": "string" }, "ok": { "type": "boolean" }, "summary": { "type": "string" }, "output": {}, "error": { "type": "object", "required": ["code", "category", "retryable"], "properties": { "code": { "type": "string" }, "category": { "enum": ["validation", "permission", "not_found", "execution", "truncated"] }, "retryable": { "type": "boolean" } }, "additionalProperties": false } }, "additionalProperties": false },
+    "steerQueued": { "type": "object", "required": ["type", "runId", "steerId"], "properties": { "type": { "const": "steer_queued" }, "runId": { "type": "string" }, "steerId": { "type": "string" } }, "additionalProperties": false },
+    "steerApplied": { "type": "object", "required": ["type", "runId", "steerId"], "properties": { "type": { "const": "steer_applied" }, "runId": { "type": "string" }, "steerId": { "type": "string" } }, "additionalProperties": false },
+    "messageCommitted": { "type": "object", "required": ["type", "runId", "messageId"], "properties": { "type": { "const": "message_committed" }, "runId": { "type": "string" }, "messageId": { "type": "string" }, "role": { "enum": ["user", "assistant"] } }, "additionalProperties": false },
+    "usageSummary": { "type": "object", "properties": { "turns": { "type": "integer", "minimum": 0 }, "toolCalls": { "type": "integer", "minimum": 0 }, "inputTokens": { "type": "number", "minimum": 0 }, "outputTokens": { "type": "number", "minimum": 0 }, "cacheReadTokens": { "type": "number", "minimum": 0 }, "cacheWriteTokens": { "type": "number", "minimum": 0 }, "costUsd": { "type": "number", "minimum": 0 }, "subagents": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+    "promptCompleted": { "type": "object", "required": ["type", "runId"], "properties": { "type": { "const": "prompt_completed" }, "runId": { "type": "string" }, "usage": { "$ref": "#/$defs/usageSummary" }, "stopReason": { "type": "string" } }, "additionalProperties": false },
+    "promptFailed": { "type": "object", "required": ["type", "runId", "error"], "properties": { "type": { "const": "prompt_failed" }, "runId": { "type": "string" }, "error": { "type": "string" }, "code": { "type": "string" }, "usage": { "$ref": "#/$defs/usageSummary" } }, "additionalProperties": false },
+    "promptAborted": { "type": "object", "required": ["type", "runId"], "properties": { "type": { "const": "prompt_aborted" }, "runId": { "type": "string" }, "reason": { "type": "string" }, "usage": { "$ref": "#/$defs/usageSummary" } }, "additionalProperties": false },
+    "supervisorCorrelation": {
+      "type": "object",
+      "required": ["parentRunId", "planId"],
+      "properties": {
+        "parentRunId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "planId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "stepId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "childRunId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "verificationId": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "additionalProperties": false
+    },
+    "supervisorJournalUpdate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "event", "state"],
+          "properties": {
+            "kind": { "const": "plan" },
+            "event": { "enum": ["plan.created", "plan.state_changed", "plan.revised"] },
+            "state": { "enum": ["draft", "running", "blocked", "succeeded", "failed", "cancelled", "interrupted"] },
+            "objective": { "type": "string" },
+            "errorCode": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "event", "action", "outcome"],
+          "properties": {
+            "kind": { "const": "planner_decision" },
+            "event": { "const": "plan.decision_recorded" },
+            "action": { "enum": ["retry", "continue", "fresh_worker", "replan", "ask_user"] },
+            "outcome": { "enum": ["selected", "applied", "no_progress"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "event", "state"],
+          "properties": {
+            "kind": { "const": "step" },
+            "event": { "enum": ["step.created", "step.state_changed"] },
+            "state": { "enum": ["pending", "running", "verifying", "succeeded", "failed", "blocked", "cancelled", "interrupted"] },
+            "title": { "type": "string" },
+            "order": { "type": "integer", "minimum": 0 },
+            "errorCode": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "event", "state"],
+          "properties": {
+            "kind": { "const": "attempt" },
+            "event": { "enum": ["attempt.created", "attempt.state_changed"] },
+            "state": { "enum": ["reserved", "running", "execution_succeeded", "execution_failed", "verifying", "verified", "rejected", "cancelled", "interrupted"] },
+            "errorCode": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "event", "status"],
+          "properties": {
+            "kind": { "const": "execution_completed" },
+            "event": { "const": "attempt.execution_completed" },
+            "status": { "enum": ["succeeded", "failed", "cancelled"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "event", "status"],
+          "properties": {
+            "kind": { "const": "subagent" },
+            "event": { "const": "subagent.execution_bound" },
+            "status": { "const": "bound" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "event", "status"],
+          "properties": {
+            "kind": { "const": "subagent" },
+            "event": { "const": "subagent.result_recorded" },
+            "status": { "enum": ["succeeded", "failed", "cancelled"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "event", "verifier", "status"],
+          "properties": {
+            "kind": { "const": "verification_completed" },
+            "event": { "const": "verification.recorded" },
+            "verifier": { "enum": ["mechanical", "rule", "model"] },
+            "status": { "enum": ["passed", "failed", "blocked"] }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "supervisorChildProgress": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "text", "truncated"],
+          "properties": {
+            "kind": { "const": "thinking" },
+            "text": { "type": "string", "maxLength": 4096 },
+            "truncated": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "phase", "toolCallId", "name"],
+          "properties": {
+            "kind": { "const": "tool" },
+            "phase": { "const": "start" },
+            "toolCallId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "name": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "phase", "toolCallId", "message", "truncated"],
+          "properties": {
+            "kind": { "const": "tool" },
+            "phase": { "const": "update" },
+            "toolCallId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "message": { "type": "string", "maxLength": 4096 },
+            "truncated": { "type": "boolean" },
+            "stream": { "enum": ["stdout", "stderr"] },
+            "bytes": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "phase", "toolCallId", "ok"],
+          "properties": {
+            "kind": { "const": "tool" },
+            "phase": { "const": "end" },
+            "toolCallId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "ok": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "supervisorUpdate": {
+      "type": "object",
+      "required": ["schemaVersion", "parentSequence", "sessionId", "correlation", "source"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "parentSequence": { "type": "integer", "minimum": 1 },
+        "sessionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "correlation": { "$ref": "#/$defs/supervisorCorrelation" },
+        "source": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["kind", "journalSequence", "revision", "entryId", "update"],
+              "properties": {
+                "kind": { "const": "journal" },
+                "journalSequence": { "type": "integer", "minimum": 1 },
+                "revision": { "type": "integer", "minimum": 1 },
+                "entryId": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "update": { "$ref": "#/$defs/supervisorJournalUpdate" }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "progress"],
+              "properties": {
+                "kind": { "const": "child_progress" },
+                "progress": { "$ref": "#/$defs/supervisorChildProgress" }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "supervisorUpdateEvent": {
+      "type": "object",
+      "required": ["type", "update"],
+      "properties": {
+        "type": { "const": "supervisor_update" },
+        "update": { "$ref": "#/$defs/supervisorUpdate" }
+      },
+      "additionalProperties": false
+    },
+    "workflowUpdate": {
+      "type": "object",
+      "required": ["workflowId", "runId", "sessionId", "revision", "sequence", "state", "topology", "objective", "nodes"],
+      "properties": {
+        "workflowId": { "type": "string", "minLength": 1 },
+        "runId": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "state": { "type": "string", "minLength": 1 },
+        "topology": { "type": "string", "minLength": 1 },
+        "objective": { "type": "string" },
+        "nodes": { "type": "array", "items": { "type": "object", "required": ["nodeId", "title", "kind", "state"], "properties": { "nodeId": { "type": "string" }, "title": { "type": "string" }, "kind": { "type": "string" }, "state": { "type": "string" }, "errorCode": { "type": "string" } }, "additionalProperties": false } },
+        "terminalCode": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "workflowUpdateEvent": {
+      "type": "object",
+      "required": ["type", "update"],
+      "properties": {
+        "type": { "const": "workflow_update" },
+        "update": { "$ref": "#/$defs/workflowUpdate" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

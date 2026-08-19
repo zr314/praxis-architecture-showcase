@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "example.echo-tool",
+  "name": "Example Echo Tool",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "entry": "index.mjs",
+  "isolation": "process",
+  "capabilities": [{ "id": "example.echo", "kind": "tool" }],
+  "commands": [
+    {
+      "id": "echo",
+      "title": "Echo value",
+      "description": "Invoke the example echo Tool and store its bounded result as an artifact.",
+      "capability": "example.echo",
+      "positional": ["value"],
+      "sensitiveArguments": [],
+      "persistence": "plaintext"
+    }
+  ],
+  "grants": []
+}

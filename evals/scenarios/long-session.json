@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "id": "long-session",
+  "description": "Keeps multiple committed replay/tool turns in deterministic order.",
+  "setup": { "tools": ["record"] },
+  "workspaceFixture": { "files": [] },
+  "request": {
+    "provider": "replay",
+    "model": "replay-v1",
+    "prompt": "Run the ordered long-session fixture."
+  },
+  "budget": {
+    "maxTurns": 3,
+    "maxToolCalls": 2,
+    "maxTokens": 32,
+    "maxSubagents": 0,
+    "maxDepth": 0
+  },
+  "providerReplay": {
+    "turns": [
+      {
+        "id": "turn-1",
+        "chunks": [
+          {
+            "type": "tool_calls",
+            "calls": [{ "id": "record-1", "name": "record", "input": { "value": 1 } }]
+          },
+          {
+            "type": "completed",
+            "stopReason": "tool_calls",
+            "usage": { "inputTokens": 2, "outputTokens": 1 }
+          }
+        ]
+      },
+      {
+        "id": "turn-2",
+        "chunks": [
+          {
+            "type": "tool_calls",
+            "calls": [{ "id": "record-2", "name": "record", "input": { "value": 2 } }]
+          },
+          {
+            "type": "completed",
+            "stopReason": "tool_calls",
+            "usage": { "inputTokens": 3, "outputTokens": 1 }
+          }
+        ]
+      },
+      {
+        "id": "turn-3",
+        "chunks": [
+          { "type": "text_delta", "text": "Ordered completion." },
+          {
+            "type": "completed",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 4, "outputTokens": 2 }
+          }
+        ]
+      }
+    ]
+  },
+  "permissionDecisions": [],
+  "assertions": {
+    "terminalEvent": { "type": "prompt_completed", "stopReason": "end_turn" },
+    "eventCounts": { "tool_start": 2, "tool_end": 2, "prompt_completed": 1 },
+    "eventOrder": [
+      "prompt_started",
+      "tool_planning",
+      "tool_start",
+      "tool_end",
+      "tool_planning",
+      "tool_start",
+      "tool_end",
+      "text_delta",
+      "message_committed",
+      "prompt_completed"
+    ],
+    "committedRoles": ["assistant", "tool", "assistant", "tool", "assistant"],
+    "traceKinds": [
+      "run.started",
+      "prompt.manifest",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "tool.started",
+      "tool.completed",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "tool.started",
+      "tool.completed",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "run.completed"
+    ],
+    "usageBounds": {
+      "turns": { "min": 3, "max": 3 },
+      "toolCalls": { "min": 2, "max": 2 },
+      "inputTokens": { "min": 9, "max": 9 },
+      "outputTokens": { "min": 4, "max": 4 }
+    },
+    "filesystemChanges": [],
+    "remainingReplayTurns": 0
+  }
+}

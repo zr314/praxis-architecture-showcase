@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-08T23:34:52+08:00",
+  "gitCommit": "08e71bca07ead67a19e69f8258e84318f1bde653",
+  "sourceBundleDigest": "sha256:0a2e784f914938a402c7c5e94ab6a0de5103e8321ee02f8b1bbb586e290020d6",
+  "sourceBundleAlgorithm": "sha256(path NUL bytes NUL, sorted paths)",
+  "runs": [
+    {
+      "id": "typecheck-final",
+      "command": "npm run typecheck",
+      "exitCode": 0
+    },
+    {
+      "id": "changed-scope-tests-final",
+      "command": "node node_modules/tsx/dist/cli.mjs --tsconfig tsconfig.check.json --test test/system-prompt.test.ts test/prompt-assembly-v3.test.ts test/prompt-contracts.test.ts test/planner-loop.test.ts test/provider-planner-adapters.test.ts test/skill-invocation.test.ts test/evaluation-runner.test.ts test/evaluation-report.test.ts test/evaluation-scenario.test.ts test/evaluation-portable-path.test.ts",
+      "exitCode": 0,
+      "tests": 94,
+      "passed": 94,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 2355.7788
+    },
+    {
+      "id": "prompt-static-audit-final",
+      "command": "npm run audit:prompts",
+      "exitCode": 0,
+      "fixture": "prompt-program-root-win32-v1",
+      "trustedTokenReductionPercent": 60.5,
+      "totalPromptTokenReductionPercent": 46.0,
+      "candidateForbiddenTerms": 0
+    },
+    {
+      "id": "lint-full-final",
+      "command": "npm run lint",
+      "exitCode": 0,
+      "checkedFiles": 471
+    },
+    {
+      "id": "format-full-final",
+      "command": "npm run format:check",
+      "exitCode": 0,
+      "checkedFiles": 471,
+      "failures": 0,
+      "repairedPaths": [
+        "apps/runtime/src/longLivedExecutionPolicy.ts",
+        "apps/runtime/src/workflow/subworkflowTool.ts",
+        "apps/runtime/src/workflow/workflowOrchestrator.ts",
+        "test/workflow-orchestrator.test.ts",
+        "docs/prompt-audit/verification-20260808.json"
+      ]
+    },
+    {
+      "id": "test-full-first",
+      "command": "npm test",
+      "exitCode": 124,
+      "timeoutMs": 124037,
+      "result": "No terminal test summary before the outer timeout."
+    },
+    {
+      "id": "test-full-second",
+      "command": "npm test",
+      "exitCode": 1,
+      "tests": 1024,
+      "passed": 1018,
+      "failed": 1,
+      "skipped": 5,
+      "durationMs": 201971.3256,
+      "failure": "test/production-evaluation.test.ts: production composition evaluation expected metrics.compactions=1 but observed 3",
+      "diagnosis": "The fixture legitimately records two automatic threshold compactions followed by one explicit manual compaction. The stale assertion fixed the total at one instead of checking trace/summary consistency and reason semantics.",
+      "scopeNote": "Historical failed attempt retained for auditability. The assertion was corrected without changing prompt text; later targeted and full-suite runs pass."
+    },
+    {
+      "id": "production-evaluation-final",
+      "command": "node node_modules/tsx/dist/cli.mjs --tsconfig tsconfig.check.json --test test/production-evaluation.test.ts",
+      "exitCode": 0,
+      "tests": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 12834.6118
+    },
+    {
+      "id": "test-full-final",
+      "command": "npm test",
+      "exitCode": 0,
+      "tests": 1025,
+      "passed": 1020,
+      "failed": 0,
+      "skipped": 5,
+      "durationMs": 214060.4841
+    }
+  ],
+  "durableRawLogs": null,
+  "rawLogNote": "Raw terminal logs were not persisted. Exact rerun commands and bounded summaries are recorded; full Phase 0 evidence still requires a durable log and wire-payload artifact store."
+}

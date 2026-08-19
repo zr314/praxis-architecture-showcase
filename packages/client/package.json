@@ -1,0 +1,40 @@
+{
+  "name": "@praxis/client",
+  "version": "0.2.0",
+  "description": "Typed reconnectable client for the Praxis NDJSON protocol.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/uestc-Praxis/praxis.git"
+  },
+  "homepage": "https://github.com/uestc-Praxis/praxis#readme",
+  "bugs": {
+    "url": "https://github.com/uestc-Praxis/praxis/issues"
+  },
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "publishConfig": {
+    "access": "restricted",
+    "registry": "http://127.0.0.1:4873/"
+  },
+  "scripts": {
+    "build": "node ../../scripts/clean-dist.mjs client && tsc --build tsconfig.json --force --pretty false && node ../../scripts/build-workspaces.mjs client",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@praxis/protocol": "^0.2.0"
+  }
+}

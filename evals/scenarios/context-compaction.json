@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "id": "context-compaction",
+  "description": "Retains a checkpoint while excluding old raw messages through production context selection.",
+  "setup": {
+    "tools": [],
+    "session": {
+      "initialMessages": [
+        {
+          "role": "assistant",
+          "content": "OLD_RAW_CONTEXT_MARKER obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete obsolete "
+        },
+        { "role": "user", "content": "recent context" }
+      ],
+      "checkpoint": {
+        "id": "checkpoint-retained",
+        "messageStart": 0,
+        "messageEnd": 1,
+        "content": "CHECKPOINT_RETAINED",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "estimatedTokens": 10,
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      },
+      "contextLimitTokens": 80
+    }
+  },
+  "workspaceFixture": { "files": [] },
+  "request": {
+    "provider": "replay",
+    "model": "replay-v1",
+    "prompt": "Use the retained compacted context."
+  },
+  "budget": {
+    "maxTurns": 1,
+    "maxToolCalls": 0,
+    "maxTokens": 16,
+    "maxSubagents": 0,
+    "maxDepth": 0
+  },
+  "providerReplay": {
+    "turns": [
+      {
+        "id": "compacted-turn",
+        "chunks": [
+          { "type": "text_delta", "text": "Checkpoint used." },
+          {
+            "type": "completed",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 5, "outputTokens": 2 }
+          }
+        ]
+      }
+    ]
+  },
+  "permissionDecisions": [],
+  "assertions": {
+    "terminalEvent": { "type": "prompt_completed", "stopReason": "end_turn" },
+    "eventCounts": { "prompt_completed": 1 },
+    "eventOrder": ["prompt_started", "text_delta", "message_committed", "prompt_completed"],
+    "committedRoles": ["assistant"],
+    "traceKinds": [
+      "run.started",
+      "prompt.manifest",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "run.completed"
+    ],
+    "usageBounds": { "turns": { "min": 1, "max": 1 } },
+    "filesystemChanges": [],
+    "remainingReplayTurns": 0,
+    "contextSelection": {
+      "contextMessagesContain": ["CHECKPOINT_RETAINED"],
+      "messagesExclude": ["OLD_RAW_CONTEXT_MARKER"]
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "id": "plugin-crash",
+  "description": "Surfaces a bounded isolated process-plugin crash as one terminal run failure.",
+  "setup": {
+    "tools": ["plugin_crash"],
+    "processPlugin": {
+      "fixture": "crash-on-invoke",
+      "pluginId": "evaluation-crash-plugin",
+      "capabilityId": "fixture.crash",
+      "tool": "plugin_crash"
+    }
+  },
+  "workspaceFixture": { "files": [] },
+  "request": {
+    "provider": "replay",
+    "model": "replay-v1",
+    "prompt": "Invoke the crashing process plugin."
+  },
+  "budget": {
+    "maxTurns": 1,
+    "maxToolCalls": 1,
+    "maxTokens": 16,
+    "maxSubagents": 0,
+    "maxDepth": 0
+  },
+  "providerReplay": {
+    "turns": [
+      {
+        "id": "plugin-turn",
+        "chunks": [
+          {
+            "type": "tool_calls",
+            "calls": [
+              {
+                "id": "plugin-tool-call",
+                "name": "plugin_crash",
+                "input": { "toolCallId": "plugin-tool-call" }
+              }
+            ]
+          },
+          {
+            "type": "completed",
+            "stopReason": "tool_calls",
+            "usage": { "inputTokens": 3, "outputTokens": 1 }
+          }
+        ]
+      }
+    ]
+  },
+  "permissionDecisions": [],
+  "assertions": {
+    "terminalEvent": { "type": "prompt_failed", "code": "PROCESS_PLUGIN_EXITED" },
+    "eventCounts": { "prompt_failed": 1, "prompt_completed": 0, "prompt_aborted": 0 },
+    "eventOrder": ["prompt_started", "tool_planning", "tool_start", "prompt_failed"],
+    "committedRoles": ["assistant"],
+    "traceKinds": [
+      "run.started",
+      "prompt.manifest",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "tool.started",
+      "plugin.started",
+      "plugin.failed",
+      "tool.failed",
+      "run.failed"
+    ],
+    "usageBounds": {
+      "turns": { "min": 1, "max": 1 },
+      "toolCalls": { "min": 1, "max": 1 }
+    },
+    "filesystemChanges": [],
+    "remainingReplayTurns": 0
+  }
+}

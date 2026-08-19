@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "praxis://plugin/handshake-v1.json",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["protocolVersion", "pluginId", "instanceId", "capabilities", "grants"],
+      "properties": {
+        "protocolVersion": { "const": 1 },
+        "pluginId": { "$ref": "#/$defs/pluginId" },
+        "instanceId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/capabilityId" },
+          "uniqueItems": true
+        },
+        "grants": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/pluginGrant" }
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["protocolVersion", "pluginId", "version", "capabilities"],
+      "properties": {
+        "protocolVersion": { "const": 1 },
+        "pluginId": { "$ref": "#/$defs/pluginId" },
+        "version": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/capability" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "$defs": {
+    "pluginId": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,127}$"
+    },
+    "capabilityId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "capability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["id", "kind"],
+          "properties": {
+            "id": { "$ref": "#/$defs/capabilityId" },
+            "kind": { "enum": ["tool", "mcp", "provider"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["id", "kind", "path"],
+          "properties": {
+            "id": { "$ref": "#/$defs/capabilityId" },
+            "kind": { "enum": ["skill", "template", "theme"] },
+            "path": { "$ref": "#/$defs/relativePath" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "allOf": [
+        { "not": { "pattern": "^(?:[A-Za-z]:|[/\\\\])" } },
+        { "not": { "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)" } },
+        { "not": { "pattern": "\\u0000" } }
+      ]
+    },
+    "environmentName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+    },
+    "stringList": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1024 },
+      "uniqueItems": true
+    },
+    "pluginGrant": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "access", "paths"],
+          "properties": {
+            "type": { "const": "filesystem" },
+            "access": { "enum": ["read", "write"] },
+            "paths": { "$ref": "#/$defs/stringList" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "hosts"],
+          "properties": {
+            "type": { "const": "network" },
+            "hosts": { "$ref": "#/$defs/stringList" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "names"],
+          "properties": {
+            "type": { "const": "environment" },
+            "names": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 128,
+              "items": { "$ref": "#/$defs/environmentName" },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "commands"],
+          "properties": {
+            "type": { "const": "process" },
+            "commands": { "$ref": "#/$defs/stringList" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "minProperties": 2,
+          "properties": {
+            "type": { "const": "resource" },
+            "cpuMs": { "type": "integer", "minimum": 1, "maximum": 86400000 },
+            "memoryMb": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+            "processCount": { "type": "integer", "minimum": 1, "maximum": 1024 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "manifestVersion": 1,
+  "id": "example.mcp-tools",
+  "name": "Example MCP Tools",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "entry": "server.mjs",
+  "isolation": "mcp-stdio",
+  "capabilities": [{ "id": "example.mcp", "kind": "mcp" }],
+  "grants": []
+}

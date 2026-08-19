@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "basic-completion",
+  "description": "Completes one offline ReplayProvider turn.",
+  "setup": { "tools": [] },
+  "workspaceFixture": { "files": [] },
+  "request": {
+    "provider": "replay",
+    "model": "replay-v1",
+    "prompt": "Return the baseline completion."
+  },
+  "budget": {
+    "maxTurns": 1,
+    "maxToolCalls": 0,
+    "maxTokens": 16,
+    "maxSubagents": 0,
+    "maxDepth": 0
+  },
+  "providerReplay": {
+    "turns": [
+      {
+        "id": "turn-1",
+        "expect": { "model": "replay-v1" },
+        "chunks": [
+          { "type": "text_delta", "text": "Baseline complete." },
+          {
+            "type": "completed",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 4, "outputTokens": 2 }
+          }
+        ]
+      }
+    ]
+  },
+  "permissionDecisions": [],
+  "assertions": {
+    "terminalEvent": { "type": "prompt_completed", "stopReason": "end_turn" },
+    "eventCounts": { "prompt_completed": 1, "prompt_failed": 0, "prompt_aborted": 0 },
+    "eventOrder": ["prompt_started", "text_delta", "message_committed", "prompt_completed"],
+    "committedRoles": ["assistant"],
+    "traceKinds": [
+      "run.started",
+      "prompt.manifest",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "run.completed"
+    ],
+    "usageBounds": {
+      "turns": { "min": 1, "max": 1 },
+      "toolCalls": { "min": 0, "max": 0 },
+      "inputTokens": { "min": 4, "max": 4 },
+      "outputTokens": { "min": 2, "max": 2 },
+      "subagents": { "min": 0, "max": 0 }
+    },
+    "filesystemChanges": [],
+    "remainingReplayTurns": 0
+  }
+}

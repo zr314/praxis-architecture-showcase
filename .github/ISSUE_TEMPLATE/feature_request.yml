@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a capability with evidence and boundary impact
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Demand and alternatives
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Protocol, authority, privacy, and compatibility impact
+    validations:
+      required: true

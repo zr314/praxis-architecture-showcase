@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 1,
+  "id": "iterative-compaction",
+  "description": "Retains critical facts after repeated automatic semantic compaction.",
+  "setup": {
+    "tools": ["record"],
+    "session": {
+      "contextLimitTokens": 240,
+      "initialMessages": [
+        {
+          "role": "user",
+          "content": "OLD_RAW_0 Objective: harden the agent runtime while preserving all execution authority."
+        },
+        {
+          "role": "assistant",
+          "content": "Decision: Keep Runtime boundary as the sole authority for filesystem side effects."
+        },
+        {
+          "role": "user",
+          "content": "Constraint: traces must never contain prompts, Tool inputs, or Tool outputs."
+        },
+        {
+          "role": "assistant",
+          "content": "TODO: verify Windows cancellation and descendant process cleanup before release."
+        },
+        {
+          "role": "user",
+          "content": "OLD_RAW_4 background background background background background background background."
+        },
+        {
+          "role": "assistant",
+          "content": "OLD_RAW_5 background background background background background background background."
+        },
+        {
+          "role": "user",
+          "content": "OLD_RAW_6 background background background background background background background."
+        },
+        {
+          "role": "assistant",
+          "content": "OLD_RAW_7 background background background background background background background."
+        },
+        {
+          "role": "user",
+          "content": "OLD_RAW_8 background background background background background background background."
+        },
+        {
+          "role": "assistant",
+          "content": "OLD_RAW_9 background background background background background background background."
+        }
+      ]
+    }
+  },
+  "workspaceFixture": { "files": [] },
+  "request": {
+    "provider": "replay",
+    "model": "replay-v1",
+    "prompt": "Continue while retaining every critical decision and verification item."
+  },
+  "budget": {
+    "maxTurns": 3,
+    "maxToolCalls": 2,
+    "maxTokens": 64,
+    "maxSubagents": 0,
+    "maxDepth": 0
+  },
+  "providerReplay": {
+    "turns": [
+      {
+        "id": "compact-turn-1",
+        "chunks": [
+          {
+            "type": "tool_calls",
+            "calls": [
+              {
+                "id": "record-1",
+                "name": "record",
+                "input": {
+                  "path": "src/critical.ts",
+                  "note": "first result first result first result first result first result first result first result first result"
+                }
+              }
+            ]
+          },
+          { "type": "completed", "stopReason": "tool_calls" }
+        ]
+      },
+      {
+        "id": "compact-turn-2",
+        "chunks": [
+          {
+            "type": "tool_calls",
+            "calls": [
+              {
+                "id": "record-2",
+                "name": "record",
+                "input": {
+                  "path": "test/runtime.test.ts",
+                  "note": "second result second result second result second result second result second result second result"
+                }
+              }
+            ]
+          },
+          { "type": "completed", "stopReason": "tool_calls" }
+        ]
+      },
+      {
+        "id": "compact-turn-3",
+        "chunks": [
+          { "type": "text_delta", "text": "Critical state retained." },
+          {
+            "type": "completed",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 10, "outputTokens": 3 }
+          }
+        ]
+      }
+    ]
+  },
+  "permissionDecisions": [],
+  "assertions": {
+    "terminalEvent": { "type": "prompt_completed", "stopReason": "end_turn" },
+    "eventCounts": {
+      "tool_start": 2,
+      "tool_end": 2,
+      "prompt_completed": 1
+    },
+    "eventOrder": [
+      "prompt_started",
+      "tool_planning",
+      "tool_start",
+      "tool_end",
+      "tool_planning",
+      "tool_start",
+      "tool_end",
+      "text_delta",
+      "message_committed",
+      "prompt_completed"
+    ],
+    "committedRoles": ["assistant", "tool", "assistant", "tool", "assistant"],
+    "traceKinds": [
+      "run.started",
+      "context.compacted",
+      "prompt.manifest",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "tool.started",
+      "tool.completed",
+      "context.compacted",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "tool.started",
+      "tool.completed",
+      "context.compacted",
+      "context.selected",
+      "provider.started",
+      "provider.first_token",
+      "provider.completed",
+      "run.completed"
+    ],
+    "usageBounds": {
+      "turns": { "min": 3, "max": 3 },
+      "toolCalls": { "min": 2, "max": 2 }
+    },
+    "filesystemChanges": [],
+    "remainingReplayTurns": 0,
+    "contextSelection": {
+      "contextMessagesContain": ["Keep Runtime boundary", "src/critical.ts"],
+      "messagesExclude": ["OLD_RAW_0"]
+    }
+  }
+}

@@ -1,0 +1,38 @@
+storage: /verdaccio/storage/data
+plugins: /verdaccio/plugins
+
+web:
+  title: Praxis Private Registry
+
+auth:
+  htpasswd:
+    file: /verdaccio/storage/htpasswd
+    max_users: 1
+    algorithm: bcrypt
+    rounds: 10
+
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+
+packages:
+  '@praxis/*':
+    access: $authenticated
+    publish: $authenticated
+    unpublish: $authenticated
+
+  '**':
+    access: $all
+    publish: $authenticated
+    unpublish: $authenticated
+    proxy: npmjs
+
+middlewares:
+  audit:
+    enabled: true
+
+log:
+  type: stdout
+  format: pretty
+  level: http
+

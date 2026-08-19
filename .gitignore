@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.worktrees/
+.superpowers/
+.cache/
+/artifacts/
+/reports/
+/*.tgz
+*.spdx.json
+*.cdx.json
+.taichu/
+.env
+.env.*
+!*.example

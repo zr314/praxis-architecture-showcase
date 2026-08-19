@@ -1,0 +1,43 @@
+{
+  "name": "@praxis/cli",
+  "version": "0.2.0",
+  "description": "Praxis terminal CLI for the local coding-agent Runtime.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/uestc-Praxis/praxis.git"
+  },
+  "homepage": "https://github.com/uestc-Praxis/praxis#readme",
+  "bugs": {
+    "url": "https://github.com/uestc-Praxis/praxis/issues"
+  },
+  "type": "module",
+  "bin": {
+    "praxis": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "publishConfig": {
+    "access": "restricted",
+    "registry": "http://127.0.0.1:4873/"
+  },
+  "scripts": {
+    "build": "node ../../scripts/clean-dist.mjs cli && tsc --build tsconfig.json --force --pretty false && node ../../scripts/build-workspaces.mjs cli",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@commander-js/extra-typings": "14.0.0",
+    "@praxis/client": "^0.2.0",
+    "@praxis/core-sdk": "^0.2.0",
+    "@praxis/plugin-protocol": "^0.2.0",
+    "@praxis/protocol": "^0.2.0",
+    "@praxis/runtime": "^0.2.0",
+    "chalk": "5.6.2",
+    "ink": "6.8.0",
+    "react": "19.2.3"
+  }
+}

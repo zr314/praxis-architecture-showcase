@@ -1,0 +1,22 @@
+name: praxis-registry
+
+services:
+  verdaccio:
+    image: verdaccio/verdaccio:6.9.0@sha256:11e75353c8363650cbf43adf8594b2cd633be6f191056c6e08ba6ff4b1398f62
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:4873:4873'
+    volumes:
+      - './config/config.yaml:/verdaccio/conf/config.yaml:ro'
+      - 'verdaccio-data:/verdaccio/storage'
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--spider', 'http://127.0.0.1:4873/-/ping']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  verdaccio-data:
+    name: praxis-verdaccio-data
+

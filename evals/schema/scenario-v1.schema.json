@@ -1,0 +1,607 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://praxis.dev/schemas/evaluation/scenario-v1.schema.json",
+  "title": "Praxis evaluation scenario v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "description",
+    "setup",
+    "workspaceFixture",
+    "request",
+    "budget",
+    "providerReplay",
+    "permissionDecisions",
+    "assertions"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "$ref": "#/$defs/id" },
+    "description": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "setup": { "$ref": "#/$defs/setup" },
+    "workspaceFixture": { "$ref": "#/$defs/workspaceFixture" },
+    "request": { "$ref": "#/$defs/request" },
+    "budget": { "$ref": "#/$defs/budget" },
+    "providerReplay": { "$ref": "#/$defs/providerReplay" },
+    "permissionDecisions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/permissionDecision" }
+    },
+    "assertions": { "$ref": "#/$defs/assertions" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "providerMessage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role", "content"],
+          "properties": {
+            "role": { "const": "user" },
+            "content": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role", "content"],
+          "properties": {
+            "role": { "const": "assistant" },
+            "content": { "type": "string" },
+            "toolCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "name", "input"],
+                "properties": {
+                  "id": { "$ref": "#/$defs/id" },
+                  "name": { "$ref": "#/$defs/id" },
+                  "input": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role", "toolCallId", "name", "content"],
+          "properties": {
+            "role": { "const": "tool" },
+            "toolCallId": { "$ref": "#/$defs/id" },
+            "name": { "$ref": "#/$defs/id" },
+            "content": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "messageStart",
+        "messageEnd",
+        "content",
+        "digest",
+        "estimatedTokens",
+        "createdAt"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "messageStart": { "type": "integer", "minimum": 0 },
+        "messageEnd": { "type": "integer", "minimum": 0 },
+        "content": { "type": "string" },
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "estimatedTokens": { "type": "integer", "minimum": 0 },
+        "createdAt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "setup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tools"],
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "read",
+              "glob",
+              "grep",
+              "ls",
+              "find",
+              "write",
+              "edit",
+              "record",
+              "plugin_crash",
+              "cancel_probe"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "providerRouting": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["retryAttempts", "fallback", "primaryFailure"],
+          "properties": {
+            "retryAttempts": { "type": "integer", "minimum": 0 },
+            "fallback": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["provider", "model"],
+              "properties": {
+                "provider": { "const": "replay" },
+                "model": { "$ref": "#/$defs/id" }
+              }
+            },
+            "primaryFailure": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["code", "retryable"],
+              "properties": {
+                "code": { "type": "string", "pattern": "^[A-Z0-9_]{1,64}$" },
+                "retryable": { "type": "boolean" }
+              }
+            }
+          }
+        },
+        "processPlugin": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fixture", "pluginId", "capabilityId", "tool"],
+          "properties": {
+            "fixture": { "const": "crash-on-invoke" },
+            "pluginId": { "$ref": "#/$defs/id" },
+            "capabilityId": { "$ref": "#/$defs/id" },
+            "tool": { "const": "plugin_crash" }
+          }
+        },
+        "session": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["initialMessages"],
+          "properties": {
+            "initialMessages": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/providerMessage" }
+            },
+            "checkpoint": { "$ref": "#/$defs/checkpoint" },
+            "contextLimitTokens": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "cancellation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["boundary", "reason"],
+          "properties": {
+            "boundary": { "const": "after_first_provider_chunk" },
+            "reason": {
+              "enum": [
+                "user_abort",
+                "deadline_exceeded",
+                "budget_exhausted",
+                "parent_cancelled",
+                "plugin_failure",
+                "runtime_shutdown"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "workspaceFixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files"],
+      "properties": {
+        "directories": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "content"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "content": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "prompt"],
+      "properties": {
+        "provider": { "$ref": "#/$defs/id" },
+        "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "prompt": { "type": "string", "minLength": 1 },
+        "promptKind": { "enum": ["prompt", "follow_up"] }
+      }
+    },
+    "budget": {
+      "oneOf": [
+        { "$ref": "#/$defs/executionBudgetV2" },
+        { "$ref": "#/$defs/legacyExecutionBudgetV1" }
+      ]
+    },
+    "executionBudgetV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxTurns", "maxToolCalls", "maxChildRuns", "maxParallelChildren", "maxDepth"],
+      "properties": {
+        "maxTurns": { "type": "integer", "minimum": 1 },
+        "maxToolCalls": { "type": "integer", "minimum": 0 },
+        "maxTokens": { "type": "integer", "minimum": 0 },
+        "maxChildRuns": { "type": "integer", "minimum": 0 },
+        "maxParallelChildren": { "type": "integer", "minimum": 0 },
+        "maxDepth": { "type": "integer", "minimum": 0 },
+        "deadlineAt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "legacyExecutionBudgetV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxTurns", "maxToolCalls", "maxSubagents", "maxDepth"],
+      "properties": {
+        "maxTurns": { "type": "integer", "minimum": 1 },
+        "maxToolCalls": { "type": "integer", "minimum": 0 },
+        "maxTokens": { "type": "integer", "minimum": 0 },
+        "maxSubagents": { "type": "integer", "minimum": 0 },
+        "maxDepth": { "type": "integer", "minimum": 0 },
+        "deadlineAt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "providerReplay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turns"],
+      "properties": {
+        "turns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/replayTurn" }
+        }
+      }
+    },
+    "replayTurn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "chunks"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "expect": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "tools": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/id" },
+              "uniqueItems": true
+            }
+          }
+        },
+        "chunks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/providerChunk" }
+        }
+      }
+    },
+    "providerChunk": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": { "type": { "const": "message_start" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "contentIndex"],
+          "properties": {
+            "type": { "enum": ["text_start", "text_end", "reasoning_start", "reasoning_end"] },
+            "contentIndex": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "text"],
+          "properties": {
+            "type": { "const": "text_delta" },
+            "text": { "type": "string" },
+            "contentIndex": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "contentIndex", "text"],
+          "properties": {
+            "type": { "const": "reasoning_delta" },
+            "contentIndex": { "type": "integer", "minimum": 0 },
+            "text": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "index", "id", "name"],
+          "properties": {
+            "type": { "const": "tool_call_start" },
+            "index": { "type": "integer", "minimum": 0 },
+            "id": { "$ref": "#/$defs/id" },
+            "name": { "$ref": "#/$defs/id" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "index", "argumentsDelta"],
+          "properties": {
+            "type": { "const": "tool_call_delta" },
+            "index": { "type": "integer", "minimum": 0 },
+            "argumentsDelta": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "index"],
+          "properties": {
+            "type": { "const": "tool_call_end" },
+            "index": { "type": "integer", "minimum": 0 },
+            "input": true
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "calls"],
+          "properties": {
+            "type": { "const": "tool_calls" },
+            "calls": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "name", "input"],
+                "properties": {
+                  "id": { "$ref": "#/$defs/id" },
+                  "name": { "$ref": "#/$defs/id" },
+                  "input": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "completed" },
+            "stopReason": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "usage": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "inputTokens": { "type": "integer", "minimum": 0 },
+                "outputTokens": { "type": "integer", "minimum": 0 },
+                "cacheReadTokens": { "type": "integer", "minimum": 0 },
+                "cacheWriteTokens": { "type": "integer", "minimum": 0 },
+                "costUsd": { "type": "number", "minimum": 0 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "permissionDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolCallId", "decision"],
+      "properties": {
+        "toolCallId": { "$ref": "#/$defs/id" },
+        "decision": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type"],
+              "properties": { "type": { "const": "allow_once" } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type"],
+              "properties": { "type": { "const": "allow_always" } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type"],
+              "properties": {
+                "type": { "const": "deny" },
+                "reason": { "type": "string", "minLength": 1, "maxLength": 512 }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "terminalEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["prompt_completed", "prompt_failed", "prompt_aborted"] },
+        "code": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "stopReason": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "agentEventType": {
+      "enum": [
+        "prompt_started",
+        "thinking_delta",
+        "text_delta",
+        "tool_planning",
+        "tool_start",
+        "tool_update",
+        "tool_end",
+        "steer_queued",
+        "steer_applied",
+        "message_committed",
+        "prompt_completed",
+        "prompt_failed",
+        "prompt_aborted"
+      ]
+    },
+    "traceKind": {
+      "enum": [
+        "run.started",
+        "run.completed",
+        "run.failed",
+        "run.aborted",
+        "provider.started",
+        "provider.first_token",
+        "provider.retry",
+        "provider.fallback",
+        "provider.completed",
+        "provider.failed",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "permission.decided",
+        "plugin.started",
+        "plugin.stopped",
+        "plugin.failed",
+        "prompt.manifest",
+        "context.selected",
+        "context.compacted",
+        "persistence.completed",
+        "persistence.failed"
+      ]
+    },
+    "bound": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "integer", "minimum": 0 },
+        "max": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "usageBounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "turns": { "$ref": "#/$defs/bound" },
+        "toolCalls": { "$ref": "#/$defs/bound" },
+        "inputTokens": { "$ref": "#/$defs/bound" },
+        "outputTokens": { "$ref": "#/$defs/bound" },
+        "subagents": { "$ref": "#/$defs/bound" }
+      }
+    },
+    "filesystemChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "change"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "change": { "enum": ["created", "modified", "deleted"] },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "contextSelectionAssertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contextMessagesContain", "messagesExclude"],
+      "properties": {
+        "contextMessagesContain": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "messagesExclude": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "cancellationEvidenceAssertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["boundaryReached", "toolStartsAfterBoundary", "committedMessagesAfterBoundary"],
+      "properties": {
+        "boundaryReached": { "type": "boolean" },
+        "toolStartsAfterBoundary": { "type": "integer", "minimum": 0 },
+        "committedMessagesAfterBoundary": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terminalEvent",
+        "eventCounts",
+        "eventOrder",
+        "committedRoles",
+        "traceKinds",
+        "usageBounds",
+        "filesystemChanges",
+        "remainingReplayTurns"
+      ],
+      "properties": {
+        "terminalEvent": { "$ref": "#/$defs/terminalEvent" },
+        "eventCounts": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/agentEventType" },
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "eventOrder": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/agentEventType" }
+        },
+        "committedRoles": {
+          "type": "array",
+          "items": { "enum": ["user", "assistant", "tool"] }
+        },
+        "traceKinds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/traceKind" }
+        },
+        "usageBounds": { "$ref": "#/$defs/usageBounds" },
+        "filesystemChanges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/filesystemChange" }
+        },
+        "remainingReplayTurns": { "type": "integer", "minimum": 0 },
+        "contextSelection": { "$ref": "#/$defs/contextSelectionAssertion" },
+        "cancellationEvidence": { "$ref": "#/$defs/cancellationEvidenceAssertion" }
+      }
+    }
+  }
+}

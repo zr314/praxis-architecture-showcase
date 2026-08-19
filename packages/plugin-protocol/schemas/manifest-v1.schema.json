@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "praxis://plugin/manifest-v1.json",
+  "type": "object",
+  "required": [
+    "manifestVersion",
+    "id",
+    "name",
+    "version",
+    "apiVersion",
+    "isolation",
+    "capabilities",
+    "grants"
+  ],
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,127}$"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "version": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "apiVersion": { "const": 1 },
+    "entry": { "$ref": "#/$defs/relativePath" },
+    "isolation": { "enum": ["process", "mcp-stdio", "data-only"] },
+    "capabilities": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/capability" }
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/toolCommandMapping" }
+    },
+    "grants": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/pluginGrant" }
+    },
+    "credentials": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/environmentName" },
+      "uniqueItems": true
+    },
+    "engines": {
+      "type": "object",
+      "properties": {
+        "praxis": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "node": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["algorithm", "keyId", "signature"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "keyId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "signature": { "type": "string", "minLength": 1, "maxLength": 8192 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "isolation": { "enum": ["process", "mcp-stdio"] } },
+        "required": ["isolation"]
+      },
+      "then": { "required": ["entry"] }
+    },
+    {
+      "if": {
+        "properties": { "isolation": { "const": "data-only" } },
+        "required": ["isolation"]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "object",
+              "required": ["id", "kind", "path"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+                },
+                "kind": { "enum": ["skill", "template", "theme"] },
+                "path": { "$ref": "#/$defs/relativePath" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "grants": { "maxItems": 0 }
+        },
+        "not": {
+          "anyOf": [{ "required": ["entry"] }, { "required": ["commands"] }]
+        }
+      },
+      "else": {
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "object",
+              "required": ["id", "kind"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+                },
+                "kind": { "enum": ["tool", "mcp", "provider"] }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "required": ["commands"] },
+      "then": {
+        "properties": {
+          "id": { "maxLength": 64 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "isolation": { "const": "mcp-stdio" } },
+        "required": ["isolation", "commands"]
+      },
+      "then": {
+        "properties": { "commands": { "items": { "required": ["tool"] } } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "isolation": { "const": "process" } },
+        "required": ["isolation", "commands"]
+      },
+      "then": {
+        "properties": {
+          "commands": { "items": { "not": { "required": ["tool"] } } }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "capability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["id", "kind"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+            },
+            "kind": { "enum": ["tool", "mcp", "provider"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["id", "kind", "path"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+            },
+            "kind": { "enum": ["skill", "template", "theme"] },
+            "path": { "$ref": "#/$defs/relativePath" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "allOf": [
+        { "not": { "pattern": "^(?:[A-Za-z]:|[/\\\\])" } },
+        { "not": { "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)" } },
+        { "not": { "pattern": "\\u0000" } }
+      ]
+    },
+    "environmentName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+    },
+    "argumentNameList": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-z][a-zA-Z0-9_]{0,63}$"
+      },
+      "uniqueItems": true
+    },
+    "toolCommandMapping": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "description",
+        "capability",
+        "positional",
+        "sensitiveArguments",
+        "persistence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48,
+          "pattern": "^[a-z][a-z0-9-]{0,47}$"
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "capability": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "tool": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "positional": { "$ref": "#/$defs/argumentNameList" },
+        "sensitiveArguments": { "$ref": "#/$defs/argumentNameList" },
+        "persistence": { "enum": ["plaintext", "redacted", "digest", "none"] }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "sensitiveArguments": { "minItems": 1 } },
+            "required": ["sensitiveArguments"]
+          },
+          "then": {
+            "properties": { "persistence": { "not": { "const": "plaintext" } } }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "stringList": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1024 },
+      "uniqueItems": true
+    },
+    "pluginGrant": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "access", "paths"],
+          "properties": {
+            "type": { "const": "filesystem" },
+            "access": { "enum": ["read", "write"] },
+            "paths": { "$ref": "#/$defs/stringList" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "hosts"],
+          "properties": {
+            "type": { "const": "network" },
+            "hosts": { "$ref": "#/$defs/stringList" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "names"],
+          "properties": {
+            "type": { "const": "environment" },
+            "names": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 128,
+              "items": { "$ref": "#/$defs/environmentName" },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "commands"],
+          "properties": {
+            "type": { "const": "process" },
+            "commands": { "$ref": "#/$defs/stringList" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "minProperties": 2,
+          "properties": {
+            "type": { "const": "resource" },
+            "cpuMs": { "type": "integer", "minimum": 1, "maximum": 86400000 },
+            "memoryMb": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+            "processCount": { "type": "integer", "minimum": 1, "maximum": 1024 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

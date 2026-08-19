@@ -1,0 +1,66 @@
+{
+  "name": "@praxis/runtime",
+  "version": "0.2.0",
+  "description": "Praxis coding-agent Runtime and process boundary.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/uestc-Praxis/praxis.git"
+  },
+  "homepage": "https://github.com/uestc-Praxis/praxis#readme",
+  "bugs": {
+    "url": "https://github.com/uestc-Praxis/praxis/issues"
+  },
+  "type": "module",
+  "types": "./dist/entry.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/entry.d.ts",
+      "import": "./dist/entry.js",
+      "default": "./dist/entry.js"
+    },
+    "./entry": {
+      "types": "./dist/entry.d.ts",
+      "import": "./dist/entry.js",
+      "default": "./dist/entry.js"
+    },
+    "./run": {
+      "types": "./dist/run.d.ts",
+      "import": "./dist/run.js",
+      "default": "./dist/run.js"
+    },
+    "./process": {
+      "types": "./dist/process.d.ts",
+      "import": "./dist/process.js",
+      "default": "./dist/process.js"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "import": "./dist/storage.js",
+      "default": "./dist/storage.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "publishConfig": {
+    "access": "restricted",
+    "registry": "http://127.0.0.1:4873/"
+  },
+  "scripts": {
+    "build": "node ../../scripts/clean-dist.mjs runtime && tsc --build tsconfig.json --force --pretty false && node ../../scripts/build-workspaces.mjs runtime",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/core": "2.0.0-beta.5",
+    "@praxis/client": "^0.2.0",
+    "@praxis/core-sdk": "^0.2.0",
+    "@praxis/plugin-protocol": "^0.2.0",
+    "@praxis/protocol": "^0.2.0",
+    "ajv": "8.20.0",
+    "openai": "6.46.0"
+  }
+}

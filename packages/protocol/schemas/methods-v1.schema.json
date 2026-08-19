@@ -1,0 +1,551 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "praxis://schemas/methods-v1.json",
+  "$defs": {
+    "request": {
+      "oneOf": [
+        { "$ref": "#/$defs/initializeRequest" },
+        { "$ref": "#/$defs/subscribeRequest" },
+        { "$ref": "#/$defs/authStatusRequest" },
+        { "$ref": "#/$defs/authLoginRequest" },
+        { "$ref": "#/$defs/authLogoutRequest" },
+        { "$ref": "#/$defs/modelsListRequest" },
+        { "$ref": "#/$defs/settingsGetRequest" },
+        { "$ref": "#/$defs/settingsModelSetRequest" },
+        { "$ref": "#/$defs/runtimeDoctorRequest" },
+        { "$ref": "#/$defs/commandsListRequest" },
+        { "$ref": "#/$defs/commandsInvokeRequest" },
+        { "$ref": "#/$defs/pluginInstallRequest" },
+        { "$ref": "#/$defs/pluginListRequest" },
+        { "$ref": "#/$defs/pluginInspectRequest" },
+        { "$ref": "#/$defs/pluginEnableRequest" },
+        { "$ref": "#/$defs/pluginDisableRequest" },
+        { "$ref": "#/$defs/pluginPermissionsRequest" },
+        { "$ref": "#/$defs/pluginDoctorRequest" },
+        { "$ref": "#/$defs/pluginUpdateRequest" },
+        { "$ref": "#/$defs/pluginRollbackRequest" },
+        { "$ref": "#/$defs/pluginUninstallRequest" },
+        { "$ref": "#/$defs/resourceListRequest" },
+        { "$ref": "#/$defs/resourceInspectRequest" },
+        { "$ref": "#/$defs/resourceEnableRequest" },
+        { "$ref": "#/$defs/resourceDisableRequest" },
+        { "$ref": "#/$defs/sessionCreateRequest" },
+        { "$ref": "#/$defs/sessionListRequest" },
+        { "$ref": "#/$defs/sessionSearchRequest" },
+        { "$ref": "#/$defs/sessionInspectRequest" },
+        { "$ref": "#/$defs/sessionResumeRequest" },
+        { "$ref": "#/$defs/sessionRenameRequest" },
+        { "$ref": "#/$defs/sessionConfigureRequest" },
+        { "$ref": "#/$defs/sessionCloseRequest" },
+        { "$ref": "#/$defs/sessionDeleteRequest" },
+        { "$ref": "#/$defs/sessionExportRequest" },
+        { "$ref": "#/$defs/sessionTranscriptRequest" },
+        { "$ref": "#/$defs/sessionForkRequest" },
+        { "$ref": "#/$defs/sessionBranchRequest" },
+        { "$ref": "#/$defs/sessionCompactRequest" },
+        { "$ref": "#/$defs/sessionPlanRequest" },
+        { "$ref": "#/$defs/workflowGetRequest" },
+        { "$ref": "#/$defs/workflowListRequest" },
+        { "$ref": "#/$defs/workflowEventsRequest" },
+        { "$ref": "#/$defs/workflowSignalRequest" },
+        { "$ref": "#/$defs/workflowPauseRequest" },
+        { "$ref": "#/$defs/workflowResumeRequest" },
+        { "$ref": "#/$defs/workflowCancelRequest" },
+        { "$ref": "#/$defs/workflowTerminateRequest" },
+        { "$ref": "#/$defs/workflowHumanTasksListRequest" },
+        { "$ref": "#/$defs/workflowHumanTaskResolveRequest" },
+        { "$ref": "#/$defs/workflowRetryNodeRequest" },
+        { "$ref": "#/$defs/workflowResolveUnknownRequest" },
+        { "$ref": "#/$defs/artifactsListRequest" },
+        { "$ref": "#/$defs/promptRequest" },
+        { "$ref": "#/$defs/followUpRequest" },
+        { "$ref": "#/$defs/steerRequest" },
+        { "$ref": "#/$defs/abortRequest" },
+        { "$ref": "#/$defs/traceExportRequest" },
+        { "$ref": "#/$defs/permissionRequest" },
+        { "$ref": "#/$defs/shutdownRequest" }
+      ]
+    },
+    "result": {
+      "anyOf": [
+        { "$ref": "#/$defs/initializeResult" },
+        { "$ref": "#/$defs/subscribeResult" },
+        { "$ref": "#/$defs/authStatusResult" },
+        { "$ref": "#/$defs/loginResult" }, { "$ref": "#/$defs/acceptedResult" },
+        { "$ref": "#/$defs/okResult" },
+        { "$ref": "#/$defs/sessionResult" },
+        { "$ref": "#/$defs/sessionListResult" },
+        { "$ref": "#/$defs/runResult" },
+        { "$ref": "#/$defs/steerResult" },
+        { "$ref": "#/$defs/traceExportResult" }
+        ,{ "$ref": "#/$defs/compactResult" },
+        { "$ref": "#/$defs/modelListResult" },
+        { "$ref": "#/$defs/settingsResult" },
+        { "$ref": "#/$defs/doctorResult" },
+        { "$ref": "#/$defs/commandCatalogResult" },
+        { "$ref": "#/$defs/commandInvokeResult" },
+        { "$ref": "#/$defs/trashResult" },
+        { "$ref": "#/$defs/sessionExportResult" },
+        { "$ref": "#/$defs/sessionTranscriptResult" },
+        { "$ref": "#/$defs/sessionPlanResult" },
+        { "$ref": "#/$defs/workflowResult" },
+        { "$ref": "#/$defs/workflowListResult" },
+        { "$ref": "#/$defs/workflowEventsResult" },
+        { "$ref": "#/$defs/workflowHumanTaskListResult" },
+        { "$ref": "#/$defs/workflowHumanTaskResult" },
+        { "$ref": "#/$defs/artifactListResult" },
+        { "$ref": "#/$defs/pluginStatusResult" },
+        { "$ref": "#/$defs/pluginStatusListResult" },
+        { "$ref": "#/$defs/pluginInspectionResult" },
+        { "$ref": "#/$defs/pluginPermissionsResult" },
+        { "$ref": "#/$defs/pluginDoctorResult" },
+        { "$ref": "#/$defs/resourceResult" },
+        { "$ref": "#/$defs/resourceListResult" }
+      ]
+    },
+    "envelope": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "type": "string", "minLength": 1 },
+        "method": { "type": "string" },
+        "params": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "responseEnvelope": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "result"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "type": "string", "minLength": 1 },
+        "result": {}
+      },
+      "additionalProperties": false
+    },
+    "initializeRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        { "properties": { "method": { "const": "initialize" }, "params": { "$ref": "#/$defs/initializeParams" } } }
+      ]
+    },
+    "subscribeRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "events.subscribe" }, "params": { "$ref": "#/$defs/subscribeParams" } } }] },
+    "authStatusRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "auth.status" }, "params": { "$ref": "#/$defs/providerParams" } } }] },
+    "authLoginRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "auth.login" }, "params": { "$ref": "#/$defs/loginParams" } } }] },
+    "authLogoutRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "auth.logout" }, "params": { "$ref": "#/$defs/providerParams" } } }] },
+    "modelsListRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "models.list" }, "params": { "$ref": "#/$defs/modelsListParams" } } }] },
+    "settingsGetRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "settings.get" }, "params": { "type": "object", "maxProperties": 0 } } }] },
+    "settingsModelSetRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "settings.model.set" }, "params": { "$ref": "#/$defs/modelPreferenceParams" } } }] },
+    "runtimeDoctorRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "runtime.doctor" }, "params": { "$ref": "#/$defs/doctorParams" } } }] },
+    "commandsListRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "commands.list" }, "params": { "$ref": "#/$defs/commandsListParams" } } }] },
+    "commandsInvokeRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "commands.invoke" }, "params": { "$ref": "#/$defs/commandInvokeParams" } } }] },
+    "pluginInstallRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "plugin.install" }, "params": { "$ref": "#/$defs/pluginSourceParams" } } }] },
+    "pluginListRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "plugin.list" }, "params": { "$ref": "#/$defs/pluginListParams" } } }] },
+    "pluginInspectRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "plugin.inspect" }, "params": { "$ref": "#/$defs/pluginInspectParams" } } }] },
+    "pluginEnableRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "plugin.enable" }, "params": { "$ref": "#/$defs/pluginEnableParams" } } }] },
+    "pluginDisableRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "plugin.disable" }, "params": { "$ref": "#/$defs/pluginWorkspaceIdParams" } } }] },
+    "pluginPermissionsRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "plugin.permissions" }, "params": { "$ref": "#/$defs/pluginWorkspaceIdParams" } } }] },
+    "pluginDoctorRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "plugin.doctor" }, "params": { "type": "object", "maxProperties": 0 } } }] },
+    "pluginUpdateRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "plugin.update" }, "params": { "$ref": "#/$defs/pluginUpdateParams" } } }] },
+    "pluginRollbackRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "plugin.rollback" }, "params": { "$ref": "#/$defs/pluginWorkspaceIdParams" } } }] },
+    "pluginUninstallRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "plugin.uninstall" }, "params": { "$ref": "#/$defs/pluginUninstallParams" } } }] },
+    "resourceListRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "resource.list" }, "params": { "$ref": "#/$defs/resourceWorkspaceParams" } } }] },
+    "resourceInspectRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "resource.inspect" }, "params": { "$ref": "#/$defs/resourceInspectParams" } } }] },
+    "resourceEnableRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "resource.enable" }, "params": { "$ref": "#/$defs/resourceEnableParams" } } }] },
+    "resourceDisableRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "resource.disable" }, "params": { "$ref": "#/$defs/resourceIdParams" } } }] },
+    "sessionCreateRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.create" }, "params": { "$ref": "#/$defs/sessionCreateParams" } } }] },
+    "sessionListRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.list" }, "params": { "type": "object", "maxProperties": 0 } } }] },
+    "sessionSearchRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.search" }, "params": { "$ref": "#/$defs/sessionSearchParams" } } }] },
+    "sessionInspectRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.inspect" }, "params": { "$ref": "#/$defs/sessionIdParams" } } }] },
+    "sessionResumeRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.resume" }, "params": { "$ref": "#/$defs/sessionIdParams" } } }] },
+    "sessionRenameRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.rename" }, "params": { "$ref": "#/$defs/sessionRenameParams" } } }] },
+    "sessionConfigureRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.configure" }, "params": { "$ref": "#/$defs/sessionConfigureParams" } } }] },
+    "sessionCloseRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.close" }, "params": { "$ref": "#/$defs/sessionIdParams" } } }] },
+    "sessionDeleteRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.delete" }, "params": { "$ref": "#/$defs/sessionIdParams" } } }] },
+    "sessionExportRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.export" }, "params": { "$ref": "#/$defs/sessionIdParams" } } }] },
+    "sessionTranscriptRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.transcript" }, "params": { "$ref": "#/$defs/sessionTranscriptParams" } } }] },
+    "sessionForkRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.fork" }, "params": { "$ref": "#/$defs/sessionForkParams" } } }] },
+    "sessionBranchRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.branch" }, "params": { "$ref": "#/$defs/sessionIdParams" } } }] },
+    "sessionCompactRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.compact" }, "params": { "$ref": "#/$defs/sessionIdParams" } } }] },
+    "sessionPlanRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.plan" }, "params": { "$ref": "#/$defs/sessionIdParams" } } }] },
+    "workflowGetRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.get" }, "params": { "$ref": "#/$defs/workflowIdParams" } } }] },
+    "workflowListRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.list" }, "params": { "type": "object", "properties": { "sessionId": { "type": "string", "minLength": 1 } }, "additionalProperties": false } } }] },
+    "workflowEventsRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.events" }, "params": { "type": "object", "required": ["workflowId"], "properties": { "workflowId": { "type": "string", "minLength": 1 }, "afterSequence": { "type": "integer", "minimum": 0 } }, "additionalProperties": false } } }] },
+    "workflowSignalRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.signal" }, "params": { "type": "object", "required": ["signalId", "workflowId", "name", "payload"], "properties": { "signalId": { "type": "string", "minLength": 1 }, "workflowId": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 }, "payload": {} }, "additionalProperties": false } } }] },
+    "workflowPauseRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.pause" }, "params": { "$ref": "#/$defs/workflowIdParams" } } }] },
+    "workflowResumeRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.resume" }, "params": { "$ref": "#/$defs/workflowIdParams" } } }] },
+    "workflowCancelRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.cancel" }, "params": { "$ref": "#/$defs/workflowControlParams" } } }] },
+    "workflowTerminateRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.terminate" }, "params": { "$ref": "#/$defs/workflowControlParams" } } }] },
+    "workflowHumanTasksListRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.human-tasks.list" }, "params": { "type": "object", "required": ["workflowId"], "properties": { "workflowId": { "type": "string", "minLength": 1 }, "state": { "enum": ["waiting", "allowed", "denied", "expired", "cancelled"] } }, "additionalProperties": false } } }] },
+    "workflowHumanTaskResolveRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.human-task.resolve" }, "params": { "type": "object", "required": ["humanTaskId", "decision", "resolution"], "properties": { "humanTaskId": { "type": "string", "minLength": 1 }, "decision": { "enum": ["allowed", "denied", "expired", "cancelled"] }, "resolution": { "type": "object" } }, "additionalProperties": false } } }] },
+    "workflowRetryNodeRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.retry-node" }, "params": { "$ref": "#/$defs/workflowNodeParams" } } }] },
+    "workflowResolveUnknownRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "workflow.resolve-unknown" }, "params": { "type": "object", "required": ["workflowId", "nodeId", "resolution"], "properties": { "workflowId": { "type": "string", "minLength": 1 }, "nodeId": { "type": "string", "minLength": 1 }, "resolution": { "enum": ["succeeded", "failed", "manual_intervention"] }, "code": { "type": "string", "minLength": 1, "maxLength": 128 } }, "additionalProperties": false } } }] },
+    "artifactsListRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "artifacts.list" }, "params": { "type": "object", "maxProperties": 0 } } }] },
+    "promptRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.prompt" }, "params": { "$ref": "#/$defs/promptParams" } } }] },
+    "followUpRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.follow_up" }, "params": { "$ref": "#/$defs/promptParams" } } }] },
+    "steerRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.steer" }, "params": { "$ref": "#/$defs/steerParams" } } }] },
+    "abortRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "session.abort" }, "params": { "$ref": "#/$defs/abortParams" } } }] },
+    "traceExportRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "trace.export" }, "params": { "$ref": "#/$defs/traceExportParams" } } }] },
+    "permissionRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "permission.decide" }, "params": { "$ref": "#/$defs/permissionParams" } } }] },
+    "shutdownRequest": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "method": { "const": "shutdown" }, "params": { "type": "object", "maxProperties": 0 } } }] },
+    "initializeParams": { "type": "object", "required": ["protocolVersion", "client", "capabilities"], "properties": { "protocolVersion": { "const": 1 }, "supportedProtocolVersions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } }, "client": { "type": "object", "required": ["name", "version"], "properties": { "name": { "type": "string" }, "version": { "type": "string" } }, "additionalProperties": false }, "capabilities": { "type": "object", "required": ["interactivePermissions", "outputFormats"], "properties": { "interactivePermissions": { "type": "boolean" }, "outputFormats": { "type": "array", "items": { "enum": ["text", "json", "stream-json"] } } }, "additionalProperties": false } }, "additionalProperties": false },
+    "subscribeParams": { "type": "object", "required": ["sessionId", "fromSequence"], "properties": { "sessionId": { "type": ["string", "null"] }, "fromSequence": { "type": ["integer", "null"], "minimum": 1 } }, "additionalProperties": false },
+    "providerParams": { "type": "object", "required": ["provider"], "properties": { "provider": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "loginParams": { "type": "object", "required": ["provider", "mode"], "properties": { "provider": { "type": "string", "minLength": 1 }, "mode": { "enum": ["api_key", "browser"] }, "apiKey": { "type": "string", "minLength": 1, "maxLength": 8192, "pattern": "^[^\\r\\n]+$" } }, "additionalProperties": false },
+    "modelsListParams": { "type": "object", "properties": { "provider": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "modelPreferenceParams": { "type": "object", "required": ["provider", "model"], "properties": { "provider": { "type": "string", "minLength": 1 }, "model": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "doctorParams": { "type": "object", "properties": { "workspace": { "type": "string", "minLength": 1 }, "deep": { "type": "boolean" } }, "additionalProperties": false },
+    "commandsListParams": { "type": "object", "required": ["workspace"], "properties": { "workspace": { "type": "string", "minLength": 1, "maxLength": 4096 } }, "additionalProperties": false },
+    "commandArgumentValue": { "type": ["string", "integer", "boolean"] },
+    "commandInvocation": {
+      "type": "object",
+      "required": ["schemaVersion", "invocationId", "clientRequestId", "descriptorId", "descriptorDigest", "command", "arguments"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "invocationId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "clientRequestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "descriptorId": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "descriptorDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "command": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "arguments": { "type": "object", "maxProperties": 16, "additionalProperties": { "$ref": "#/$defs/commandArgumentValue" } },
+        "body": { "type": "string", "maxLength": 28672 }
+      },
+      "additionalProperties": false
+    },
+    "commandInvokeParams": {
+      "type": "object",
+      "required": ["schemaVersion", "workspace", "catalogSnapshotDigest", "capabilityDigest", "invocation"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "workspace": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "catalogSnapshotDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "capabilityDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "invocation": { "$ref": "#/$defs/commandInvocation" },
+        "sessionId": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "additionalProperties": false
+    },
+    "pluginSourceParams": { "type": "object", "required": ["source"], "properties": { "source": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "pluginListParams": { "type": "object", "properties": { "workspace": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "pluginInspectParams": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string", "minLength": 1 }, "version": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "pluginUninstallParams": { "type": "object", "required": ["id", "version"], "properties": { "id": { "type": "string", "minLength": 1 }, "version": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "pluginWorkspaceIdParams": { "type": "object", "required": ["workspace", "id"], "properties": { "workspace": { "type": "string", "minLength": 1 }, "id": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "pluginStringList": { "type": "array", "minItems": 1, "maxItems": 128, "items": { "type": "string", "minLength": 1, "maxLength": 1024 }, "uniqueItems": true },
+    "pluginEnvironmentName": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$" },
+    "pluginGrant": { "oneOf": [
+      { "type": "object", "required": ["type", "access", "paths"], "properties": { "type": { "const": "filesystem" }, "access": { "enum": ["read", "write"] }, "paths": { "$ref": "#/$defs/pluginStringList" } }, "additionalProperties": false },
+      { "type": "object", "required": ["type", "hosts"], "properties": { "type": { "const": "network" }, "hosts": { "$ref": "#/$defs/pluginStringList" } }, "additionalProperties": false },
+      { "type": "object", "required": ["type", "names"], "properties": { "type": { "const": "environment" }, "names": { "type": "array", "minItems": 1, "maxItems": 128, "items": { "$ref": "#/$defs/pluginEnvironmentName" }, "uniqueItems": true } }, "additionalProperties": false },
+      { "type": "object", "required": ["type", "commands"], "properties": { "type": { "const": "process" }, "commands": { "$ref": "#/$defs/pluginStringList" } }, "additionalProperties": false },
+      { "type": "object", "required": ["type"], "minProperties": 2, "properties": { "type": { "const": "resource" }, "cpuMs": { "type": "integer", "minimum": 1, "maximum": 86400000 }, "memoryMb": { "type": "integer", "minimum": 1, "maximum": 1048576 }, "processCount": { "type": "integer", "minimum": 1, "maximum": 1024 } }, "additionalProperties": false }
+    ] },
+    "pluginGrantList": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/pluginGrant" } },
+    "pluginEnableParams": { "type": "object", "required": ["workspace", "id", "version", "grants"], "properties": { "workspace": { "type": "string", "minLength": 1 }, "id": { "type": "string", "minLength": 1 }, "version": { "type": "string", "minLength": 1 }, "grants": { "$ref": "#/$defs/pluginGrantList" } }, "additionalProperties": false },
+    "pluginUpdateParams": { "type": "object", "required": ["workspace", "source", "grants"], "properties": { "workspace": { "type": "string", "minLength": 1 }, "source": { "type": "string", "minLength": 1 }, "grants": { "$ref": "#/$defs/pluginGrantList" } }, "additionalProperties": false },
+    "resourceWorkspaceParams": { "type": "object", "required": ["workspace"], "properties": { "workspace": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "resourceIdParams": { "type": "object", "required": ["workspace", "id"], "properties": { "workspace": { "type": "string", "minLength": 1 }, "id": { "type": "string", "minLength": 1, "maxLength": 256 } }, "additionalProperties": false },
+    "resourceInspectParams": { "type": "object", "required": ["workspace", "id"], "properties": { "workspace": { "type": "string", "minLength": 1 }, "id": { "type": "string", "minLength": 1, "maxLength": 256 }, "includeContent": { "type": "boolean" } }, "additionalProperties": false },
+    "resourceEnableParams": { "type": "object", "required": ["workspace", "id"], "properties": { "workspace": { "type": "string", "minLength": 1 }, "id": { "type": "string", "minLength": 1, "maxLength": 256 }, "projectTrusted": { "type": "boolean" } }, "additionalProperties": false },
+    "sessionCreateParams": { "type": "object", "required": ["cwd"], "properties": { "cwd": { "type": "string", "minLength": 1 }, "plannerMode": { "enum": ["auto", "solo", "workflow", "direct", "supervisor"] }, "provider": { "type": "string" }, "model": { "type": "string" }, "name": { "type": "string", "minLength": 1, "maxLength": 128 }, "labels": { "type": "array", "items": { "type": "string" }, "maxItems": 32 }, "contextLimitTokens": { "type": "integer", "minimum": 1 }, "permissionMode": { "enum": ["interactive", "auto"] } }, "additionalProperties": false },
+    "sessionSearchParams": { "type": "object", "required": ["query"], "properties": { "query": { "type": "string" } }, "additionalProperties": false },
+    "sessionRenameParams": { "type": "object", "required": ["sessionId", "name"], "properties": { "sessionId": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1, "maxLength": 128 } }, "additionalProperties": false },
+    "sessionConfigureParams": { "type": "object", "required": ["sessionId", "provider", "model"], "properties": { "sessionId": { "type": "string", "minLength": 1 }, "provider": { "type": "string", "minLength": 1 }, "model": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "sessionForkParams": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1, "maxLength": 128 }, "throughMessage": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+    "sessionIdParams": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "workflowIdParams": { "type": "object", "required": ["workflowId"], "properties": { "workflowId": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "workflowControlParams": { "type": "object", "required": ["workflowId"], "properties": { "workflowId": { "type": "string", "minLength": 1 }, "reason": { "type": "string", "minLength": 1, "maxLength": 128 } }, "additionalProperties": false },
+    "workflowNodeParams": { "type": "object", "required": ["workflowId", "nodeId"], "properties": { "workflowId": { "type": "string", "minLength": 1 }, "nodeId": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "sessionTranscriptParams": { "type": "object", "required": ["sessionId", "limit"], "properties": { "sessionId": { "type": "string", "minLength": 1 }, "before": { "type": "integer", "minimum": 0 }, "limit": { "type": "integer", "minimum": 1, "maximum": 500 } }, "additionalProperties": false },
+    "promptParams": { "type": "object", "required": ["sessionId", "text", "clientRequestId"], "properties": { "sessionId": { "type": "string" }, "text": { "type": "string", "minLength": 1 }, "clientRequestId": { "type": "string", "minLength": 1 }, "commandInvocationId": { "type": "string", "minLength": 1, "maxLength": 128 }, "budget": { "type": "object", "properties": { "maxTurns": { "type": "integer", "minimum": 1 }, "maxToolCalls": { "type": "integer", "minimum": 0 }, "maxTokens": { "type": "integer", "minimum": 1 } }, "additionalProperties": false }, "timeoutMs": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
+    "steerParams": { "type": "object", "required": ["sessionId", "runId", "text"], "properties": { "sessionId": { "type": "string" }, "runId": { "type": "string" }, "text": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "abortParams": { "type": "object", "required": ["runId"], "properties": { "sessionId": { "type": "string" }, "runId": { "type": "string" }, "reason": { "type": "string" } }, "additionalProperties": false },
+    "traceExportParams": { "type": "object", "required": ["traceId", "destination"], "properties": { "traceId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" }, "destination": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "permissionParams": { "type": "object", "required": ["requestId", "decision"], "properties": { "requestId": { "type": "string" }, "decision": { "oneOf": [{ "type": "object", "required": ["type"], "properties": { "type": { "const": "allow_once" } }, "additionalProperties": false }, { "type": "object", "required": ["type"], "properties": { "type": { "const": "allow_always" } }, "additionalProperties": false }, { "type": "object", "required": ["type"], "properties": { "type": { "const": "deny" }, "reason": { "type": "string" } }, "additionalProperties": false }] } }, "additionalProperties": false },
+    "initializeResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["protocolVersion", "runtime", "capabilities"], "properties": { "protocolVersion": { "const": 1 }, "supportedProtocolVersions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } }, "runtime": { "type": "object", "required": ["runtimeId"], "properties": { "name": { "type": "string" }, "version": { "type": "string" }, "runtimeId": { "type": "string" } }, "additionalProperties": false }, "capabilities": { "type": "object" } }, "additionalProperties": false } } }] },
+    "subscribeResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["subscriptionId", "nextSequence", "replaySupported"], "properties": { "subscriptionId": { "type": "string" }, "nextSequence": { "type": "integer", "minimum": 1 }, "replaySupported": { "type": "boolean" } }, "additionalProperties": false } } }] },
+    "authStatusResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["status", "provider"], "properties": { "status": { "enum": ["authenticated", "unauthenticated", "expired", "unavailable"] }, "provider": { "type": "string" }, "accountLabel": { "type": "string" }, "credentialSource": { "enum": ["stored", "environment", "provider"] }, "credentialVariable": { "type": "string" }, "protection": { "type": "object", "required": ["encrypted", "backend", "osDelegated"], "properties": { "encrypted": { "type": "boolean" }, "backend": { "type": "string" }, "osDelegated": { "type": "boolean" } }, "additionalProperties": false } }, "additionalProperties": false } } }] },
+    "loginResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["loginId"], "properties": { "loginId": { "type": "string" } }, "additionalProperties": false } } }] },
+    "acceptedResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["accepted"], "properties": { "accepted": { "const": true } }, "additionalProperties": false } } }] },
+    "okResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["ok"], "properties": { "ok": { "const": true } }, "additionalProperties": false } } }] },
+    "sessionResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "$ref": "#/$defs/sessionInfo" } } }] },
+    "sessionListResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "array", "items": { "$ref": "#/$defs/sessionInfo" } } } }] },
+    "sessionInfo": { "type": "object", "required": ["sessionId", "state", "cwd", "provider", "model"], "properties": { "sessionId": { "type": "string" }, "state": { "enum": ["idle", "running", "closed"] }, "plannerMode": { "enum": ["auto", "solo", "workflow", "direct", "supervisor"] }, "cwd": { "type": "string" }, "provider": { "type": "string" }, "model": { "type": "string" }, "createdAt": { "type": "string" }, "updatedAt": { "type": "string" }, "contextLimitTokens": { "type": "integer", "minimum": 1 }, "name": { "type": "string" }, "parentSessionId": { "type": "string" }, "activeLeafId": { "type": "string" }, "labels": { "type": "array", "items": { "type": "string" } }, "messageCount": { "type": "integer", "minimum": 0 }, "usage": { "type": "object" }, "lastTerminalState": { "enum": ["completed", "failed", "aborted"] } }, "additionalProperties": false },
+    "runResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["runId", "accepted"], "properties": { "runId": { "type": "string" }, "accepted": { "const": true } }, "additionalProperties": false } } }] },
+    "steerResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["accepted", "applyAt"], "properties": { "accepted": { "const": true }, "applyAt": { "const": "next_safe_boundary" } }, "additionalProperties": false } } }] },
+    "traceExportResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["traceId", "path", "recordCount", "privacy"], "properties": { "traceId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" }, "path": { "type": "string" }, "recordCount": { "type": "integer", "minimum": 0 }, "privacy": { "type": "object", "required": ["included", "excluded"], "properties": { "included": { "type": "array", "minItems": 5, "prefixItems": [{ "const": "eventKinds" }, { "const": "timestamps" }, { "const": "correlationIds" }, { "const": "declaredAttributes" }, { "const": "aggregateMetrics" }], "items": false }, "excluded": { "type": "array", "minItems": 5, "prefixItems": [{ "const": "prompts" }, { "const": "credentials" }, { "const": "environment" }, { "const": "rawToolInput" }, { "const": "rawToolOutput" }], "items": false } }, "additionalProperties": false } }, "additionalProperties": false } } }] },
+    "compactResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["compacted"], "properties": { "compacted": { "type": "boolean" }, "checkpointId": { "type": "string" } }, "additionalProperties": false } } }] },
+    "modelListResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "array", "items": { "type": "object", "required": ["catalogVersion", "provider", "id", "name", "family", "reasoningLevels", "modalities"], "properties": { "catalogVersion": { "const": 1 }, "provider": { "type": "string" }, "id": { "type": "string" }, "name": { "type": "string", "minLength": 1 }, "family": { "enum": ["anthropic-messages", "openai-responses", "openai-chat", "mock"] }, "contextTokens": { "type": "integer", "minimum": 0 }, "outputTokens": { "type": "integer", "minimum": 0 }, "reasoningLevels": { "type": "array", "items": { "type": "string" } }, "modalities": { "type": "array", "items": { "type": "string" } }, "aliases": { "type": "array", "items": { "type": "string" } }, "lifecycle": { "enum": ["active", "deprecated"] }, "catalogSource": { "type": "string" }, "retrievedAt": { "type": "string" } }, "additionalProperties": false } } } }] },
+    "settingsResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["version", "defaultModel"], "properties": { "version": { "const": 1 }, "defaultModel": { "oneOf": [{ "type": "null" }, { "type": "object", "required": ["provider", "model", "updatedAt"], "properties": { "provider": { "type": "string", "minLength": 1 }, "model": { "type": "string", "minLength": 1 }, "updatedAt": { "type": "string" } }, "additionalProperties": false }] } }, "additionalProperties": false } } }] },
+    "doctorResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["ok", "runtimeId", "storeVersion", "providers", "checks"], "properties": { "ok": { "type": "boolean" }, "runtimeId": { "type": "string" }, "storeVersion": { "type": "integer" }, "workspace": { "type": "string" }, "providers": { "type": "array" }, "checks": { "type": "array" } }, "additionalProperties": false } } }] },
+    "commandArgumentProperty": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["string", "integer", "boolean"] },
+        "description": { "type": "string", "maxLength": 256 },
+        "minLength": { "type": "integer", "minimum": 0, "maximum": 32768 },
+        "maxLength": { "type": "integer", "minimum": 1, "maximum": 32768 },
+        "minimum": { "type": "integer" },
+        "maximum": { "type": "integer" },
+        "enum": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "maxLength": 256 } }
+      },
+      "additionalProperties": false
+    },
+    "commandDescriptor": {
+      "type": "object",
+      "required": ["schemaVersion", "id", "command", "aliases", "title", "description", "usage", "kind", "schema", "source", "effect", "capabilities", "availability", "output", "sensitiveArguments", "persistence", "descriptorDigest"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "command": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "aliases": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 48 } },
+        "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "usage": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "kind": { "enum": ["client_local", "runtime_query", "runtime_mutation", "prompt_template", "skill_invocation", "workflow"] },
+        "schema": {
+          "type": "object",
+          "required": ["type", "additionalProperties", "properties", "required", "positional"],
+          "properties": {
+            "type": { "const": "object" },
+            "additionalProperties": { "const": false },
+            "properties": { "type": "object", "maxProperties": 16, "additionalProperties": { "$ref": "#/$defs/commandArgumentProperty" } },
+            "required": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "type": "string" } },
+            "positional": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "source": {
+          "type": "object",
+          "required": ["kind", "origin", "digest"],
+          "properties": {
+            "kind": { "enum": ["builtin", "prompt", "skill", "plugin", "mcp"] },
+            "origin": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "namespace": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+          },
+          "additionalProperties": false
+        },
+        "effect": { "enum": ["none", "read", "mutation", "prompt", "job"] },
+        "capabilities": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 96 } },
+        "availability": {
+          "type": "object",
+          "required": ["session", "run", "requiresWorkspaceTrust"],
+          "properties": {
+            "session": { "enum": ["none", "optional", "required"] },
+            "run": { "enum": ["any", "idle", "active"] },
+            "requiresWorkspaceTrust": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "output": {
+          "type": "object",
+          "required": ["kind", "maxBytes"],
+          "properties": { "kind": { "enum": ["none", "ui_action", "runtime_result", "prompt_envelope", "bounded_job"] }, "maxBytes": { "type": "integer", "minimum": 0, "maximum": 1048576 } },
+          "additionalProperties": false
+        },
+        "sensitiveArguments": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "type": "string" } },
+        "persistence": { "enum": ["plaintext", "redacted", "digest", "none"] },
+        "descriptorDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "commandCatalog": {
+      "type": "object",
+      "required": ["schemaVersion", "owner", "workspaceId", "workspaceTrusted", "capabilityIds", "capabilityDigest", "entries", "snapshotDigest"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "owner": { "enum": ["client", "runtime"] },
+        "workspaceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "workspaceTrusted": { "type": "boolean" },
+        "capabilityIds": { "type": "array", "maxItems": 512, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 96 } },
+        "capabilityDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "entries": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "object",
+            "required": ["layer", "descriptor", "availableAliases"],
+            "properties": {
+              "layer": { "enum": ["builtin", "workspace", "extension"] },
+              "descriptor": { "$ref": "#/$defs/commandDescriptor" },
+              "availableAliases": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 48 } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "snapshotDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "commandCatalogResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "$ref": "#/$defs/commandCatalog" } } }] },
+    "promptEnvelopePart": {
+      "type": "object",
+      "required": ["kind", "trust", "persistence", "origin", "digest"],
+      "properties": {
+        "kind": { "enum": ["user_input", "command_arguments", "template_expansion", "skill_invocation", "workflow_context"] },
+        "trust": { "enum": ["user", "low"] },
+        "persistence": { "enum": ["plaintext", "redacted", "digest", "none"] },
+        "origin": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "text": { "type": "string", "maxLength": 32768 },
+        "ref": { "type": "string", "minLength": 1, "maxLength": 512 }
+      },
+      "anyOf": [{ "required": ["text"] }, { "required": ["ref"] }],
+      "additionalProperties": false
+    },
+    "promptEnvelope": {
+      "type": "object",
+      "required": ["schemaVersion", "id", "source", "digest", "effectiveText", "rawInputPersistence", "parts", "attachmentRefs"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "source": { "enum": ["user_text", "prompt_template", "skill", "workflow"] },
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "effectiveText": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "rawInput": { "type": "string", "maxLength": 32768 },
+        "rawInputPersistence": { "enum": ["plaintext", "redacted", "digest", "none"] },
+        "parts": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/promptEnvelopePart" } },
+        "commandInvocationId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "attachmentRefs": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 512 } }
+      },
+      "additionalProperties": false
+    },
+    "commandInvokeOutput": {
+      "oneOf": [
+        { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "none" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "value"], "properties": { "kind": { "const": "runtime_result" }, "value": {} }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "action"], "properties": { "kind": { "const": "ui_action" }, "action": { "type": "string", "minLength": 1, "maxLength": 96 }, "payload": { "type": "object" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "jobId", "state"], "properties": { "kind": { "const": "bounded_job" }, "jobId": { "type": "string", "minLength": 1, "maxLength": 128 }, "state": { "enum": ["accepted", "completed"] } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "envelope"], "properties": { "kind": { "const": "prompt_envelope" }, "envelope": { "$ref": "#/$defs/promptEnvelope" } }, "additionalProperties": false }
+      ]
+    },
+    "commandInvokeResult": {
+      "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": {
+        "type": "object",
+        "required": ["schemaVersion", "invocationId", "clientRequestId", "descriptorId", "descriptorDigest", "effect", "audited", "output"],
+        "properties": {
+          "schemaVersion": { "const": 1 },
+          "invocationId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "clientRequestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "descriptorId": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "descriptorDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+          "effect": { "enum": ["read", "mutation", "prompt", "job"] },
+          "audited": { "const": true },
+          "output": { "$ref": "#/$defs/commandInvokeOutput" }
+        },
+        "additionalProperties": false
+      } } }]
+    },
+    "trashResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["trashPath"], "properties": { "trashPath": { "type": "string" } }, "additionalProperties": false } } }] },
+    "sessionExportResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["exportVersion", "exportedAt", "session", "messages", "memory"], "properties": { "exportVersion": { "const": 1 }, "exportedAt": { "type": "string" }, "session": { "$ref": "#/$defs/sessionInfo" }, "messages": { "type": "array" }, "memory": {} }, "additionalProperties": false } } }] },
+    "sessionTranscriptResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["sessionId", "start", "end", "totalMessages", "hasMore", "messages"], "properties": { "sessionId": { "type": "string", "minLength": 1 }, "start": { "type": "integer", "minimum": 0 }, "end": { "type": "integer", "minimum": 0 }, "totalMessages": { "type": "integer", "minimum": 0 }, "hasMore": { "type": "boolean" }, "messages": { "type": "array", "maxItems": 500 } }, "additionalProperties": false } } }] },
+    "sessionPlanResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["sessionId", "plan", "plannerGeneration"], "properties": { "sessionId": { "type": "string" }, "plan": {}, "plannerGeneration": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/plannerGeneration" }] } }, "additionalProperties": false } } }] },
+    "plannerGeneration": { "type": "object", "required": ["phase", "generatorId", "source", "status", "fallbackUsed", "runId", "recordedAt"], "properties": { "phase": { "enum": ["initial", "replan"] }, "generatorId": { "type": "string" }, "source": { "enum": ["model", "fallback"] }, "status": { "enum": ["succeeded", "failed"] }, "fallbackUsed": { "type": "boolean" }, "route": { "enum": ["parent_only", "dag"] }, "failureCode": { "type": "string" }, "fallbackFromCode": { "type": "string" }, "runId": { "type": "string" }, "recordedAt": { "type": "string" } }, "additionalProperties": false },
+    "workflowProjection": { "type": "object", "required": ["workflowId", "runId", "sessionId", "revision", "sequence", "state", "topology", "objective", "nodes"], "properties": { "workflowId": { "type": "string", "minLength": 1 }, "runId": { "type": "string", "minLength": 1 }, "sessionId": { "type": "string", "minLength": 1 }, "parentWorkflowId": { "type": "string", "minLength": 1 }, "parentNodeId": { "type": "string", "minLength": 1 }, "revision": { "type": "integer", "minimum": 1 }, "sequence": { "type": "integer", "minimum": 1 }, "state": { "type": "string", "minLength": 1 }, "topology": { "type": "string", "minLength": 1 }, "objective": { "type": "string" }, "nodes": { "type": "array", "items": { "type": "object", "required": ["nodeId", "title", "kind", "state"], "properties": { "nodeId": { "type": "string" }, "title": { "type": "string" }, "kind": { "type": "string" }, "state": { "type": "string" }, "errorCode": { "type": "string" } }, "additionalProperties": false } }, "terminalCode": { "type": "string" } }, "additionalProperties": false },
+    "workflowResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "$ref": "#/$defs/workflowProjection" } } }] },
+    "workflowListResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "array", "items": { "$ref": "#/$defs/workflowProjection" } } } }] },
+    "workflowEventsResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "array", "items": { "type": "object" } } } }] },
+    "workflowHumanTask": { "type": "object", "required": ["humanTaskId", "workflowId", "nodeId", "state", "request"], "properties": { "humanTaskId": { "type": "string", "minLength": 1 }, "workflowId": { "type": "string", "minLength": 1 }, "nodeId": { "type": "string", "minLength": 1 }, "state": { "enum": ["waiting", "allowed", "denied", "expired", "cancelled"] }, "request": { "type": "object" }, "expiresAt": { "type": "string" }, "resolution": { "type": "object" } }, "additionalProperties": false },
+    "workflowHumanTaskResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "$ref": "#/$defs/workflowHumanTask" } } }] },
+    "workflowHumanTaskListResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "array", "items": { "$ref": "#/$defs/workflowHumanTask" } } } }] },
+    "artifactListResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "array", "items": { "type": "object", "required": ["artifactId", "digest", "mimeType", "bytes"], "properties": { "artifactId": { "type": "string" }, "digest": { "type": "string" }, "mimeType": { "type": "string" }, "bytes": { "type": "integer", "minimum": 0 }, "createdAt": { "type": "string" } }, "additionalProperties": false } } } }] },
+    "resourceMetadataValue": { "type": ["string", "number", "boolean", "null"] },
+    "resourceMetadata": {
+      "type": "object",
+      "required": ["values", "disableModelInvocation"],
+      "properties": {
+        "license": { "type": "string", "maxLength": 256 },
+        "compatibility": { "type": "string", "maxLength": 512 },
+        "values": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": { "$ref": "#/$defs/resourceMetadataValue" }
+        },
+        "disableModelInvocation": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "resource": {
+      "type": "object",
+      "required": ["id", "localId", "name", "description", "kind", "path", "relativeRoot", "provenance", "metadata", "enabled", "collision"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "localId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "kind": { "enum": ["skill", "template", "theme"] },
+        "path": { "type": "string", "minLength": 1 },
+        "relativeRoot": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "provenance": {
+          "type": "object",
+          "required": ["origin", "digest", "trusted", "sourceType"],
+          "properties": {
+            "origin": { "type": "string", "minLength": 1, "maxLength": 1024 },
+            "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "trusted": { "type": "boolean" },
+            "sourceType": { "enum": ["project", "plugin", "bundled"] }
+          },
+          "additionalProperties": false
+        },
+        "metadata": { "$ref": "#/$defs/resourceMetadata" },
+        "enabled": { "type": "boolean" },
+        "collision": { "type": "boolean" },
+        "content": { "type": "string", "maxLength": 65536 }
+      },
+      "additionalProperties": false
+    },
+    "resourceResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "$ref": "#/$defs/resource" } } }] },
+    "resourceListResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "array", "items": { "$ref": "#/$defs/resource" } } } }] },
+    "pluginStatus": {
+      "type": "object",
+      "required": ["id", "version", "digest", "origin", "grants", "health", "lifecycle", "isolation", "enabled", "provenance"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "origin": { "type": "string", "minLength": 1 },
+        "instanceId": { "type": "string", "minLength": 1 },
+        "grants": { "$ref": "#/$defs/pluginGrantList" },
+        "health": { "enum": ["stopped", "healthy", "degraded", "quarantined"] },
+        "lifecycle": { "enum": ["installed", "workspace-enabled", "starting", "healthy", "degraded", "quarantined", "stopped"] },
+        "isolation": { "enum": ["process", "mcp-stdio", "data-only"] },
+        "enabled": { "type": "boolean" },
+        "provenance": { "enum": ["verified", "unsigned"] }
+      },
+      "additionalProperties": false
+    },
+    "pluginInspection": {
+      "type": "object",
+      "required": ["id", "version", "digest", "origin", "installedAt", "storePath", "manifest", "provenance"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "origin": { "type": "string", "minLength": 1 },
+        "installedAt": { "type": "string", "minLength": 1 },
+        "storePath": { "type": "string", "minLength": 1 },
+        "manifest": { "$ref": "praxis://plugin/manifest-v1.json" },
+        "provenance": { "enum": ["verified", "unsigned"] }
+      },
+      "additionalProperties": false
+    },
+    "pluginDoctorEntry": {
+      "type": "object",
+      "required": ["id", "version", "ok"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "ok": { "type": "boolean" },
+        "issue": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "pluginStatusResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "$ref": "#/$defs/pluginStatus" } } }] },
+    "pluginStatusListResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "array", "items": { "$ref": "#/$defs/pluginStatus" } } } }] },
+    "pluginInspectionResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "$ref": "#/$defs/pluginInspection" } } }] },
+    "pluginPermissionsResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["requested", "approved"], "properties": { "requested": { "$ref": "#/$defs/pluginGrantList" }, "approved": { "$ref": "#/$defs/pluginGrantList" } }, "additionalProperties": false } } }] },
+    "pluginDoctorResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "array", "items": { "$ref": "#/$defs/pluginDoctorEntry" } } } }] }
+  }
+}
