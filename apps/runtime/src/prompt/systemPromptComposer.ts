@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto'
 import {
-  runtimeError,
   type PromptBuildInput,
   type PromptManifestSection,
   type PromptProjectInstruction,
@@ -8,6 +7,7 @@ import {
   type PromptSection,
   type PromptSkillDisclosure,
   type PromptVariant,
+  runtimeError,
   type SystemPromptBuild,
 } from '@praxis/core-sdk'
 import {
@@ -260,6 +260,8 @@ function workflowGuidance(input: PromptBuildInput): string {
         name === 'agent.delegate' ||
         name === 'agent.handoff' ||
         name === 'workflow.expand' ||
+        name === 'workflow.inbox' ||
+        name === 'workflow.join' ||
         name === 'workflow.loop' ||
         name === 'workflow.wait' ||
         name === 'workflow.subworkflow',
@@ -286,7 +288,7 @@ function workflowGuidance(input: PromptBuildInput): string {
     modePolicy,
     rootDelegationCheckpoint(input),
     'For useful delegation, you may autonomously request default, worker, or explorer Child harnesses; custom role instructions; exact Tool, Skill, and MCP subsets; read or write workspace access; model tier or model and reasoning effort; token, time, turn, and Tool budgets; result format/schema; success criteria; and dependency-based parallel, serial, or cross-review execution. These are capability requests only: Runtime policy, inherited authority, sandbox, availability, and remaining budget determine the effective Child configuration.',
-    'Size Child token, time, turn, and Tool budgets for the requested work instead of using short probe budgets for long tasks. Child token budgets charge cumulative input plus output across all turns, not only the final answer. If a workflow.expand graph fails and you replace it, pass every applicable ID from its graph.supersedableNodeIds as supersedes on the successful replacement; Runtime applies supersession only after the replacement succeeds and retains the original event history.',
+    'Size Child budgets to the work; token budgets count cumulative input plus output. For workflow.expand, wait when results are immediately needed; continue only for independent work, then inspect the inbox and join every required node before the final response. Child transcripts and reasoning are not shared. Replace failed synchronous graphs using returned supersedableNodeIds; Runtime supersedes only after the replacement succeeds and retains history.',
     'When asked to use/test Planner or subagents, call a supplied collaboration tool, never a nested CLI.',
   ]
     .filter(Boolean)

@@ -11,6 +11,7 @@ import type {
   WorkflowBudgetV1,
   WorkflowHumanTaskV1,
   WorkflowJoinPolicyV1,
+  WorkflowMessageTypeV1,
   WorkflowModePolicyV1,
   WorkflowNodeKindV1,
   WorkflowNodeSpecV1,
@@ -107,6 +108,27 @@ export class WorkflowOrchestratorV1 {
 
   projection(workflowId: string) {
     return this.authority.get(workflowId)
+  }
+
+  listMessages(
+    options: Readonly<{
+      workflowId: string
+      recipientNodeId?: string
+      afterSequence?: number
+      types?: readonly WorkflowMessageTypeV1[]
+      includeAcknowledged?: boolean
+      limit?: number
+    }>,
+  ) {
+    return this.authority.listMessages(options)
+  }
+
+  acknowledgeMessages(workflowId: string, recipientNodeId: string, throughSequence: number) {
+    return this.authority.acknowledgeMessages(workflowId, recipientNodeId, throughSequence)
+  }
+
+  acknowledgeMessage(workflowId: string, messageId: string, recipientNodeId: string) {
+    return this.authority.acknowledgeMessage(workflowId, messageId, recipientNodeId)
   }
 
   async start(input: StartAutoWorkflowInputV1): Promise<WorkflowProjectionV1> {
@@ -403,6 +425,35 @@ export class WorkflowOrchestratorV1 {
             },
           }
         : {}),
+      ...(claim.task.nodeId === 'root'
+        ? {}
+        : {
+            messages: [
+              {
+                schemaVersion: 1 as const,
+                messageId: `result-${claim.task.attemptId}`,
+                workflowId: projection.workflowId,
+                sender: {
+                  kind: 'node' as const,
+                  id: claim.task.nodeId,
+                  attemptId: claim.task.attemptId,
+                },
+                recipient: { kind: 'node' as const, id: 'root' },
+                type: nodeSucceeded ? ('result' as const) : ('error' as const),
+                payload: {
+                  nodeId: claim.task.nodeId,
+                  attemptId: claim.task.attemptId,
+                  state: terminal,
+                  ...(errorCode === undefined ? {} : { errorCode }),
+                  ...(outcome.resultRef === undefined ? {} : { resultRef: outcome.resultRef }),
+                },
+                ...(outcome.resultRef === undefined ? {} : { artifactRefs: [outcome.resultRef] }),
+                causationId: claim.task.taskId,
+                correlationId: projection.runId,
+                createdAt: at,
+              },
+            ],
+          }),
     })
     return nodeSucceeded ? this.reconcileWorkflow(next.workflowId, at) : next
   }
@@ -1029,6 +1080,7 @@ export class WorkflowOrchestratorV1 {
     proposals: readonly AgentGraphNodeProposalV1[],
     join?: Exclude<WorkflowJoinPolicyV1, Readonly<{ kind: 'all' }>>,
     at = new Date().toISOString(),
+    coordinationMode: 'foreground' | 'background' = 'foreground',
   ): Promise<AdmittedAgentGraphV1> {
     const current = await this.authority.get(workflowId)
     if (current.spec.modePolicy === 'solo') throw workflowFailure('MODE_OVERRIDE_INCOMPATIBLE')
@@ -1104,30 +1156,37 @@ export class WorkflowOrchestratorV1 {
         ...(proposal.maxIterations === undefined ? {} : { maxIterations: proposal.maxIterations }),
       }
       const attemptId = `attempt-${randomUUID()}`
+      const task = agentTask({
+        workflowId,
+        runId: current.runId,
+        nodeId,
+        attemptId,
+        objective: proposal.objective,
+        cwd: current.spec.workspace,
+        profileId: profile.profileId,
+        profileVersion: profile.version,
+        node,
+        budgetRequest: clampAgentBudget(
+          delegateProposal.budgetRequest,
+          profile.defaultBudget,
+          current,
+        ),
+        assemblyRequest: proposal.assemblyRequest,
+        capabilityRequest: proposal.grantRequest,
+        at,
+      })
       admitted.push({
         key: proposal.key,
         nodeId,
         profile,
         grant,
-        task: agentTask({
-          workflowId,
-          runId: current.runId,
-          nodeId,
-          attemptId,
-          objective: proposal.objective,
-          cwd: current.spec.workspace,
-          profileId: profile.profileId,
-          profileVersion: profile.version,
-          node,
-          budgetRequest: clampAgentBudget(
-            delegateProposal.budgetRequest,
-            profile.defaultBudget,
-            current,
-          ),
-          assemblyRequest: proposal.assemblyRequest,
-          capabilityRequest: proposal.grantRequest,
-          at,
-        }),
+        task:
+          coordinationMode === 'foreground'
+            ? task
+            : Object.freeze({
+                ...task,
+                payload: { ...task.payload, coordinationMode: 'background' },
+              }),
       })
     }
     const byKey = new Map(admitted.map((entry) => [entry.key, entry]))

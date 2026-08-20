@@ -1,13 +1,17 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
-import type { ArtifactReference } from '@praxis/core-sdk'
-import { ArtifactStore } from '../artifacts/artifactStore.js'
 import type {
   AgentProfileV1,
+  ArtifactReference,
+  VersionedWorkflowRefV1,
   WorkflowAuthorityPortV1,
+  WorkflowEffectAdmissionV1,
   WorkflowEffectReceiptV1,
   WorkflowEventV1,
   WorkflowHumanTaskV1,
+  WorkflowMessageInputV1,
+  WorkflowMessageTypeV1,
+  WorkflowMessageV1,
   WorkflowProjectionV1,
   WorkflowRecoveryDecisionV1,
   WorkflowSignalV1,
@@ -19,9 +23,8 @@ import type {
   WorkflowTaskV1,
   WorkflowTimerV1,
   WorkflowTransactionV1,
-  VersionedWorkflowRefV1,
-  WorkflowEffectAdmissionV1,
 } from '@praxis/core-sdk'
+import { ArtifactStore } from '../artifacts/artifactStore.js'
 
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024
 
@@ -173,6 +176,38 @@ export class RemoteWorkflowAuthorityClientV1 implements WorkflowAuthorityPortV1 
   signal(input: WorkflowSignalV1) {
     return this.call<boolean>('signal', input)
   }
+  postMessage(input: WorkflowMessageInputV1) {
+    return this.call<WorkflowMessageV1>('postMessage', input)
+  }
+  listMessages(
+    options: Readonly<{
+      workflowId: string
+      recipientNodeId?: string
+      afterSequence?: number
+      types?: readonly WorkflowMessageTypeV1[]
+      includeAcknowledged?: boolean
+      limit?: number
+    }>,
+  ) {
+    return this.call<readonly WorkflowMessageV1[]>('listMessages', options)
+  }
+  acknowledgeMessages(
+    workflowId: string,
+    recipientNodeId: string,
+    throughSequence: number,
+    at?: string,
+  ) {
+    return this.call<number>(
+      'acknowledgeMessages',
+      workflowId,
+      recipientNodeId,
+      throughSequence,
+      at,
+    )
+  }
+  acknowledgeMessage(workflowId: string, messageId: string, recipientNodeId: string, at?: string) {
+    return this.call<boolean>('acknowledgeMessage', workflowId, messageId, recipientNodeId, at)
+  }
   fireDueTimers(now?: string) {
     return this.call<readonly WorkflowTimerV1[]>('fireDueTimers', now)
   }
@@ -319,6 +354,10 @@ const REMOTE_METHODS = new Set([
   'heartbeat',
   'recoverExpired',
   'signal',
+  'postMessage',
+  'listMessages',
+  'acknowledgeMessages',
+  'acknowledgeMessage',
   'fireDueTimers',
   'expireDueHumanTasks',
   'getEffectReceipt',

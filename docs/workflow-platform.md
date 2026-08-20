@@ -24,9 +24,36 @@ Praxis 的产品执行入口现在只有一套：每个 Prompt 创建一个 dura
 
 用于多个带依赖的命名节点。每个节点使用与 `agent.delegate` 相同的装配申请；无依赖节点并行，依赖边表达串行阶段，依赖实现节点的独立 `default/explorer` 节点表达交叉审查。Runtime 在单个事务中校验并写入图、Node、Attempt、Task 与 Outbox；依赖节点保持 `admitted`，只有 Journal 中所有前置节点成功后，durable scheduler 才将其推进为 `scheduled`。SQLite claim 会再次核验持久节点状态，因此换 Worker 或重建 scheduler 也不能提前执行后继。写节点还通过 workspace conflict key 串行。
 
+Root 必须为每次扩展选择 `rootAction`：
+
+| `rootAction` | Root 的行为 | 适用场景 |
+| --- | --- | --- |
+| `wait` | 当前 Tool call 同步等待图达到 join；这是兼容默认值 | Root 的下一步立即依赖 Child 结果 |
+| `continue` | 只持久化图并返回 node ID，Child 由后台 durable Worker 执行；Root 继续自己的 AgentLoop | Root 还有真正独立的调查、编辑或验证工作 |
+
+`continue` 不是把 DAG 丢进一段易失内存。Task 会带 `coordinationMode=background`，即使同一 Workflow 的 Root Run 仍活跃，后台 Worker 也可以领取这些非根 Task。Root 后续用 `workflow.inbox` 读取增量结果，用 `workflow.join` 在自己选择的边界等待 `all`、`any` 或 `quorum`。AgentLoop 的完成门禁会在最终用户响应前检查后台节点和未消费结果：有 pending 节点时要求 join，有未确认结果时要求 inbox 或 join，然后继续下一 Turn。当前后台扩展不接受 `supersedes`；替换失败分支仍使用同步 `wait`，从而保证“replacement 成功后才替换旧图”的原子语义。
+
 Scheduler 不把完成集合保存在 Tool 内存中。成功结果先进入 ArtifactStore，再把 `resultRef` 写入 Node/Attempt projection。后继 Child 从同一 projection 解析前驱 `resultRef`，把校验过的 Artifact 摘要作为低信任 Context Reference，并将解析后的输入引用写入 execution snapshot；因此串行综合和交叉审查不是只控制顺序。Worker 还递归解析 result wrapper 中精确的 `artifact://` 闭包，把父 Artifact root 与允许读取的内容寻址 ID 列表写入签名 bootstrap profile。Child 的 `artifact_read` 因而可以读取被委派的前驱完整输出和 evidence manifest，但读取任意其他父 Artifact 仍返回不存在。每次 Agent 执行前还会持久化 Profile、Provider、预算以及 Tool/Skill/MCP digest 的不可变 execution snapshot。进程重建后，后台 durable Worker pump 会恢复过期 Lease，并从持久化 Node/Edge 重新推导执行前沿、释放后继阶段、解析 decision join；它不依赖已丢失的 `workflow.expand` 内存调用栈。已经成功的节点保持原 Attempt，不会重跑；被中断节点才创建新 Attempt。恢复 Root 会等非根 DAG 全部收敛后再接管，并把所有持久化 descendant `resultRef` 作为 Context Reference 注入，结果重新写回 Session 与同一 Workflow。
 
 条件边只读取持久化 Node projection（状态、错误码和结果引用元数据），不执行模型判断。未选分支进入 `skipped`。`workflow.expand` 可声明 `all`、`any` 或固定 `quorum` join；Runtime 将 join 保存为 `decision` Node，只有持久化成功数满足门槛才写入成功，剩余分支以 `WORKFLOW_JOIN_SATISFIED` 关闭。图合同保持无环。
+
+### Root 与 Child 怎样通信
+
+当前实现不把 Child 的完整对话、隐藏推理或每个 token 自动追加到 Root 上下文。Agent 间通信分成三层：
+
+1. **控制层**：Node、Attempt、Task、Lease 和 projection 表示“谁在做什么、是否完成”；
+2. **消息层**：`workflow_messages` 保存有类型、有收件人、按 Workflow 排序且可确认的短消息；
+3. **证据层**：完整结果、长 Tool 输出和 receipt 写入 ArtifactStore，消息与 Node 只携带 `artifact://` 引用和 digest。
+
+Child 终结时，Orchestrator 在提交 Node/Attempt/Task 终态的同一个 Authority 事务中，向 Root 写入一条 `result` 或 `error` 消息。其 payload 只包含 node ID、attempt ID、终态、错误码和 `resultRef`；Root 不会因此继承 Child 的 transcript。这样 Root 获得的是可组合的事实，而不是另一个 ReAct 循环的全部噪声。
+
+消息类型合同为 `instruction/progress/milestone/question/answer/result/error/control`。当前产品路径会自动产生 Child 的 `result/error` 和用户 steer 的 `instruction`；其余类型已经进入端口与数据库合同，留给后续受控生产者使用，不能据此假定当前 Child 会持续上报思考过程。
+
+`workflow.inbox` 默认只读未确认消息，可以按 sequence 和类型分页。`acknowledge=true` 只确认本次实际返回的 message ID，不会因为类型过滤而误确认夹在游标之间的其他消息。`workflow.join` 不读取对话，只轮询持久 projection；达到终态时会精确确认所选节点的 `result/error` 消息。取消 Tool call 会停止本次等待，但不会删除后台图。
+
+用户在 Root 运行中发送的 **steer**（临时改变接下来方向的指令）会先写成 Root 收件的持久 `instruction`，成功后才进入内存 steer queue。AgentLoop 把 steer 提交进 SessionJournal 后，再按 message ID 精确确认 mailbox 消息。因此接受请求后崩溃不会静默丢掉指令；重复确认也是幂等的。
+
+这与单 Agent ReAct 的区别在于：ReAct 的 Tool 结果直接进入同一 Agent 的逐轮消息；这里的 Child 有独立 Session、Prompt、权限和上下文，Root 只在明确调用 inbox/join 或恢复装配时消费结构化边界。Root 是否等待由模型在 Runtime 提供的两种安全机制中选择，消息可见性不等于上下文自动拼接。
 
 ### `agent.handoff`
 
@@ -66,9 +93,12 @@ TUI 在等待中的 HumanTask 节点旁显示 `/human-tasks` 提示。进程退�
 - Outbox、Timer、Signal、HumanTask；
 - 带内容 digest 的不可变 AgentProfile 和每 Attempt execution snapshot；
 - budget charge 与调用前 effect reservation；
+- 有类型、定址、排序和确认状态的 Workflow mailbox；
 - Task acknowledgement 与 terminal。
 
 SessionJournal 保存对话，Workflow SQLite 保存执行事实。二者不能互相替代。`session.plan` 是兼容查询，返回该 Session 最新 Workflow projection，不再读取 CompactPlan。
+
+`workflow_outbox` 与 `workflow_messages` 不是同一个概念。Outbox 保存“状态提交后待发布给 Worker/通知系统的基础设施事件”；mailbox 保存“Root、Node、用户和 Runtime 之间可消费的业务协调消息”。前者解决可靠发布，后者解决 Agent 通信、顺序读取和确认。
 
 ## Worker、授权与能力
 
@@ -109,6 +139,8 @@ Worker claim 通过 Authority CAS 获取 Lease，并按 heartbeat 延期。启�
 - `workspace_write/external_non_idempotent`：进入 `unknown`，禁止盲重试。
 
 Root Attempt 成功只表示该 AgentTask 已结束，不再直接把 Workflow 标为完成。`all_required` 由 Authority reconciliation 单独判定：仍有 admitted/scheduled/running/waiting descendant 时保持 `running`；依赖就绪后持久化调度下一阶段；join 与所有 required 节点收敛后才写 `workflow.terminal`。并行 Child 同时提交 Node/Attempt 终态时会在 SQLite sequence CAS 冲突后读取新 projection 重试，避免把正常结果误降级为 `unknown`。条件裁剪或确定不可达的未租赁 Task 与 Node/Attempt 在同一事务中取消，避免长期积累 ready 垃圾任务。
+
+Root 与后台 Child 同时工作时，Runtime 用三种机制避免“并发修改”变成最后写入者获胜：Authority 的 `BEGIN IMMEDIATE` 与 sequence CAS 串行化控制面事务；Task Lease 保证同一执行权只属于一个 Worker；Tool conflict key、隔离 worktree/目录快照和受控 merge 约束工作区写入。普通 Root 原地写与 Child 候选写仍可能发生业务层冲突，但冲突会在占用、基线或合并校验阶段显式失败，不会静默覆盖。
 
 Child deadline 支持“总期限 + 无进展期限”，但 v4 默认二者都不构成产品预算：总期限采用内部 unlimited 编码，no-progress 终止默认关闭；父 deadline、CLI、部署策略和 Proposal 的显式值仍会收紧。长于 Node.js 原生 timer 范围的期限会分段重挂。失败结果、Artifact 和 recovery path 会返回父 Agent，父不需要从头重复调查。
 

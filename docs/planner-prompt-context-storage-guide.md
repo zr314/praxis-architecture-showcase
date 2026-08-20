@@ -294,6 +294,8 @@ Attempt            Node 的一次执行尝试
 Task               等待 Worker 执行的持久任务
 Lease              Worker 对 Task 的限时所有权
 Event              造成状态变化的追加式事实
+Message            Agent、用户或 Runtime 之间有类型、可确认的协调消息
+Artifact           通过内容摘要寻址的完整结果或证据
 ```
 
 Workflow 图是 **DAG**，即有向无环图。边表示依赖；无依赖节点可并行，有依赖节点必须等待前驱成功。
@@ -318,7 +320,9 @@ Scheduler 只读取持久化 Node/Edge/projection。它不依赖调用 `workflow
 | --- | --- |
 | `agent.delegate` | 创建一个有界 Child AgentTask，并同步等待其结果 |
 | `agent.handoff` | 把一个结果责任交给专业 Agent，保存为 synthesis Node |
-| `workflow.expand` | 一次提交多个有依赖关系的 AgentTask |
+| `workflow.expand` | 一次提交多个有依赖关系的 AgentTask；Root 选择 `wait` 或 `continue` |
+| `workflow.inbox` | 分页读取 Root 的持久化类型消息与节点状态，不加载 Child transcript |
+| `workflow.join` | Root 在自己选择的时点等待后台节点满足 all/any/quorum |
 | `workflow.loop` | 每轮用新 GraphPatch 展开迭代，并用结构化条件退出 |
 | `workflow.wait` | 创建 HumanTask 或 Timer，Workflow 可跨重启等待 |
 | `workflow.subworkflow` | 创建具有独立 ID 的子 Workflow |
@@ -335,7 +339,86 @@ Scheduler 只读取持久化 Node/Edge/projection。它不依赖调用 `workflow
 - 模型、推理强度和 Budget 是否在允许范围内；
 - 结果 Schema 和成功标准是否合法。
 
-### 6.5 Child Runtime
+### 6.5 Root 等 DAG，还是继续工作
+
+Root 不是在发出 DAG 后固定阻塞。`workflow.expand` 的 `rootAction` 有两个值：
+
+```text
+rootAction=wait
+  admit graph → 当前 Tool call 调度并等待 join → 结果直接回到本轮 ReAct
+
+rootAction=continue
+  admit graph → 返回 node ID → 后台 durable Worker 执行 Child
+                                  ↘ Root 继续独立工作
+  Root 之后调用 workflow.inbox / workflow.join
+```
+
+**默认是 `wait`**，保证旧调用和“下一步立刻依赖结果”的任务不改变语义。只有 Root 确实有独立工作时才应选择
+`continue`。后台 Task 带 `coordinationMode=background`，因此同一 Workflow 的 Root Run 活跃时，Worker 仍能领取
+这些非根 Task。显式 `workflow.join` 会再次等待，但这是 Root 在合适边界做出的决定，不是 Planner 强制一开始就阻塞。
+在 Root 尝试输出最终响应时，AgentLoop 的完成门禁会读取 Authority：后台节点仍未终结就注入 join 指引，节点已
+终结但结果未消费就注入 inbox/join 指引，然后继续下一 Turn。这个门禁保证 `continue` 用于重叠独立工作，而
+不是悄悄绕过必需结果。
+
+Root 也不会一直自动看到 Child 的所有消息。当前通信模型是：
+
+| 信息 | 保存位置 | Root 怎样看到 |
+| --- | --- | --- |
+| Node 是否运行/成功/失败 | Workflow projection | `workflow.inbox` 或 `workflow.join` 返回有界状态 |
+| `result/error/instruction` 等短消息 | `workflow_messages` | inbox 按 sequence、类型和未确认状态读取 |
+| Child 完整结果和长证据 | ArtifactStore | 通过消息或 Node 的 `resultRef` 按需读取 |
+| Child 的完整 Session / 隐藏推理 | Child 临时 Session | 不自动共享给 Root |
+
+这里的 **mailbox（信箱）** 是持久化消息队列；**acknowledge（确认）** 表示消费者已经处理过某条消息，
+不等于删除。每条消息包含固定 message ID、Workflow 内递增 sequence、sender、recipient、type、payload、
+可选 Artifact 引用和确认时间。Child 完成时，结果消息与 Node/Attempt/Task 终态在同一个 Authority 事务提交，
+所以不会出现“节点成功但完成通知永久丢失”。inbox 使用类型过滤并确认时只确认实际返回的 message ID，不会跨过
+未展示的其他类型消息。join 达到成功或确定失败终态时，也会精确确认本次所选节点的 `result/error` 消息。
+
+当前自动生产者只有两类：Child 终态生成 `result/error`；用户 steer 生成 `instruction`。协议还定义
+`progress/milestone/question/answer/control`，但它们是已预留的受控消息类型，不代表当前 Child 会不断把思考过程
+推给 Root。
+
+一条 Child 成功消息在概念上是下面的形状；具体 ID 和时间由 Runtime 生成：
+
+```json
+{
+  "schemaVersion": 1,
+  "messageId": "result-attempt-...",
+  "workflowId": "workflow-...",
+  "sequence": 12,
+  "sender": { "kind": "node", "id": "graph-node-...", "attemptId": "attempt-..." },
+  "recipient": { "kind": "node", "id": "root" },
+  "type": "result",
+  "payload": {
+    "nodeId": "graph-node-...",
+    "attemptId": "attempt-...",
+    "state": "succeeded",
+    "resultRef": {
+      "artifactId": "artifact-...",
+      "digest": "sha256:...",
+      "mediaType": "application/json"
+    }
+  },
+  "artifactRefs": [{ "artifactId": "artifact-...", "digest": "sha256:...", "mediaType": "application/json" }],
+  "causationId": "task-...",
+  "correlationId": "workflow-run-...",
+  "createdAt": "2026-08-21T00:00:00.000Z"
+}
+```
+
+`sequence` 是同一 Workflow 内的读取顺序；`causationId` 指向直接导致消息的 Task；`correlationId` 把消息与
+同一 Run 串起来。消息被消费后会增加 `acknowledgedAt`，原消息仍保留供审计。
+
+**steer** 是用户在 Run 执行中追加的方向调整。Runtime 先把它持久化到 Root mailbox，再放入进程内 steer
+queue；AgentLoop 在安全边界把 steer 写入 SessionJournal，成功后按 message ID 精确确认。顺序是“先 durable、
+后可执行、最后确认”，从而缩小崩溃丢消息窗口。
+
+这套设计与“直接 ReAct”不同：ReAct 的 Tool result 自动进入同一个 Agent 的下一轮消息；多 Agent 中每个 Child
+有独立 Prompt、Session、权限和 ReAct 循环，Root 只消费结构化状态与证据引用。这样并行 Agent 不会把各自对话
+混成一个无边界上下文。
+
+### 6.6 Child Runtime
 
 Child 是受授权的独立 Runtime 进程，不是一段附加 Prompt。它通过 `ChildRuntimeHost` 启动，并获得：
 
@@ -368,7 +451,7 @@ Child 是受授权的独立 Runtime 进程，不是一段附加 Prompt。它通�
 Child 固定不能创建 descendant（下一代 Child），防止绕过 Workflow ancestry、权限和预算账本。
 **ancestry** 是父子 Agent 的来源链，用来追踪责任和授权从哪里传下去。
 
-### 6.6 Lease 与恢复
+### 6.7 Lease 与恢复
 
 Worker claim Task 时，Authority 写入随机 lease token、worker ID、到期时间和 heartbeat。只有持有相同 token
 的 Worker 才能继续更新 Task。
@@ -933,12 +1016,14 @@ authority 标记；正常运行路径不做双写。
 
 | 表 | 当前职责 |
 | --- | --- |
+| `workflow_schema` | 记录 Workflow SQLite schema 版本 |
 | `workflows` | Workflow 当前 Projection、revision、sequence、state |
 | `workflow_events` | Workflow 的不可变事件序列 |
 | `workflow_transactions` | transaction ID 到提交结果，用于幂等 |
 | `workflow_tasks` | 待领取、执行中、完成的 AgentTask 与 Lease |
 | `workflow_scheduler_fairness` | 调度公平性游标，避免某个 Workflow 长期独占 |
 | `workflow_outbox` | 已与状态原子提交、等待发布的消息 |
+| `workflow_messages` | Agent/用户/Runtime 的定址消息、Workflow sequence 与确认状态 |
 | `workflow_timers` | 到期后应唤醒的计时器 |
 | `workflow_signals` | 外部送入 Workflow 的信号 |
 | `workflow_human_tasks` | 等待人工处理的持久任务 |
@@ -952,6 +1037,10 @@ authority 标记；正常运行路径不做双写。
 
 **Outbox（发件箱模式）** 指业务状态和“稍后要发出的消息”先在同一事务落盘，提交后再异步发布。这样即使
 进程在提交后立刻退出，消息仍留在 outbox 中，不会出现状态已经变化但通知永久丢失。
+
+不要把 Outbox 与 mailbox 混为一谈：`workflow_outbox` 面向 Worker/通知发布，是基础设施可靠投递；
+`workflow_messages` 面向具体 Workflow 或 Node，是 Agent 协调信息的可读队列。两者都持久化，但消费对象和
+确认语义不同。
 
 本地 authority 的每个状态变更、Task 入队/确认、Timer、Outbox、reservation 和 receipt 都在
 `BEGIN IMMEDIATE` 事务中提交。当前代码也提供可注入的 `RemoteWorkflowAuthority` 适配器；无论使用本地或
@@ -968,6 +1057,10 @@ authority 标记；正常运行路径不做双写。
 5. Worker 从 execution snapshot、ContextPacket 和 Artifact 引用重建 Child 输入；
 6. 副作用执行前先检查 reservation/receipt，避免把“重试”变成“再执行一次”；
 7. 新事件提交后重新计算后继 Node 是否 ready。
+
+未确认的 mailbox 消息也会跨重启保留。当前正常 AgentLoop 会在 Session steer 落盘后精确确认对应消息；
+Child 结果由 Root 使用 inbox/join 消费。恢复路径依然以 projection、execution snapshot 和 Artifact 引用重建
+执行输入，不会把整段 Child transcript 拼回 Root。
 
 **Execution snapshot（执行快照）** 是某个 Attempt 启动时已经解析和校验过的输入、能力、引用与版本。它使
 恢复后的 Worker 不必重新猜测当时看到了什么。
@@ -1078,6 +1171,9 @@ PRAXIS_HOME/traces/YYYY-MM-DD/<trace-id>.jsonl
 | `auto/solo/workflow` 怎样决定拓扑 | `apps/runtime/src/workflow/autoWorkflowPlanner.ts` |
 | Workflow 如何调度和恢复 | `apps/runtime/src/workflow/durableWorkflowScheduler.ts`、`apps/runtime/src/workflow/durableWorkflowWorkerService.ts`、`apps/runtime/src/workflow/sqliteWorkflowAuthority.ts` |
 | delegate/handoff/expand/loop 做什么 | `apps/runtime/src/workflow/` 下的 `agent*Tool.ts` 和 `workflow*Tool.ts` |
+| Root 如何读取后台结果与显式 join | `apps/runtime/src/workflow/workflowCoordinationTools.ts` |
+| mailbox 如何落 SQLite / 走远程 authority | `apps/runtime/src/workflow/sqliteWorkflowAuthority.ts`、`apps/runtime/src/workflow/remoteWorkflowAuthority.ts` |
+| steer 如何先持久化再进入 AgentLoop | `apps/runtime/src/framework/runtimeKernel.ts`、`apps/runtime/src/loop/index.ts` |
 | Child 如何启动和隔离 | `apps/runtime/src/subagent/childRuntimeHost.ts`、`apps/runtime/src/workflow/localWorkflowAgentWorker.ts` |
 | 模型与 Tool 如何循环 | `apps/runtime/src/loop/index.ts`、`apps/runtime/src/loop/units.ts` |
 | Provider 如何选择和调用 | `apps/runtime/src/provider-router/`、`apps/runtime/src/providers/`、`apps/runtime/src/llm-provider/` |
@@ -1135,6 +1231,7 @@ RuntimeKernel
 | Idempotency | 同一操作重试多次仍只产生一次效果 |
 | Journal | 只追加的事实记录 |
 | Lease | 带过期时间的临时执行权 |
+| Mailbox | 按 Workflow 排序、按收件人读取并可确认的持久协调消息队列 |
 | Native context | Provider 专有、仅在精确匹配时可重放的不透明上下文 |
 | Node | Workflow 图中的一个工作节点 |
 | Planner | 把任务变成可执行 Workflow 拓扑的组件 |
@@ -1150,6 +1247,7 @@ RuntimeKernel
 | Revision | 对象状态版本号，用于并发控制 |
 | Run | 用户一次 Prompt 或 follow-up 触发的完整执行 |
 | RunCoordinator | 负责持久化 Session Run 终态与 usage 的协调器 |
+| Steer | 用户在活动 Run 中追加、将在下一个安全边界生效的方向调整 |
 | Schema | 供机器验证对象字段、类型和约束的数据规则 |
 | Semantic checkpoint | Praxis 能解释且可跨 Provider 使用的 checkpoint |
 | Session | 跨多次 Run 保存的长期会话 |

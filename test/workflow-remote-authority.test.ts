@@ -3,14 +3,14 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { ArtifactStore } from '../apps/runtime/src/artifacts/artifactStore.js'
+import { DurableWorkflowWorkerServiceV1 } from '../apps/runtime/src/workflow/durableWorkflowWorkerService.js'
 import {
   RemoteArtifactStoreV1,
   RemoteWorkflowAuthorityClientV1,
   WorkflowAuthorityHttpServerV1,
 } from '../apps/runtime/src/workflow/remoteWorkflowAuthority.js'
-import { DurableWorkflowWorkerServiceV1 } from '../apps/runtime/src/workflow/durableWorkflowWorkerService.js'
 import { SqliteWorkflowAuthorityV1 } from '../apps/runtime/src/workflow/sqliteWorkflowAuthority.js'
-import { ArtifactStore } from '../apps/runtime/src/artifacts/artifactStore.js'
 import {
   registerBuiltinAgentProfilesV1,
   WorkflowOrchestratorV1,
@@ -36,6 +36,25 @@ test('remote workers use the authenticated authority port instead of opening SQL
     const created = await client.create(workflowSpec(), 'remote-create')
     assert.equal((await client.get(created.workflowId)).sequence, created.sequence)
     assert.equal((await client.list({ sessionId: created.sessionId })).length, 1)
+    const mailboxMessage = await client.postMessage({
+      schemaVersion: 1,
+      messageId: 'remote-message-1',
+      workflowId: created.workflowId,
+      sender: { kind: 'node', id: 'worker', attemptId: 'attempt-remote-1' },
+      recipient: { kind: 'node', id: 'root' },
+      type: 'milestone',
+      payload: { phase: 'remote-authority-ready' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    })
+    assert.equal(mailboxMessage.sequence, 1)
+    assert.deepEqual(await client.listMessages({ workflowId: created.workflowId }), [
+      mailboxMessage,
+    ])
+    assert.equal(
+      await client.acknowledgeMessage(created.workflowId, mailboxMessage.messageId, 'root'),
+      true,
+    )
+    assert.deepEqual(await client.listMessages({ workflowId: created.workflowId }), [])
     const remoteArtifacts = new RemoteArtifactStoreV1(server.url(), token)
     const artifact = await remoteArtifacts.put({ evidence: true })
     assert.deepEqual(await remoteArtifacts.read(artifact.artifactId), { evidence: true })

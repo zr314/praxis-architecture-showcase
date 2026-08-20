@@ -16,6 +16,8 @@ flowchart TB
     AL --> AD["delegate / handoff / graph / loop / subworkflow"]
     AD --> OR["WorkflowOrchestrator"]
     OR --> WA
+    WA --> MB["typed Workflow mailbox"]
+    MB --> AL
     OR --> LW["Local Workflow Worker"]
     LW --> CH["authenticated Child Runtime"]
     CH --> TR2["attenuated Tool / Skill / MCP"]
@@ -72,7 +74,11 @@ auto|solo|workflow -> AutoWorkflowPlannerV1
 - `DelegateProposalV1`、`GraphProposalV1`、`GraphPatchProposalV1`；
 - `AgentProfileV1` 与 CapabilityRequest。
 
-SQLite 表在同一事务中保存 workflows、events、transactions、tasks、outbox、timers、signals、human tasks 和 profiles。Projection 是事件 reducer 的物化结果。
+SQLite 表在同一事务中保存 workflows、events、transactions、tasks、outbox、mailbox messages、timers、signals、human tasks 和 profiles。Projection 是事件 reducer 的物化结果。
+
+`workflow.expand` 允许 Root 选择 `rootAction=wait|continue`。`wait` 保持同步 join；`continue` 只完成图准入，非根 Task 由后台 durable Worker 执行，Root 继续同一个 AgentLoop，之后通过 `workflow.inbox` 读取类型化增量、通过 `workflow.join` 显式等待 all/any/quorum。默认仍为 `wait`；AgentLoop 完成门禁会阻止 Root 在必需后台节点 pending 或其结果未消费时直接结束。
+
+Root 不会自动继承 Child transcript 或隐藏推理。Child 完成时，Node/Attempt/Task 终态与一条 Root 收件的 `result/error` 消息在同一 Authority 事务提交；完整正文留在 ArtifactStore，消息只携带有界元数据和引用。用户 steer 也先持久化为 `instruction`，SessionJournal 提交成功后再精确确认。Mailbox 与基础设施 Outbox 分离：前者供 Agent 协调和确认，后者供 Task/通知可靠发布。
 
 ## 5. Agent 与 Child Runtime
 
@@ -104,7 +110,7 @@ Session authority 可选：
 
 一个运行只选择一个 Session 后端，不双写。JSONL 普通启动信任已校验 Catalog/Projection，`doctor --deep` 才完整 replay。
 
-Workflow authority 默认是本地 SQLite。设置 `PRAXIS_WORKFLOW_AUTHORITY_LISTEN=127.0.0.1:PORT` 与至少 32 字符的 `PRAXIS_WORKFLOW_AUTHORITY_TOKEN` 可同时暴露认证的 Authority/Artifact RPC；远程 Runtime 设置同一 token 和 `PRAXIS_WORKFLOW_AUTHORITY_URL=http://HOST:PORT` 后，通过相同 Port 竞争 Lease，不直接打开服务端 SQLite。Session conversation 与 Workflow execution 用 ID 关联，但拥有独立的 schema 和生命周期。
+Workflow authority 默认是本地 SQLite。设置 `PRAXIS_WORKFLOW_AUTHORITY_LISTEN=127.0.0.1:PORT` 与至少 32 字符的 `PRAXIS_WORKFLOW_AUTHORITY_TOKEN` 可同时暴露认证的 Authority/Artifact RPC；远程 Runtime 设置同一 token 和 `PRAXIS_WORKFLOW_AUTHORITY_URL=http://HOST:PORT` 后，通过相同 Port 竞争 Lease 并读取同一 mailbox，不直接打开服务端 SQLite。Session conversation 与 Workflow execution 用 ID 关联，但拥有独立的 schema 和生命周期。
 
 ## 8. Prompt 与上下文
 
@@ -128,6 +134,6 @@ Trace 关联 Session、Run、Workflow、Attempt、Provider、Tool、Policy 和 p
 
 ## 12. 当前边界
 
-已接入：SQLite/认证远程 Authority 边界、统一 auto、动态 AgentTask DAG、Local/远程 durable Worker、后台 Lease recovery、不可变执行快照、带 digest 的 Profile、显式预算计费与取消、Skill/MCP、隔离 Git 写入和 Workflow projection。真实 Provider smoke 已覆盖 quorum、cross-review、结构化 Child 提交、局部 synthesis recovery 和 semantic compaction。
+已接入：SQLite/认证远程 Authority 边界、统一 auto、动态 AgentTask DAG、Root 自主 wait/continue、持久类型化 mailbox、显式 inbox/join、Local/远程 durable Worker、后台 Lease recovery、不可变执行快照、带 digest 的 Profile、显式预算计费与取消、Skill/MCP、隔离 Git 写入和 Workflow projection。真实 Provider smoke 已覆盖 quorum、cross-review、结构化 Child 提交、局部 synthesis recovery 和 semantic compaction。
 
 未接入：PostgreSQL authority、租户级分布式熔断、高可用通知渠道、任意递归 subworkflow 和连接器声明驱动自动补偿。MiniMax 单次确定性硬重启已验证相同 Workflow 接管、成功 Attempt 不变、中断 Attempt 重试、后继 synthesis/join/root 收敛且无非终态 Task；这补齐了端到端合同证据，但仍不是重复故障或跨机 SLA。代码中的旧 DAG/PlanGenerator/Verifier 类可作为底层库和测试资产，但不构成第二条产品执行路径。完整证据见[最终小样本测评与优化总结](evaluation-final-2026-08-09.md)。

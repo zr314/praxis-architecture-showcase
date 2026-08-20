@@ -84,6 +84,51 @@ export type WorkflowSignalV1 = Readonly<{
   receivedAt: string
 }>
 
+export type WorkflowMessageTypeV1 =
+  | 'instruction'
+  | 'progress'
+  | 'milestone'
+  | 'question'
+  | 'answer'
+  | 'result'
+  | 'error'
+  | 'control'
+
+export type WorkflowMessagePartyV1 = Readonly<{
+  kind: 'user' | 'runtime' | 'node'
+  id: string
+  attemptId?: string
+}>
+
+export type WorkflowMessageRecipientV1 = Readonly<{
+  kind: 'workflow' | 'node'
+  id: string
+}>
+
+/**
+ * Durable, addressed coordination input. Large bodies remain in the Artifact
+ * Store; the mailbox carries only bounded routing data and evidence refs.
+ */
+export type WorkflowMessageInputV1 = Readonly<{
+  schemaVersion: 1
+  messageId: string
+  workflowId: string
+  sender: WorkflowMessagePartyV1
+  recipient: WorkflowMessageRecipientV1
+  type: WorkflowMessageTypeV1
+  payload: Readonly<Record<string, unknown>>
+  artifactRefs?: readonly WorkflowArtifactRefV1[]
+  causationId?: string
+  correlationId?: string
+  createdAt: string
+}>
+
+export type WorkflowMessageV1 = WorkflowMessageInputV1 &
+  Readonly<{
+    sequence: number
+    acknowledgedAt?: string
+  }>
+
 export type WorkflowHumanTaskV1 = Readonly<{
   humanTaskId: string
   workflowId: string
@@ -134,6 +179,8 @@ export type WorkflowTransactionV1 = Readonly<{
   timers?: readonly WorkflowTimerV1[]
   humanTasks?: readonly WorkflowHumanTaskV1[]
   effectReceipts?: readonly WorkflowEffectReceiptV1[]
+  /** Atomically publishes typed coordination messages with the state change. */
+  messages?: readonly WorkflowMessageInputV1[]
   effectReservationTerminal?: Readonly<{
     idempotencyKey: string
     attemptId: string
@@ -213,6 +260,29 @@ export interface WorkflowAuthorityPortV1 {
   ): Promise<WorkflowTaskLeaseV1>
   recoverExpired(now?: string): Promise<readonly WorkflowRecoveryDecisionV1[]>
   signal(input: WorkflowSignalV1): Promise<boolean>
+  postMessage(input: WorkflowMessageInputV1): Promise<WorkflowMessageV1>
+  listMessages(
+    options: Readonly<{
+      workflowId: string
+      recipientNodeId?: string
+      afterSequence?: number
+      types?: readonly WorkflowMessageTypeV1[]
+      includeAcknowledged?: boolean
+      limit?: number
+    }>,
+  ): Promise<readonly WorkflowMessageV1[]>
+  acknowledgeMessages(
+    workflowId: string,
+    recipientNodeId: string,
+    throughSequence: number,
+    at?: string,
+  ): Promise<number>
+  acknowledgeMessage(
+    workflowId: string,
+    messageId: string,
+    recipientNodeId: string,
+    at?: string,
+  ): Promise<boolean>
   fireDueTimers(now?: string): Promise<readonly WorkflowTimerV1[]>
   expireDueHumanTasks(now?: string): Promise<readonly WorkflowHumanTaskV1[]>
   getEffectReceipt(

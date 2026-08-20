@@ -27,7 +27,10 @@ export type DurableWorkflowWorkerServiceOptionsV1 = Readonly<{
     error: unknown,
     stage: 'mark_running' | 'execute' | 'complete' | 'result',
   ): Promise<void> | void
-  canRun?(projection: WorkflowProjectionV1): boolean
+  canRun?(
+    projection: WorkflowProjectionV1,
+    task: import('@praxis/core-sdk').WorkflowTaskV1,
+  ): boolean
 }>
 
 /**
@@ -104,7 +107,7 @@ export class DurableWorkflowWorkerServiceV1 {
         if (reconciled.has(task.workflowId)) continue
         reconciled.add(task.workflowId)
         const projection = await this.options.authority.get(task.workflowId)
-        if (this.options.canRun?.(projection) === false) continue
+        if (this.options.canRun?.(projection, task) === false) continue
         await this.#orchestrator.reconcileWorkflow(task.workflowId).catch((error: unknown) => {
           if (workerErrorCode(error) !== 'WORKFLOW_SEQUENCE_CONFLICT') throw error
         })
@@ -120,7 +123,7 @@ export class DurableWorkflowWorkerServiceV1 {
         const circuitKey = `${task.profileRef?.id ?? 'unknown'}@${task.profileRef?.version ?? 0}`
         if ((this.#circuits.get(circuitKey)?.openUntil ?? 0) > Date.now()) continue
         const projection = await this.options.authority.get(task.workflowId)
-        if (this.options.canRun?.(projection) === false) continue
+        if (this.options.canRun?.(projection, task) === false) continue
         // A recovered coordinator must not race the Child DAG it was waiting
         // on when the process died. Let durable descendants and joins settle,
         // then rerun root once with their persisted result artifacts.

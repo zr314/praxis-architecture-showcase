@@ -15,6 +15,7 @@ import { AgentDelegateToolV1, type WorkflowAgentWorkerPortV1 } from './agentDele
 import { AgentHandoffToolV1 } from './agentHandoffTool.js'
 import { SubworkflowToolV1 } from './subworkflowTool.js'
 import { WorkflowCompensationToolV1 } from './workflowCompensationTool.js'
+import { WorkflowInboxToolV1, WorkflowJoinToolV1 } from './workflowCoordinationTools.js'
 import { WorkflowEffectBrokerV1 } from './workflowEffectBroker.js'
 import { WorkflowExpandToolV1 } from './workflowExpandTool.js'
 import { WorkflowLoopToolV1 } from './workflowLoopTool.js'
@@ -120,6 +121,10 @@ export class AutoWorkflowPlannerV1 implements Planner {
               this.options.emitProjection?.(next, input),
             ),
             new WorkflowExpandToolV1(this.#orchestrator, worker, projection.workflowId, (next) =>
+              this.options.emitProjection?.(next, input),
+            ),
+            new WorkflowInboxToolV1(this.#orchestrator, projection.workflowId),
+            new WorkflowJoinToolV1(this.#orchestrator, projection.workflowId, (next) =>
               this.options.emitProjection?.(next, input),
             ),
             new WorkflowLoopToolV1(this.#orchestrator, worker, projection.workflowId, (next) =>

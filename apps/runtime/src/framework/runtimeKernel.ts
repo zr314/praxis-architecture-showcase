@@ -112,10 +112,10 @@ import { PolicyEngine, type PolicyStore } from '../policy/index.js'
 import {
   ContextBuilder,
   compatibilityContextView,
+  DEFAULT_PROMPT_VARIANT,
   durablePromptMessage,
   durableSensitiveMessage,
   journalContextView,
-  DEFAULT_PROMPT_VARIANT,
   PromptAssembler,
   parsePromptVariant,
   promptCapabilitySnapshot,
@@ -179,6 +179,15 @@ type RuntimeRun = AgentRun & {
   finalizeWorkflow?: (terminal: Readonly<{ ok: boolean; errorCode?: string }>) => Promise<void>
 }
 type RuntimeSession = ManagedSession<RuntimeRun>
+
+const WORKFLOW_TERMINAL_NODE_STATES = new Set<WorkflowProjectionV1['nodes'][number]['state']>([
+  'unknown',
+  'skipped',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'manual_intervention',
+])
 
 type PendingPermission = {
   runId: string
@@ -479,6 +488,47 @@ export class RuntimeKernel {
                 },
           )
         },
+        acknowledgeSteer: async (_session, run, steer) => {
+          const workflowId = (run as RuntimeRun).workflowId
+          if (workflowId === undefined || steer.workflowMessageSequence === undefined) return
+          await this.workflowAuthority.acknowledgeMessage(workflowId, steer.id, 'root')
+        },
+        completionGuidance: async (_session, run) => {
+          const workflowId = (run as RuntimeRun).workflowId
+          if (workflowId === undefined) return undefined
+          const tasks = await this.workflowAuthority.listTasks({ workflowId })
+          const backgroundNodeIds = new Set(
+            tasks
+              .filter(
+                (task) => task.nodeId !== 'root' && task.payload.coordinationMode === 'background',
+              )
+              .map(({ nodeId }) => nodeId),
+          )
+          if (backgroundNodeIds.size === 0) return undefined
+          const projection = await this.workflowAuthority.get(workflowId)
+          const pendingNodeIds = projection.nodes
+            .filter(
+              ({ nodeId, state }) =>
+                backgroundNodeIds.has(nodeId) && !WORKFLOW_TERMINAL_NODE_STATES.has(state),
+            )
+            .map(({ nodeId }) => nodeId)
+          if (pendingNodeIds.length > 0) {
+            return `Background Workflow nodes are still pending: ${pendingNodeIds.join(', ')}. Continue only genuinely independent work, then call workflow.join before the final user response.`
+          }
+          const unread = await this.workflowAuthority.listMessages({
+            workflowId,
+            recipientNodeId: 'root',
+            types: ['result', 'error'],
+            limit: 100,
+          })
+          const unreadBackground = unread.filter(({ payload }) => {
+            const nodeId = Reflect.get(payload, 'nodeId')
+            return typeof nodeId === 'string' && backgroundNodeIds.has(nodeId)
+          })
+          return unreadBackground.length === 0
+            ? undefined
+            : 'Background Workflow results are ready but not consumed. Call workflow.inbox with acknowledge=true, or workflow.join for the required node IDs, before the final user response.'
+        },
         emit: (event, sessionId, runId) => this.emit(toSessionEvent(event), sessionId, runId),
         requestPermission: (session, run, toolCall, input, requirement) =>
           this.requestPermission(
@@ -663,10 +713,13 @@ export class RuntimeKernel {
       authority: this.workflowAuthority,
       concurrency: 4,
       worker: (projection, claim) => this.createRecoveryWorkflowAgentWorker(projection, claim),
-      canRun: (projection) =>
-        ![...this.sessionService.activeSessions()].some(
+      canRun: (projection, task) => {
+        const active = [...this.sessionService.activeSessions()].some(
           (session) => session.activeRun?.workflowId === projection.workflowId,
-        ),
+        )
+        if (!active) return true
+        return task.nodeId !== 'root' && task.payload.coordinationMode === 'background'
+      },
       onProjection: (projection) =>
         this.emit(
           { type: 'workflow_update', update: workflowUpdate(projection) },
@@ -2175,7 +2228,22 @@ export class RuntimeKernel {
     }
     const text = requireString(value.text, 'text').trim()
     if (!text) throw rpcError('INVALID_PARAMS', 'Steer text cannot be blank.')
-    await this.loop.queueSteer(session, run, text)
+    await this.loop.queueSteer(session, run, text, async (steerId) => {
+      if (run.workflowId === undefined) return undefined
+      const message = await this.workflowAuthority.postMessage({
+        schemaVersion: 1,
+        messageId: steerId,
+        workflowId: run.workflowId,
+        sender: { kind: 'user', id: session.sessionId },
+        recipient: { kind: 'node', id: 'root' },
+        type: 'instruction',
+        payload: { text, intent: 'steer' },
+        causationId: steerId,
+        correlationId: run.id,
+        createdAt: new Date().toISOString(),
+      })
+      return message.sequence
+    })
     return { accepted: true, applyAt: 'next_safe_boundary' }
   }
 

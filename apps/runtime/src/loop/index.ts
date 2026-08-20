@@ -90,6 +90,12 @@ export type AgentLoopPorts = {
   tools(session: AgentSession, run: AgentRun): AgentToolPort
   terminalTool?(session: AgentSession, run: AgentRun): Readonly<{ name: string }> | undefined
   commitMessage(session: AgentSession, run: AgentRun, message: ProviderMessage): Promise<void>
+  acknowledgeSteer?(
+    session: AgentSession,
+    run: AgentRun,
+    steer: Readonly<{ id: string; workflowMessageSequence?: number }>,
+  ): Promise<void>
+  completionGuidance?(session: AgentSession, run: AgentRun): Promise<string | undefined>
   emit(event: AgentEvent, sessionId?: string, runId?: string): void
   requestPermission(
     session: AgentSession,
@@ -594,6 +600,16 @@ export class AgentLoop {
           })
           continue
         }
+        const completionGuidance = await this.ports.completionGuidance?.(session, run)
+        if (completionGuidance !== undefined) {
+          await this.ports.commitMessage(session, run, {
+            role: 'user',
+            content: completionGuidance,
+            intent: 'context',
+            trust: 'low',
+          })
+          continue
+        }
         this.ports.emit(
           {
             type: 'message_committed',
@@ -662,14 +678,24 @@ export class AgentLoop {
     }
   }
 
-  async queueSteer(session: AgentSession, run: AgentRun, text: string): Promise<string> {
+  async queueSteer(
+    session: AgentSession,
+    run: AgentRun,
+    text: string,
+    beforeQueue?: (steerId: string) => Promise<number | undefined>,
+  ): Promise<string> {
     if (this.shouldStop(run)) {
       throw runtimeError('RUN_NOT_ACTIVE', 'protocol', 'Cannot steer an aborted or terminal run.', {
         runId: run.id,
       })
     }
     const steerId = this.ports.nextSteerId()
-    run.steerQueue.push({ id: steerId, text })
+    const workflowMessageSequence = await beforeQueue?.(steerId)
+    run.steerQueue.push({
+      id: steerId,
+      text,
+      ...(workflowMessageSequence === undefined ? {} : { workflowMessageSequence }),
+    })
     this.ports.emit({ type: 'steer_queued', runId: run.id, steerId }, session.sessionId, run.id)
     return steerId
   }
@@ -677,12 +703,13 @@ export class AgentLoop {
   private async applySteers(session: AgentSession, run: AgentRun): Promise<void> {
     for (const steer of run.steerQueue.splice(0)) {
       if (this.shouldStop(run)) return
+      await this.ports.commitMessage(session, run, typedSteerMessage(steer.text))
+      await this.ports.acknowledgeSteer?.(session, run, steer)
       this.ports.emit(
         { type: 'steer_applied', runId: run.id, steerId: steer.id },
         session.sessionId,
         run.id,
       )
-      await this.ports.commitMessage(session, run, typedSteerMessage(steer.text))
       if (this.shouldStop(run)) return
     }
   }

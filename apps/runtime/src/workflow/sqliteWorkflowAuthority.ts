@@ -16,6 +16,9 @@ import {
   type WorkflowEventDataV1,
   type WorkflowEventV1,
   type WorkflowHumanTaskV1,
+  type WorkflowMessageInputV1,
+  type WorkflowMessageTypeV1,
+  type WorkflowMessageV1,
   type WorkflowOutboxMessageV1,
   type WorkflowProjectionV1,
   type WorkflowRecoveryDecisionV1,
@@ -33,6 +36,7 @@ import { loadNodeSqlite } from '../store/nodeSqlite.js'
 const SCHEMA_VERSION = 1
 const DEFAULT_LEASE_MS = 60_000
 const MAX_LIST = 500
+const MAX_MESSAGE_BYTES = 64 * 1024
 
 type ProjectionRow = { projection_json: string }
 type EventRow = { event_json: string }
@@ -47,6 +51,7 @@ type TimerRow = {
 type HumanTaskRow = { task_json: string }
 type EffectReceiptRow = { receipt_json: string }
 type EffectReservationRow = { reservation_json: string }
+type WorkflowMessageRow = { message_json: string }
 
 /**
  * Single-node workflow authority. Every state change, task enqueue/ack, timer and
@@ -716,6 +721,165 @@ export class SqliteWorkflowAuthorityV1 implements WorkflowAuthorityPortV1 {
     })
   }
 
+  postMessage(input: WorkflowMessageInputV1): Promise<WorkflowMessageV1> {
+    return this.exclusive(() => {
+      const database = this.database()
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const existing = database
+          .prepare('SELECT message_json FROM workflow_messages WHERE message_id = ?')
+          .get(input.messageId) as WorkflowMessageRow | undefined
+        if (existing !== undefined) {
+          const prior = parseWorkflowMessage(existing.message_json)
+          if (
+            prior.workflowId !== input.workflowId ||
+            canonicalJson(messageInput(prior)) !== canonicalJson(input)
+          )
+            throw authorityError('WORKFLOW_MESSAGE_ID_CONFLICT')
+          database.exec('COMMIT')
+          return prior
+        }
+        loadProjection(database, input.workflowId)
+        const message = insertWorkflowMessage(database, input)
+        database.exec('COMMIT')
+        return message
+      } catch (error) {
+        rollback(database)
+        throw mapError(error)
+      }
+    })
+  }
+
+  async listMessages(
+    options: Readonly<{
+      workflowId: string
+      recipientNodeId?: string
+      afterSequence?: number
+      types?: readonly WorkflowMessageTypeV1[]
+      includeAcknowledged?: boolean
+      limit?: number
+    }>,
+  ): Promise<readonly WorkflowMessageV1[]> {
+    const afterSequence = options.afterSequence ?? 0
+    const limit = Math.min(MAX_LIST, Math.max(1, options.limit ?? 100))
+    if (
+      !safeId(options.workflowId) ||
+      (options.recipientNodeId !== undefined && !safeId(options.recipientNodeId)) ||
+      !Number.isSafeInteger(afterSequence) ||
+      afterSequence < 0
+    )
+      throw authorityError('WORKFLOW_MESSAGE_READ_INVALID')
+    const rows = this.database()
+      .prepare(
+        `SELECT message_json FROM workflow_messages
+         WHERE workflow_id = ? AND sequence > ?
+           AND (? IS NULL OR (recipient_kind = 'node' AND recipient_id = ?))
+           AND (? = 1 OR acknowledged_at IS NULL)
+           AND (? IS NULL OR message_type IN (SELECT value FROM json_each(?)))
+         ORDER BY sequence ASC LIMIT ?`,
+      )
+      .all(
+        options.workflowId,
+        afterSequence,
+        options.recipientNodeId ?? null,
+        options.recipientNodeId ?? null,
+        options.includeAcknowledged === true ? 1 : 0,
+        options.types === undefined ? null : JSON.stringify(options.types),
+        options.types === undefined ? null : JSON.stringify(options.types),
+        limit,
+      ) as WorkflowMessageRow[]
+    return rows.map(({ message_json }) => parseWorkflowMessage(message_json))
+  }
+
+  acknowledgeMessages(
+    workflowId: string,
+    recipientNodeId: string,
+    throughSequence: number,
+    at = new Date().toISOString(),
+  ): Promise<number> {
+    if (
+      !safeId(workflowId) ||
+      !safeId(recipientNodeId) ||
+      !Number.isSafeInteger(throughSequence) ||
+      throughSequence < 1 ||
+      !timestamp(at)
+    )
+      return Promise.reject(authorityError('WORKFLOW_MESSAGE_ACK_INVALID'))
+    return this.exclusive(() => {
+      const database = this.database()
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        loadProjection(database, workflowId)
+        const rows = database
+          .prepare(
+            `SELECT message_id, message_json FROM workflow_messages
+             WHERE workflow_id = ? AND recipient_kind = 'node' AND recipient_id = ?
+               AND sequence <= ? AND acknowledged_at IS NULL
+             ORDER BY sequence`,
+          )
+          .all(workflowId, recipientNodeId, throughSequence) as Array<
+          WorkflowMessageRow & { message_id: string }
+        >
+        const update = database.prepare(
+          `UPDATE workflow_messages SET acknowledged_at = ?, message_json = ?
+           WHERE message_id = ? AND acknowledged_at IS NULL`,
+        )
+        let changed = 0
+        for (const row of rows) {
+          const message = parseWorkflowMessage(row.message_json)
+          const acknowledged: WorkflowMessageV1 = Object.freeze({ ...message, acknowledgedAt: at })
+          changed += Number(update.run(at, JSON.stringify(acknowledged), row.message_id).changes)
+        }
+        database.exec('COMMIT')
+        return changed
+      } catch (error) {
+        rollback(database)
+        throw mapError(error)
+      }
+    })
+  }
+
+  acknowledgeMessage(
+    workflowId: string,
+    messageId: string,
+    recipientNodeId: string,
+    at = new Date().toISOString(),
+  ): Promise<boolean> {
+    if (!safeId(workflowId) || !safeId(messageId) || !safeId(recipientNodeId) || !timestamp(at))
+      return Promise.reject(authorityError('WORKFLOW_MESSAGE_ACK_INVALID'))
+    return this.exclusive(() => {
+      const database = this.database()
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const row = database
+          .prepare(
+            `SELECT message_json FROM workflow_messages
+             WHERE workflow_id = ? AND message_id = ?
+               AND recipient_kind = 'node' AND recipient_id = ?`,
+          )
+          .get(workflowId, messageId, recipientNodeId) as WorkflowMessageRow | undefined
+        if (row === undefined) throw authorityError('WORKFLOW_MESSAGE_NOT_FOUND')
+        const message = parseWorkflowMessage(row.message_json)
+        if (message.acknowledgedAt !== undefined) {
+          database.exec('COMMIT')
+          return false
+        }
+        const acknowledged: WorkflowMessageV1 = Object.freeze({ ...message, acknowledgedAt: at })
+        const changed = database
+          .prepare(
+            `UPDATE workflow_messages SET acknowledged_at = ?, message_json = ?
+             WHERE message_id = ? AND acknowledged_at IS NULL`,
+          )
+          .run(at, JSON.stringify(acknowledged), messageId)
+        database.exec('COMMIT')
+        return changed.changes === 1
+      } catch (error) {
+        rollback(database)
+        throw mapError(error)
+      }
+    })
+  }
+
   fireDueTimers(now = new Date().toISOString()): Promise<readonly WorkflowTimerV1[]> {
     if (!timestamp(now)) return Promise.reject(authorityError('WORKFLOW_TIMER_INVALID'))
     return this.exclusive(() => {
@@ -1367,6 +1531,7 @@ export class SqliteWorkflowAuthorityV1 implements WorkflowAuthorityPortV1 {
       for (const timer of input.timers ?? []) insertTimer(database, timer)
       for (const humanTask of input.humanTasks ?? []) insertHumanTask(database, humanTask)
       for (const receipt of input.effectReceipts ?? []) insertEffectReceipt(database, receipt)
+      for (const message of input.messages ?? []) insertWorkflowMessage(database, message)
       if (input.effectReservationTerminal !== undefined) {
         const terminal = input.effectReservationTerminal
         const row = database
@@ -1492,6 +1657,22 @@ function migrate(database: DatabaseSync): void {
       payload_json TEXT NOT NULL, received_at TEXT NOT NULL,
       PRIMARY KEY(workflow_id, signal_id)
     );
+    CREATE TABLE IF NOT EXISTS workflow_messages (
+      message_id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL,
+      sender_kind TEXT NOT NULL,
+      sender_id TEXT NOT NULL,
+      recipient_kind TEXT NOT NULL,
+      recipient_id TEXT NOT NULL,
+      message_type TEXT NOT NULL,
+      message_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      acknowledged_at TEXT,
+      UNIQUE(workflow_id, sequence)
+    );
+    CREATE INDEX IF NOT EXISTS workflow_messages_recipient
+      ON workflow_messages(workflow_id, recipient_kind, recipient_id, acknowledged_at, sequence);
     CREATE TABLE IF NOT EXISTS workflow_human_tasks (
       human_task_id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, node_id TEXT NOT NULL,
       state TEXT NOT NULL, task_json TEXT NOT NULL, expires_at TEXT
@@ -1654,6 +1835,130 @@ function insertOutbox(database: DatabaseSync, message: WorkflowOutboxMessageV1):
       JSON.stringify(message.payload),
       message.availableAt,
     )
+}
+
+function insertWorkflowMessage(
+  database: DatabaseSync,
+  input: WorkflowMessageInputV1,
+): WorkflowMessageV1 {
+  validateWorkflowMessageInput(input)
+  const existing = database
+    .prepare('SELECT message_json FROM workflow_messages WHERE message_id = ?')
+    .get(input.messageId) as WorkflowMessageRow | undefined
+  if (existing !== undefined) {
+    const prior = parseWorkflowMessage(existing.message_json)
+    if (canonicalJson(messageInput(prior)) !== canonicalJson(input))
+      throw authorityError('WORKFLOW_MESSAGE_ID_CONFLICT')
+    return prior
+  }
+  const row = database
+    .prepare(
+      'SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM workflow_messages WHERE workflow_id = ?',
+    )
+    .get(input.workflowId) as { next_sequence: number }
+  const sequence = Number(row.next_sequence)
+  if (!Number.isSafeInteger(sequence) || sequence < 1)
+    throw authorityError('WORKFLOW_MESSAGE_SEQUENCE_INVALID')
+  const message: WorkflowMessageV1 = Object.freeze({ ...input, sequence })
+  database
+    .prepare(
+      `INSERT INTO workflow_messages
+       (message_id, workflow_id, sequence, sender_kind, sender_id, recipient_kind, recipient_id, message_type, message_json, created_at, acknowledged_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    )
+    .run(
+      message.messageId,
+      message.workflowId,
+      message.sequence,
+      message.sender.kind,
+      message.sender.id,
+      message.recipient.kind,
+      message.recipient.id,
+      message.type,
+      JSON.stringify(message),
+      message.createdAt,
+    )
+  return message
+}
+
+function validateWorkflowMessageInput(input: WorkflowMessageInputV1): void {
+  const types: readonly WorkflowMessageTypeV1[] = [
+    'instruction',
+    'progress',
+    'milestone',
+    'question',
+    'answer',
+    'result',
+    'error',
+    'control',
+  ]
+  const serialized = JSON.stringify(input)
+  if (
+    input.schemaVersion !== 1 ||
+    !safeId(input.messageId) ||
+    !safeId(input.workflowId) ||
+    !['user', 'runtime', 'node'].includes(input.sender.kind) ||
+    !safeId(input.sender.id) ||
+    (input.sender.attemptId !== undefined && !safeId(input.sender.attemptId)) ||
+    !['workflow', 'node'].includes(input.recipient.kind) ||
+    !safeId(input.recipient.id) ||
+    !types.includes(input.type) ||
+    typeof input.payload !== 'object' ||
+    input.payload === null ||
+    Array.isArray(input.payload) ||
+    (input.causationId !== undefined && !safeId(input.causationId)) ||
+    (input.correlationId !== undefined && !safeId(input.correlationId)) ||
+    !timestamp(input.createdAt) ||
+    Buffer.byteLength(serialized, 'utf8') > MAX_MESSAGE_BYTES
+  )
+    throw authorityError('WORKFLOW_MESSAGE_INVALID')
+  for (const ref of input.artifactRefs ?? []) {
+    if (
+      !safeId(ref.artifactId) ||
+      !/^sha256:[a-f0-9]{64}$/u.test(ref.digest) ||
+      typeof ref.mediaType !== 'string' ||
+      ref.mediaType.length < 1 ||
+      ref.mediaType.length > 256
+    )
+      throw authorityError('WORKFLOW_MESSAGE_INVALID')
+  }
+}
+
+function parseWorkflowMessage(value: string): WorkflowMessageV1 {
+  const message = parseJson<WorkflowMessageV1>(value, 'WORKFLOW_MESSAGE_CORRUPT')
+  validateWorkflowMessageInput(message)
+  if (
+    !Number.isSafeInteger(message.sequence) ||
+    message.sequence < 1 ||
+    (message.acknowledgedAt !== undefined && !timestamp(message.acknowledgedAt))
+  )
+    throw authorityError('WORKFLOW_MESSAGE_CORRUPT')
+  return message
+}
+
+function messageInput(message: WorkflowMessageV1): WorkflowMessageInputV1 {
+  return {
+    schemaVersion: 1,
+    messageId: message.messageId,
+    workflowId: message.workflowId,
+    sender: message.sender,
+    recipient: message.recipient,
+    type: message.type,
+    payload: message.payload,
+    ...(message.artifactRefs === undefined ? {} : { artifactRefs: message.artifactRefs }),
+    ...(message.causationId === undefined ? {} : { causationId: message.causationId }),
+    ...(message.correlationId === undefined ? {} : { correlationId: message.correlationId }),
+    createdAt: message.createdAt,
+  }
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  return `{${Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
+    .join(',')}}`
 }
 
 function insertTimer(database: DatabaseSync, timer: WorkflowTimerV1): void {

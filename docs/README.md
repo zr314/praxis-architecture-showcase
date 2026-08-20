@@ -54,7 +54,7 @@ Planner、Workflow、ContextView、Checkpoint、Authority、Journal 和 Lease �
 - [模块地图](module-map.md)：七个 Workspace、Runtime/CLI 全部源码域和常见改动路径；
 - [当前架构](architecture.md)：进程、权威、组合根、存储和能力边界；
 - [Praxis 当前分层架构](planner-prompt-context-storage-guide.md)：面向新手的 Runtime 分层与完整主链路导读；
-- [统一 Workflow 与多 Agent](workflow-platform.md)：当前已经接入的 `auto`、delegate、SQLite authority、Child 和写隔离；
+- [统一 Workflow 与多 Agent](workflow-platform.md)：当前已经接入的 `auto`、Root wait/continue、持久 mailbox、Child 和写隔离；
 - [Planner Platform RFC](planner-platform-rfc.md)：长期 HumanTask、远程 Worker、PostgreSQL 与分布式目标（已交付与部署提案会显式区分）；
 - [Runtime 源码总览](../apps/runtime/readme.md)：新手代码阅读地图；
 - [内核与 AgentLoop](../apps/runtime/docs/01-kernel-and-loop.md)；

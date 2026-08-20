@@ -43,12 +43,18 @@ export class WorkflowExpandToolV1 implements RuntimeTool {
   readonly definition = {
     name: 'workflow.expand',
     description:
-      'Request a durable Child Agent DAG. Dependency-free nodes run in parallel; dependencies create serial stages and can express independent cross-review. Dependencies may name nodes in this call or exact successful internal node IDs returned by an earlier expansion, allowing replacement nodes to inherit persisted predecessor artifacts. Each node may request its own role, capabilities, model, reasoning, budget, result contract, and success criteria; Runtime authority remains final. A successful replacement may explicitly supersede terminal failed node IDs returned by an earlier failed expansion.',
+      'Request a durable Child Agent DAG. Root chooses rootAction=wait to receive the joined result in this Tool call, or rootAction=continue to let durable background workers run the DAG while Root performs independent work and later inspects or joins it. Dependency-free nodes run in parallel; dependencies create serial stages and can express independent cross-review. Dependencies may name nodes in this call or exact successful internal node IDs returned by an earlier expansion, allowing replacement nodes to inherit persisted predecessor artifacts. Each node may request its own role, capabilities, model, reasoning, budget, result contract, and success criteria; Runtime authority remains final.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       required: ['nodes'],
       properties: {
+        rootAction: {
+          enum: ['wait', 'continue'],
+          default: 'wait',
+          description:
+            'wait preserves the synchronous joined result; continue returns a durable graph handle immediately so Root can do independent work.',
+        },
         supersedes: {
           type: 'array',
           maxItems: 64,
@@ -154,6 +160,9 @@ export class WorkflowExpandToolV1 implements RuntimeTool {
   async execute(request: ToolRequest): Promise<ToolResult> {
     const nodes = parseNodes(request.input.nodes)
     const supersedes = stringArray(request.input.supersedes, [])
+    const rootAction = request.input.rootAction === 'continue' ? 'continue' : 'wait'
+    if (rootAction === 'continue' && supersedes.length > 0)
+      return invalid('WORKFLOW_BACKGROUND_SUPERSEDES_UNSUPPORTED')
     const byId = new Map(nodes.map((node) => [node.id, node]))
     const current = await this.orchestrator.projection(this.workflowId)
     const reusableNodeIds = new Set(
@@ -202,14 +211,31 @@ export class WorkflowExpandToolV1 implements RuntimeTool {
           assemblyRequest: node.assemblyRequest,
         })),
         join,
+        undefined,
+        rootAction === 'continue' ? 'background' : 'foreground',
       )
+      const graphNodeIds = Object.fromEntries(graph.nodes.map(({ key, nodeId }) => [key, nodeId]))
+      if (rootAction === 'continue') {
+        return {
+          ok: true,
+          summary: `Scheduled ${nodes.length} durable workflow node(s) in the background.`,
+          output: {
+            workflowId: this.workflowId,
+            rootAction,
+            graph: {
+              nodeIds: graphNodeIds,
+              ...(graph.joinNodeId === undefined ? {} : { joinNodeId: graph.joinNodeId }),
+            },
+            pendingNodeIds: graph.nodes.map(({ nodeId }) => nodeId),
+          },
+        }
+      }
       const execution = await new DurableWorkflowSchedulerV1(
         this.orchestrator,
         this.worker,
         this.onProjection,
       ).executeAgentGraph(graph, request.signal)
       let projection = await this.orchestrator.projection(this.workflowId)
-      const graphNodeIds = Object.fromEntries(graph.nodes.map(({ key, nodeId }) => [key, nodeId]))
       const graphIds = [
         ...graph.nodes.map(({ nodeId }) => nodeId),
         ...(graph.joinNodeId === undefined ? [] : [graph.joinNodeId]),

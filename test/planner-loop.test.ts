@@ -938,6 +938,90 @@ test('AgentLoop rejects steering an aborted or terminal run', async () => {
   )
 })
 
+test('AgentLoop persists steer before queueing and acknowledges it only after Session commit', async () => {
+  const observations: string[] = []
+  const harness = createHarness(
+    scriptedProvider([[{ type: 'completed', stopReason: 'end_turn' }]]),
+    {
+      acknowledgeSteer: async (session, _run, steer) => {
+        observations.push(`ack:${steer.workflowMessageSequence}`)
+        assert.equal(
+          contentText(session.messages.at(-1)?.content ?? ''),
+          'Runtime steer:\nnew direction',
+        )
+      },
+    },
+  )
+
+  const steerId = await harness.loop.queueSteer(
+    harness.session,
+    harness.run,
+    'new direction',
+    async (id) => {
+      observations.push(`persist:${id}`)
+      return 7
+    },
+  )
+  assert.equal(steerId, 'steer-loop')
+  assert.deepEqual(observations, ['persist:steer-loop'])
+  assert.deepEqual(harness.run.steerQueue, [
+    { id: 'steer-loop', text: 'new direction', workflowMessageSequence: 7 },
+  ])
+
+  await harness.loop.execute(harness.session, harness.run)
+
+  assert.deepEqual(observations, ['persist:steer-loop', 'ack:7'])
+  assert.equal(harness.run.steerQueue.length, 0)
+})
+
+test('AgentLoop does not queue a steer when durable persistence fails', async () => {
+  const harness = createHarness(scriptedProvider([[]]))
+
+  await assert.rejects(
+    harness.loop.queueSteer(harness.session, harness.run, 'new direction', async () => {
+      throw new Error('mailbox unavailable')
+    }),
+    /mailbox unavailable/u,
+  )
+
+  assert.deepEqual(harness.run.steerQueue, [])
+  assert.equal(
+    harness.events.some(({ type }) => type === 'steer_queued'),
+    false,
+  )
+})
+
+test('AgentLoop follows Runtime completion guidance before accepting a final response', async () => {
+  let completionChecks = 0
+  const harness = createHarness(
+    scriptedProvider([
+      [{ type: 'completed', stopReason: 'end_turn' }],
+      [{ type: 'completed', stopReason: 'end_turn' }],
+    ]),
+    {
+      completionGuidance: async () => {
+        completionChecks += 1
+        return completionChecks === 1
+          ? 'A required background node is pending. Call workflow.join.'
+          : undefined
+      },
+    },
+  )
+
+  await harness.loop.execute(harness.session, harness.run)
+
+  assert.equal(completionChecks, 2)
+  assert.equal(
+    harness.session.messages.some(
+      (message) =>
+        message.role === 'user' &&
+        contentText(message.content).includes('required background node is pending'),
+    ),
+    true,
+  )
+  assert.equal(harness.events.at(-1)?.type, 'prompt_completed')
+})
+
 test('AgentLoop sends composed instructions and a content-free manifest for every provider request', async () => {
   let received: Parameters<ChatProvider['stream']>[0] | undefined
   const provider: ChatProvider = {
@@ -1396,6 +1480,8 @@ function createHarness(
     compactContext?: AgentLoopPorts['compactContext']
     inspectOutput?: unknown
     terminalTool?: Readonly<{ name: string }>
+    acknowledgeSteer?: AgentLoopPorts['acknowledgeSteer']
+    completionGuidance?: AgentLoopPorts['completionGuidance']
   } = {},
 ) {
   const events: SessionEvent[] = []
@@ -1531,6 +1617,12 @@ function createHarness(
     commitMessage: async (target, _run, message) => {
       target.messages.push(message)
     },
+    ...(options.acknowledgeSteer === undefined
+      ? {}
+      : { acknowledgeSteer: options.acknowledgeSteer }),
+    ...(options.completionGuidance === undefined
+      ? {}
+      : { completionGuidance: options.completionGuidance }),
     emit: (event) => {
       events.push(event)
     },

@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  promptDigest,
   type PromptProjectInstruction,
   type PromptProjectInstructionDecision,
   type ProviderToolDefinition,
+  promptDigest,
 } from '@praxis/core-sdk'
 import {
   ContextBuilder,
-  parsePromptVariant,
   type ProjectInstructionSource,
+  parsePromptVariant,
   SystemPromptComposer,
 } from '../apps/runtime/src/prompt/index.js'
 
@@ -86,6 +86,8 @@ test('SystemPromptComposer produces stable ordered instructions and a content-fr
   assert.match(first.instructions, /current Planner policy=auto/u)
   assert.match(first.instructions, /agent\.delegate/u)
   assert.match(first.instructions, /at least one bounded investigation or review/u)
+  assert.match(first.instructions, /continue only for independent work/u)
+  assert.match(first.instructions, /join every required node before the final response/u)
   assert.match(first.instructions, /never a nested CLI/u)
   assert.equal(first.instructions.includes('Read a UTF-8 text file'), false)
   assert.deepEqual(first.contextMessages, [])
@@ -97,7 +99,7 @@ test('SystemPromptComposer produces stable ordered instructions and a content-fr
   assert.equal(first.manifest.program.trustedInstructions.blockCount, 1)
   assert.equal(
     promptDigest(first.instructions),
-    'sha256:2c4903dcd925179db9ba3db8f7f451ce3e340ff9777da4e899a0ef67e8903a4d',
+    'sha256:86d215f392bf89daf83f6db07b4f6cc29b3ae7ac073a219b31bddb9ba45702ce',
   )
 })
 

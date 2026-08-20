@@ -426,7 +426,7 @@ export type AgentRun = {
   cancellationReason?: CancellationReason
   terminal: boolean
   controller: AbortController
-  steerQueue: Array<{ id: string; text: string }>
+  steerQueue: Array<{ id: string; text: string; workflowMessageSequence?: number }>
   budget?: ExecutionBudget
   usage?: BudgetUsage
 }
