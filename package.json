@@ -54,7 +54,7 @@
     "ink": "6.8.0",
     "js-yaml": "4.3.0",
     "react": "19.2.3",
-    "react-devtools-core": "6.1.2",
+    "react-devtools-core": "7.0.1",
     "tsx": "4.21.0",
     "typescript": "5.9.3"
   }
