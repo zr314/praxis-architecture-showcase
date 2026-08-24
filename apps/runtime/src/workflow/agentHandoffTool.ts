@@ -93,6 +93,7 @@ export class AgentHandoffToolV1 implements RuntimeTool {
       )
       const completed = await this.orchestrator.complete(claim, {
         ok: result.ok,
+        cancelled: result.cancelled,
         errorCode: result.errorCode,
         resultRef: result.artifacts?.[0],
         usage: result.usage,

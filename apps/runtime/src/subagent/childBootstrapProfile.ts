@@ -28,12 +28,22 @@ export const CHILD_BOOTSTRAP_METHODS = [
   'events.subscribe',
   'session.create',
   'session.prompt',
+  'session.steer',
   'permission.decide',
   'session.abort',
   'shutdown',
 ] as const
 
 export type ChildBootstrapMethod = (typeof CHILD_BOOTSTRAP_METHODS)[number]
+
+export type ChildBootstrapMiddlewareV1 = Readonly<{
+  ids: readonly string[]
+  policy: Readonly<{
+    hookTimeoutMs: number
+    consecutiveFailureThreshold: number
+    circuitCooldownMs: number
+  }>
+}>
 
 export type ChildBootstrapProfileV3 = Readonly<{
   schemaVersion: 3
@@ -49,6 +59,8 @@ export type ChildBootstrapProfileV3 = Readonly<{
     retention: 'delete' | 'retain_on_failure'
   }>
   provider: Readonly<{ providerId: string; model: string }>
+  /** Authenticated IDs resolved from the Child process's explicit middleware registry. */
+  middleware?: ChildBootstrapMiddlewareV1
   /** Authenticated immutable task contract replayed on every Child model turn. */
   pinnedContext?: string
   /** Authenticated Runtime-owned structured-result commit capability. */
@@ -284,6 +296,7 @@ export function validateChildBootstrapProfile(value: unknown): ChildBootstrapPro
       'reasoningEffort',
       'pinnedContext',
       'resultSubmission',
+      'middleware',
     ]) ||
     value.schemaVersion !== 3 ||
     !isId(value.parentRunId) ||
@@ -303,6 +316,8 @@ export function validateChildBootstrapProfile(value: unknown): ChildBootstrapPro
   const methodAllowlist = validateMethodAllowlist(value.methodAllowlist)
   const ephemeral = validateEphemeralRoots(value.ephemeral)
   const provider = validateProvider(value.provider)
+  const middleware =
+    value.middleware === undefined ? undefined : validateMiddleware(value.middleware)
   const artifactAccess =
     value.artifactAccess === undefined ? undefined : validateArtifactAccess(value.artifactAccess)
   const resultSubmission =
@@ -343,6 +358,7 @@ export function validateChildBootstrapProfile(value: unknown): ChildBootstrapPro
     methodAllowlist,
     ephemeral,
     provider,
+    ...(middleware === undefined ? {} : { middleware }),
     ...(value.pinnedContext === undefined ? {} : { pinnedContext: value.pinnedContext as string }),
     ...(resultSubmission === undefined ? {} : { resultSubmission }),
     ...(artifactAccess === undefined ? {} : { artifactAccess }),
@@ -359,6 +375,38 @@ export function validateChildBootstrapProfile(value: unknown): ChildBootstrapPro
     trace,
     launch,
   })
+}
+
+function validateMiddleware(value: unknown): ChildBootstrapMiddlewareV1 {
+  if (
+    !isExactRecord(value, ['ids', 'policy']) ||
+    !Array.isArray(value.ids) ||
+    value.ids.length === 0 ||
+    value.ids.length > 32 ||
+    value.ids.some((id) => !isId(id)) ||
+    new Set(value.ids).size !== value.ids.length ||
+    !isExactRecord(value.policy, [
+      'hookTimeoutMs',
+      'consecutiveFailureThreshold',
+      'circuitCooldownMs',
+    ]) ||
+    !isInteger(value.policy.hookTimeoutMs, 1) ||
+    value.policy.hookTimeoutMs > 300_000 ||
+    !isInteger(value.policy.consecutiveFailureThreshold, 1) ||
+    value.policy.consecutiveFailureThreshold > 100 ||
+    !isInteger(value.policy.circuitCooldownMs, 1) ||
+    value.policy.circuitCooldownMs > 3_600_000
+  ) {
+    throw bootstrapFailure('CHILD_BOOTSTRAP_INVALID')
+  }
+  return {
+    ids: [...(value.ids as string[])],
+    policy: {
+      hookTimeoutMs: value.policy.hookTimeoutMs,
+      consecutiveFailureThreshold: value.policy.consecutiveFailureThreshold,
+      circuitCooldownMs: value.policy.circuitCooldownMs,
+    },
+  }
 }
 
 function validateResultSubmission(

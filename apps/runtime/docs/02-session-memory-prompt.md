@@ -329,9 +329,10 @@ flowchart TD
     SK["本次 Run 可见的 Skill disclosure"] --> C
     C --> I["唯一 Trusted Instructions"]
     C --> SC["runtime_facts → skill_catalog → project_guidance"]
-    E["PromptEnvelope"] --> PA["PromptAssembler"]
+    E["PromptEnvelope"] --> TC["Run pinned exact task contract"]
+    TC --> PA["PromptAssembler"]
     V["Run-stable PromptContextView"] --> PA
-    PK["Child pinned ContextPacket"] --> PA
+    PK["Child signed ContextPacket"] --> PA
     H["canonical messages + semantic/native checkpoint"] --> PA
     PA --> W["editing + ContextWindow"]
     I --> REQ["ProviderRequest"]
@@ -354,7 +355,7 @@ flowchart TD
 
 这里的工具定义不直接拼进 system prompt，而是作为 `ProviderRequest.tools` 单独发送；ContextWindow 会为工具 schema 预留 token。完整的输入路由、ProviderRequest 字段、compaction 现状和目标设计见 [`docs/prompt-assembly.md`](../../../docs/prompt-assembly.md)。
 
-[`PromptAssembler`](../src/prompt/promptAssembler.ts) 是 Root/Child AgentTask 共用的组装边界。它按 pinned Child ContextPacket、`PromptContextView`、native/semantic checkpoint、最近消息后缀的顺序生成 Provider context，并生成不含 Prompt plaintext 的 assembly manifest。父产品 Session 使用 `session_journal_v3` authority；没有 Journal Port 的兼容 repository/Child 临时 Session 才生成 `compatibility_v2` view。Backend 切换仍必须离线 Cutover，不能双写。
+[`PromptAssembler`](../src/prompt/promptAssembler.ts) 是 Root/Child AgentTask 共用的组装边界。它按“本次 Run 的逐字 pinned task contract → Child 可选签名 ContextPacket → `PromptContextView` → native/semantic checkpoint → 最近消息后缀”的顺序生成 Provider context，并生成不含 Prompt plaintext 的 assembly manifest。任务合同同时作为 canonical user message 落盘，assembler 会去重，Provider 不会收到重复题面。父产品 Session 使用 `session_journal_v3` authority；没有 Journal Port 的兼容 repository/Child 临时 Session 才生成 `compatibility_v2` view。Backend 切换仍必须离线 Cutover，不能双写。
 
 `AgentLoop` 最后拼成：Trusted Instructions → composer context → assembler context → recent messages；Tool definitions 独立发送。一次 Run 的 ContextView 首次选择后冻结，成功 compact 才换代，新 Tool/Workflow 状态继续作为 durable messages 追加。这既保留状态，又避免每轮变化的 ContextView 打断 Provider cache 前缀。
 
@@ -385,7 +386,9 @@ selection report，说明选了多少、丢了多少、估算 token 数是多少
 
 checkpoint 有两层。portable semantic checkpoint 始终生成，是跨 Provider、切换模型和故障恢复的底座；若当前 Provider 暴露 `compact()`，Runtime 还可把实际 ProviderRequest 交给原生 compact 端点，并把 opaque items 与 semantic checkpoint 一起原子持久化。下一轮只有 provider、model、instructions digest 和覆盖范围匹配且预算容纳时才重放 native state，否则自动回退 semantic。当前 OpenAI Responses 已接独立 `/v1/responses/compact`，Child 可通过独立 credential-broker compact RPC 使用同一能力且拿不到 API key；DeepSeek、Kimi、通用 Chat-compatible 与 Anthropic 当前使用 semantic fallback。
 
-Child 还有独立于 checkpoint 的 pinned ContextPacket。它来自已认证 bootstrap，包含完整 objective、约束、禁止项、output schema、criterion ID 和前驱引用，每轮固定重放，不能被窗口选择或 compaction 删除。checkpoint 只压缩执行进度；其中的 `relevantRefs` 在模型摘要遗漏或多次 checkpoint replacement 时仍由 deterministic overlay 保留。这样长 Child 不会在压缩后丢失原任务或前驱 Artifact 权限线索。
+每个 Root/Child Run 都有独立于 checkpoint 的逐字任务合同，它来自已校验 PromptEnvelope 的 `effectiveText`，只在本 Run 内固定重放。Child 还多一份来自已认证 bootstrap 的签名 ContextPacket，包含完整 objective、约束、禁止项、output schema、criterion ID 和前驱引用。两者都不能被窗口选择或 compaction 删除。checkpoint 只压缩执行进度；其中的 `relevantRefs` 在模型摘要遗漏或多次 checkpoint replacement 时仍由 deterministic overlay 保留。这样长任务即使生成了截断或有误的自然语言摘要，也不会用摘要替换原任务合同。
+
+真实 `llm-inference-batching-scheduler` 复验中，旧 checkpoint 曾把题面写成 `…[task contract truncated]…` 并混淆两个请求桶的阈值；固定逐字合同后的新运行经历 3 次 compaction，压缩后继续使用两套正确阈值并获 Harbor reward 1。这里验证的是合同隔离，不是说 checkpoint 中的计划、最佳候选和失败教训永远不会需要模型重新读取或 Runtime overlay。
 
 触发方式包括：
 
@@ -395,7 +398,8 @@ Child 还有独立于 checkpoint 的 pinned ContextPacket。它来自已认证 b
 
 `ContextPolicy` 显式控制 threshold、hysteresis、reserve、保留 token、64K 软阈值和
 `body_after_checkpoint/total` 计数范围；`CompactionPolicy` 控制最小收益、
-摘要上限、overflow retry 以及模型摘要的 deadline/cost。cut point 只落在稳定 entry boundary：不拆未配齐
+默认 4,096-token 摘要上限、overflow retry 以及模型摘要的 deadline/cost。4K 是语义工作记忆容量，
+不是任务长度或模型 context 上限。cut point 只落在稳定 entry boundary：不拆未配齐
 的 tool call/result、Skill turn 或最新未完成后缀，完成的 tool round 则可以增量进入 checkpoint。
 
 默认 `DeterministicSummaryGenerator` 生成可重复摘要。Runtime composition 可以注入模型摘要器，但其输出

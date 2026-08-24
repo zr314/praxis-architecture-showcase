@@ -95,6 +95,7 @@ test('SQLite workflow authority atomically persists events, tasks and completion
 test('expired leases retry safe effects with a new Attempt and keep non-idempotent effects unknown', async () => {
   const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-recovery-'))
   const store = new SqliteWorkflowAuthorityV1(root)
+  let unsafeStore: SqliteWorkflowAuthorityV1 | undefined
   try {
     await store.initialize()
     await scheduleAndClaim(
@@ -110,7 +111,7 @@ test('expired leases retry safe effects with a new Attempt and keep non-idempote
     store.close()
 
     const secondRoot = join(root, 'unsafe')
-    const unsafeStore = new SqliteWorkflowAuthorityV1(secondRoot)
+    unsafeStore = new SqliteWorkflowAuthorityV1(secondRoot)
     await unsafeStore.initialize()
     const unsafeSpec = {
       ...workflowSpec(),
@@ -148,16 +149,26 @@ test('expired leases retry safe effects with a new Attempt and keep non-idempote
     assert.equal(retried.nodes[0]?.state, 'scheduled')
     assert.equal(retried.attempts.length, 2)
     assert.equal(
+      await unsafeStore.claim('operator-retry-too-early', {
+        workflowId: 'workflow-unsafe',
+        now: '2026-08-06T00:00:04.099Z',
+      }),
+      undefined,
+      'retry policy backoff must remain durable instead of immediately hammering a failed provider',
+    )
+    assert.equal(
       (
         await unsafeStore.claim('operator-retry', {
           workflowId: 'workflow-unsafe',
-          now: '2026-08-06T00:00:04.000Z',
+          now: '2026-08-06T00:00:04.100Z',
         })
       )?.task.attemptId,
       retried.attempts[1]?.attemptId,
     )
     unsafeStore.close()
+    unsafeStore = undefined
   } finally {
+    unsafeStore?.close()
     store.close()
     await rm(root, { recursive: true, force: true })
   }

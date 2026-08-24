@@ -85,6 +85,16 @@ export type WorkflowBudgetV1 = Readonly<{
   maxCostUsd?: number
 }>
 
+export type WorkflowCapacityGroupV1 = Readonly<{
+  key: string
+  limit: number
+}>
+
+/** Persisted admission limits shared by every worker claiming this Workflow. */
+export type WorkflowSchedulingPolicyV1 = Readonly<{
+  capacityGroups: readonly WorkflowCapacityGroupV1[]
+}>
+
 export type AgentBudgetRequestV1 = Readonly<{
   maxWallClockMs?: number
   maxTokens?: number
@@ -166,6 +176,13 @@ export type WorkflowNodeSpecV1 = Readonly<{
   nodeId: string
   kind: WorkflowNodeKindV1
   title: string
+  /**
+   * Whether this node participates in the outer Workflow completion contract.
+   * Autonomous Agent Run Tree children are optional evidence producers by
+   * default; explicit Workflow nodes remain required when this field is
+   * omitted for wire compatibility.
+   */
+  required?: boolean
   profileRef?: VersionedWorkflowRefV1
   inputRefs: readonly WorkflowArtifactRefV1[]
   outputSchemaRef?: VersionedWorkflowRefV1
@@ -196,6 +213,7 @@ export type WorkflowSpecV1 = Readonly<{
   parentWorkflowId?: string
   parentNodeId?: string
   executionTarget?: Readonly<{ providerId: string; model: string }>
+  scheduling?: WorkflowSchedulingPolicyV1
   workspace: string
   objective: string
   modePolicy: WorkflowModePolicyV1
@@ -419,6 +437,8 @@ export function validateWorkflowSpecV1(value: unknown): WorkflowSpecV1 {
     input.executionTarget === undefined
       ? undefined
       : record(input.executionTarget, 'WORKFLOW_SPEC_INVALID')
+  const scheduling =
+    input.scheduling === undefined ? undefined : validateSchedulingPolicy(input.scheduling)
   if (
     input.schemaVersion !== 1 ||
     !safeId(input.workflowId) ||
@@ -483,6 +503,7 @@ export function validateWorkflowSpecV1(value: unknown): WorkflowSpecV1 {
             model: executionTarget.model as string,
           },
         }),
+    ...(scheduling === undefined ? {} : { scheduling }),
     workspace: input.workspace,
     objective: input.objective,
     modePolicy: input.modePolicy as WorkflowModePolicyV1,
@@ -495,6 +516,22 @@ export function validateWorkflowSpecV1(value: unknown): WorkflowSpecV1 {
     maxGraphMutations: input.maxGraphMutations,
     createdAt: input.createdAt,
   })
+}
+
+function validateSchedulingPolicy(value: unknown): WorkflowSchedulingPolicyV1 {
+  const input = record(value, 'WORKFLOW_SPEC_INVALID')
+  if (!Array.isArray(input.capacityGroups) || input.capacityGroups.length > 16)
+    fail('WORKFLOW_SPEC_INVALID')
+  const capacityGroups = input.capacityGroups.map((value) => {
+    const group = record(value, 'WORKFLOW_SPEC_INVALID')
+    if (!safeId(group.key) || !positiveInteger(group.limit)) fail('WORKFLOW_SPEC_INVALID')
+    return freeze({ key: group.key, limit: group.limit })
+  })
+  unique(
+    capacityGroups.map(({ key }) => key),
+    'WORKFLOW_SPEC_INVALID',
+  )
+  return freeze({ capacityGroups })
 }
 
 export function initialWorkflowProjectionV1(specValue: unknown): WorkflowProjectionV1 {
@@ -793,6 +830,7 @@ function validateNode(value: unknown): WorkflowNodeSpecV1 {
     !text(input.title) ||
     !Array.isArray(input.inputRefs) ||
     !Array.isArray(input.criteria) ||
+    (input.required !== undefined && typeof input.required !== 'boolean') ||
     (input.maxIterations !== undefined && !positiveInteger(input.maxIterations))
   )
     fail('WORKFLOW_NODE_INVALID')
@@ -800,6 +838,7 @@ function validateNode(value: unknown): WorkflowNodeSpecV1 {
     nodeId: input.nodeId,
     kind: input.kind as WorkflowNodeKindV1,
     title: input.title,
+    ...(input.required === undefined ? {} : { required: input.required as boolean }),
     profileRef: input.profileRef === undefined ? undefined : validateVersionedRef(input.profileRef),
     inputRefs: input.inputRefs.map(validateArtifactRef),
     outputSchemaRef:

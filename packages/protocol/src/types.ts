@@ -1,9 +1,9 @@
-import type { PluginGrant, PluginLifecycleState, PluginManifestV1 } from '@praxis/plugin-protocol'
 import type {
   CommandCatalogSnapshotV1,
   CommandInvokeRequestV1,
   CommandInvokeResultV1,
 } from '@praxis/core-sdk'
+import type { PluginGrant, PluginLifecycleState, PluginManifestV1 } from '@praxis/plugin-protocol'
 
 export type { CommandCatalogSnapshotV1, CommandInvokeRequestV1, CommandInvokeResultV1 }
 
@@ -289,7 +289,7 @@ export type SessionEvent =
   | { type: 'prompt_failed'; runId: string; error: string; code?: string; usage?: UsageSummary }
   | { type: 'prompt_aborted'; runId: string; reason?: string; usage?: UsageSummary }
   | { type: 'supervisor_update'; update: SupervisorUpdateV1 }
-  | { type: 'workflow_update'; update: WorkflowUpdateV1 }
+  | { type: 'workflow_update'; runId?: string; update: WorkflowUpdateV1 }
 
 export type WorkflowUpdateV1 = Readonly<{
   workflowId: string
@@ -338,6 +338,11 @@ export type PromptInput = {
   text: string
   clientRequestId?: string
   commandInvocationId?: string
+  /** Trusted host-application identity and instructions for this Run. */
+  agent?: {
+    name?: string
+    instructions: string
+  }
   budget?: {
     maxTurns?: number
     maxToolCalls?: number
@@ -426,6 +431,35 @@ export type ArtifactInfo = {
   createdAt?: string
 }
 
+export type RuntimeMiddlewareDoctorSnapshot = {
+  schemaVersion: 1
+  active: boolean
+  policy: {
+    hookTimeoutMs: number
+    consecutiveFailureThreshold: number
+    circuitCooldownMs: number
+  }
+  middleware: Array<{
+    id: string
+    name: string
+    state: 'closed' | 'open' | 'half_open'
+    consecutiveFailures: number
+    openedAt?: string
+    hooks: Record<
+      'beforeModel' | 'afterModel' | 'beforeTool' | 'afterTool',
+      {
+        calls: number
+        successes: number
+        failures: number
+        timeouts: number
+        circuitRejections: number
+        totalDurationMs: number
+        maxDurationMs: number
+      }
+    >
+  }>
+}
+
 export type DoctorResult = {
   ok: boolean
   runtimeId: string
@@ -438,6 +472,7 @@ export type DoctorResult = {
     accountLabel?: string
   }>
   checks: Array<{ id: string; status: 'ok' | 'warning' | 'error'; message: string }>
+  middleware: RuntimeMiddlewareDoctorSnapshot
 }
 
 export type PluginStatus = {

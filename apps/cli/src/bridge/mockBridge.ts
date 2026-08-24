@@ -150,6 +150,16 @@ export class MockRuntimeBridge implements RuntimeBridge {
       ...(workspace ? { workspace } : {}),
       providers: [{ id: 'mock', status: 'authenticated', health: 'healthy' }],
       checks: [{ id: 'mock', status: 'ok', message: 'Mock bridge is ready.' }],
+      middleware: {
+        schemaVersion: 1,
+        active: false,
+        policy: {
+          hookTimeoutMs: 30_000,
+          consecutiveFailureThreshold: 3,
+          circuitCooldownMs: 30_000,
+        },
+        middleware: [],
+      },
     }
   }
 

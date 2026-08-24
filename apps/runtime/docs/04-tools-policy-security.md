@@ -98,7 +98,9 @@ Runtime 对外提供的是工具定义快照，实际调用仍按名称回到注
 
 ## 6. Shell 与进程树
 
-`ShellTool` 在 Windows 使用 PowerShell，在 POSIX 使用系统 shell；限制命令、stdin、运行时间和输出字节，并响应 `AbortSignal`。取消/超时时不只结束最外层 PID，而由 `terminateProcessTree()` 尽量清理其子进程。
+`ShellTool` 在 Windows 使用 PowerShell，在 POSIX 使用系统 shell；限制命令、stdin 和输出字节，并响应 `AbortSignal`。每条命令默认获得 10 分钟安全租约，`timeoutMs` 可以为已知有界的长构建显式延长，也可以为探索性、外部依赖、复杂度未知或可能不终止的命令缩短。这个租约只限制一次进程活动，不限制 Agent Run 的累计墙钟、Turn、Tool call 或任务寿命。取消/超时时不只结束最外层 PID，而由 `terminateProcessTree()` 尽量清理其子进程。
+
+这里保留默认租约是必要的 liveness 边界。真实 MIPS 与 batching 续测中，模型会在没有 `timeoutMs` 时生成无界调试循环或组合搜索；仅把建议写进 Tool description 不能保证模型遵守。默认 10 分钟既能让普通编译和有限搜索完成，又能让遗忘 deadline 的单条活动最终返回结构化 timeout，Agent 随后仍可改路线。确实需要更久的命令必须显式声明更长租约，因此长任务能力没有被重新压成旧的 6 分钟任务墙钟。
 
 进程终止采用先温和信号、短暂 grace period、再强制结束的策略。它是资源清理机制，不是安全沙箱。
 
@@ -132,7 +134,7 @@ Runtime 对外提供的是工具定义快照，实际调用仍按名称回到注
 | [`src/tools/grepTool.ts`](../src/tools/grepTool.ts) | 文本/正则搜索与匹配数限制。 |
 | [`src/tools/writeTool.ts`](../src/tools/writeTool.ts) | 有前置条件和大小限制的文件写入。 |
 | [`src/tools/editTool.ts`](../src/tools/editTool.ts) | 精确、唯一匹配的文本替换。 |
-| [`src/tools/shellTool.ts`](../src/tools/shellTool.ts) | 有超时、取消与输出上限的 shell 执行。 |
+| [`src/tools/shellTool.ts`](../src/tools/shellTool.ts) | 支持默认 10 分钟且可覆盖的单命令租约、取消、进程树回收与输出上限。 |
 | [`src/tools/artifactReadTool.ts`](../src/tools/artifactReadTool.ts) | 分段读取 artifact 内容的工具实现。 |
 | [`src/policy/index.ts`](../src/policy/index.ts) | Policy 模块统一导出。 |
 | [`src/policy/policyEngine.ts`](../src/policy/policyEngine.ts) | grant 匹配、保存与权限审计。 |

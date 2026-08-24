@@ -52,9 +52,10 @@ export type TraceAttributes = {
   promptVariant?: 'baseline-v1' | 'iron-law-lean-v1'
   promptSectionId?: string
   promptSectionDigest?: string
-  promptSectionSource?: 'builtin' | 'runtime' | 'project'
+  promptSectionSource?: 'builtin' | 'runtime' | 'application' | 'project'
   promptSectionCacheScope?: 'request'
   promptSectionIncluded?: boolean
+  discardedVisibleText?: boolean
   compactionReason?: 'threshold' | 'overflow' | 'manual'
 }
 
@@ -146,7 +147,7 @@ const SAFE_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/
 const SAFE_ERROR_CATEGORY = /^[a-z][a-z0-9_]{0,31}$/
 const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/
 const PROMPT_SECTION_SOURCES: ReadonlySet<NonNullable<TraceAttributes['promptSectionSource']>> =
-  new Set(['builtin', 'runtime', 'project'])
+  new Set(['builtin', 'runtime', 'application', 'project'])
 const PROMPT_CACHE_SCOPES: ReadonlySet<NonNullable<TraceAttributes['promptSectionCacheScope']>> =
   new Set(['request'])
 const PROMPT_VARIANTS: ReadonlySet<NonNullable<TraceAttributes['promptVariant']>> = new Set([
@@ -241,6 +242,7 @@ function cloneAttributes(attributes: TraceAttributes | undefined): TraceAttribut
     ...optionalPromptSectionSource(attributes.promptSectionSource),
     ...optionalPromptCacheScope(attributes.promptSectionCacheScope),
     ...optionalBoolean(attributes.promptSectionIncluded, 'promptSectionIncluded'),
+    ...optionalBoolean(attributes.discardedVisibleText, 'discardedVisibleText'),
     ...optionalCompactionReason(attributes.compactionReason),
   }
 }
@@ -350,7 +352,7 @@ function optionalPromptCacheScope(
   return { promptSectionCacheScope: value as TraceAttributes['promptSectionCacheScope'] }
 }
 
-function optionalBoolean<T extends 'promptSectionIncluded'>(
+function optionalBoolean<T extends 'promptSectionIncluded' | 'discardedVisibleText'>(
   value: unknown,
   property: T,
 ): Partial<Pick<TraceAttributes, T>> {

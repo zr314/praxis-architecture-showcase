@@ -5,7 +5,7 @@
 - 想知道产品现在能不能做某件事，查[项目状态](project-status.md)。
 - 想理解运行时如何协作，查[当前架构](architecture.md)。
 - 想核对 RPC 字段，查[Runtime Protocol v1](protocol.md) 和 `packages/protocol`。
-- 想判断“接近工业架构”是否等于“已经证明工业级”，查[最终小样本测评](evaluation-final-2026-08-09.md)。
+- 想判断“接近工业架构”是否等于“已经证明工业级”，查[持续维护的测评档案](evaluations/README.md)。
 
 ## 1. 先建立一张心智地图
 
@@ -99,11 +99,11 @@ flowchart TD
 | Workspace | 对外责任 | 入口或先读文件 | 不应该拥有 |
 | --- | --- | --- | --- |
 | `apps/cli` / `@praxis/cli` | 终端产品、Runtime Bridge、发布命令 | `src/cli.tsx`、`src/runCli.tsx`、[CLI 源码导读](../apps/cli/readme.md) | Provider 调用、Tool 执行、授权决策 |
-| `apps/runtime` / `@praxis/runtime` | 独立 Runtime 与所有能力组合 | `src/entry.ts`、`src/framework/runtimeKernel.ts`、[Runtime 源码导读](../apps/runtime/readme.md) | Ink UI 或 CLI 展示状态 |
+| `apps/runtime` / `@praxis/runtime` | 独立 Runtime、所有能力组合与可信宿主 middleware | `src/entry.ts`、`src/framework/runtimeKernel.ts`、`src/framework/runtimeMiddleware.ts`、[Runtime 源码导读](../apps/runtime/readme.md) | Ink UI 或 CLI 展示状态 |
 | `packages/plugin-protocol` | 最底层插件 manifest、握手、Process RPC 合同与 JSON Schema | `src/index.ts`、`src/process.ts`、`schemas/` | Runtime 生命周期和策略实现 |
 | `packages/core-sdk` | Provider-neutral 领域合同 | `src/index.ts`，再按 `workflow.ts`、`llm.ts`、`tool.ts` 等领域进入 | IO、数据库、网络和应用实现 |
 | `packages/protocol` | Runtime JSON-RPC 方法、事件、Schema 与校验 | `src/types.ts`、`src/schema.ts`、[协议文档](protocol.md) | CLI UI 或 Runtime 业务算法 |
-| `packages/client` | 初始化、订阅、Sequence 校验和有界重连 | `src/index.ts`、[客户端教程](protocol-client.md) | 子进程传输和具体 UI |
+| `packages/client` | 高层 `defineAgent`，以及初始化、单泵事件多路复用、Sequence 校验和有界重连 | `src/agent.ts`、`src/index.ts`、[Agent SDK 教程](agent-sdk.md)、[客户端教程](protocol-client.md) | 子进程传输和具体 UI |
 | `packages/plugin-sdk` | Process 插件作者 API、合同校验和脚手架 | `src/index.ts`、[插件开发](plugin-authoring.md) | 安装、启用、授权和监督 |
 
 架构规则是 `packages/*` 不得导入 `apps/*`，Runtime 不得导入 CLI 或 Ink；仓库通过 TypeScript 构建、package import smoke 和跨 Workspace 测试守住这条边界。只有暴露面发生变化时，跨 Workspace 变更才需要同步修改相应合同和消费者。
@@ -117,7 +117,7 @@ flowchart TD
 | 模块 | 负责 | 主要入口 |
 | --- | --- | --- |
 | 根文件 | 包入口、独立进程、Server 与 Storage 导出；长期计时和显式长生命周期策略 | `entry.ts`、`run.ts`、`process.ts`、`server.ts`、`storage.ts`、`longDurationTimer.ts`、`longLivedExecutionPolicy.ts` |
-| `framework` | 唯一产品 composition root、RPC dispatch 和产品接线 | `runtimeKernel.ts` |
+| `framework` | 唯一产品 composition root、RPC dispatch、产品接线和可信宿主 middleware pipeline | `runtimeKernel.ts`、`runtimeMiddleware.ts` |
 | `process` | NDJSON 进程连接、进程树、正式 Runtime 协议连接 | `runtimeProtocolConnection.ts` |
 | `server` | 本地 Runtime Server 边界 | `localRuntimeServer.ts` |
 | `commands` | 内置命令目录、审计、Prompt/外部 Tool 命令适配 | `commandService.ts`、`builtinCommandRegistry.ts` |
@@ -127,13 +127,13 @@ flowchart TD
 
 | 模块 | 负责 | 主要入口 |
 | --- | --- | --- |
-| `workflow` | 每个 Prompt 的 durable Workflow、Task/Lease、调度、拓扑 Tool、Local/远程 Worker、effect receipt | `autoWorkflowPlanner.ts`、`workflowOrchestrator.ts`、`sqliteWorkflowAuthority.ts` |
+| `workflow` | 每个 Prompt 的 durable execution container、默认 Run Tree Tool、显式 Workflow DAG、Task/Lease、Local/远程 Worker、effect receipt | `autoWorkflowPlanner.ts`、`agentRunTreeTools.ts`、`workflowOrchestrator.ts` |
 | `loop` | 单个 AgentTask 的 Provider/Tool ReAct、stream、usage、steer、abort、compaction 和唯一终态 | `index.ts` |
 | `subagent` | Child admission、bootstrap、Capability Bundle、进程 host、MCP/credential broker、结果提交 | `childRuntimeHost.ts`、`childComposition.ts`、`childResultSubmissionTool.ts` |
-| `planner` | Graph/Verifier、预算、恢复、worktree/snapshot merge 等可复用底层组件 | `plannerRouter.ts`、`controlledWorkspaceMerge.ts`；历史 supervisor 类不是第二条产品路径 |
+| `planner` | 活跃的 policy adapter、AgentLoop adapter、workspace 隔离与 verifier，以及保留的 Plan/DAG 库 | `plannerRouter.ts`、`agentTaskPlanner.ts`、`controlledWorkspaceMerge.ts`；旧 Plan/Supervisor 类不是第二条产品路径 |
 | `planner-api` | Planner 能力的窄导出边界 | `index.ts` |
 
-详细主链路见[内核与 AgentLoop](../apps/runtime/docs/01-kernel-and-loop.md)和[统一 Workflow 与多 Agent](workflow-platform.md)。
+详细主链路见[内核、Planner 与 AgentLoop](../apps/runtime/docs/01-kernel-and-loop.md)和[Agent Run Tree 与可选 Workflow](workflow-platform.md)。
 
 ### 4.3 Session、Prompt 与数据层
 
@@ -217,7 +217,7 @@ CLI 可以读取自动化 policy-file 或把用户的 allow/deny 选择传给 Ru
 ### 其余公共包
 
 - `packages/protocol/src/types.ts` 定义 Wire 类型，`schema.ts` 做运行时校验，`constants.ts` 保存版本常量，`index.ts` 是公共导出。
-- `packages/client/src/index.ts` 实现类型化客户端，不决定具体 transport 如何启动。
+- `packages/client/src/agent.ts` 提供应用 Agent 编程模型；`index.ts` 实现类型化协议客户端和按 Run 分流的单一通知泵。两者都不决定具体 transport 如何启动。
 - `packages/plugin-protocol/src/index.ts` 定义 manifest/能力，`process.ts` 定义 Process RPC；`schemas/` 是可分发 JSON Schema。
 - `packages/plugin-sdk/src/index.ts` 提供 `defineCapability`、合同断言与最小脚手架。
 
@@ -266,7 +266,7 @@ CLI 可以读取自动化 policy-file 或把用户的 allow/deny 选择传给 Ru
 2. [当前架构](architecture.md)
 3. [Runtime 源码导读](../apps/runtime/readme.md)
 4. [内核与 AgentLoop](../apps/runtime/docs/01-kernel-and-loop.md)
-5. [统一 Workflow 与多 Agent](workflow-platform.md)
+5. [Agent Run Tree 与可选 Workflow](workflow-platform.md)
 6. [Prompt、Context 与 Compaction](prompt-assembly.md)
 
 ### 准备贡献代码：按一个纵向切片学习
@@ -281,4 +281,4 @@ CLI 可以读取自动化 policy-file 或把用户的 allow/deny 选择传给 Ru
 
 Praxis 已具备许多工业 Agent Runtime 常见的控制面：独立进程协议、持久 Task/Lease、能力收窄、写隔离、恢复、幂等副作用、Trace、评测和公共合同分层。这说明架构方向接近工业系统。
 
-但“架构要素齐全”不等于“工业级可靠性已经被证明”。当前 Authority 形态还缺少目标部署模型下的多节点高可用证据，也缺跨租户治理、规模化远程多 Worker、重复故障和长时间 soak 证据；PostgreSQL 是可能的演进路径，不是所有工业场景的必要条件。现有外部 benchmark 也是小样本，本页不据此作生产可靠性结论。对外描述时应使用[项目状态](project-status.md)和[最终小样本测评](evaluation-final-2026-08-09.md)中的证据边界。
+但“架构要素齐全”不等于“工业级可靠性已经被证明”。当前 Authority 形态还缺少目标部署模型下的多节点高可用证据，也缺跨租户治理、规模化远程多 Worker、重复故障和长时间 soak 证据；PostgreSQL 是可能的演进路径，不是所有工业场景的必要条件。现有外部 benchmark 也是小样本，本页不据此作生产可靠性结论。对外描述时应使用[项目状态](project-status.md)和[持续维护的测评档案](evaluations/README.md)中的证据边界。

@@ -10,7 +10,8 @@ Workspace、Tool、Rule 与 Canonical Target，项目指令和模型输出不能
 每个 Tool Call 都产生带独立 Tool Call ID 的结果；同批次一个调用失败不会覆盖或吞掉其他
 结果。`grep.pathPattern` 是跨平台首选字段；Deprecated `pattern` 只为兼容保留。`read`
 使用零基、左闭右开范围，并显式返回 `returnedLines`、`rangeStart`、`rangeEnd` 与
-`nextOffset`。
+`nextOffset`。它还返回 `hasBom`：即使 UTF-8 解码后的正文看不出文件头，Agent 也能发现
+PowerShell 5.1 等工具写入的 UTF-8 BOM，并在交付严格 JSON/CSV 前修正编码。
 
 `edit` 对多行匹配把 CRLF/LF 视为等价，但保留原文件换行风格，仍要求唯一匹配并支持
 `expectedDigest`。`write` 是 Whole-file 写入：`expectedDigest` 防止覆盖并发修改；
@@ -82,6 +83,9 @@ half-open interval `[rangeStart, rangeEnd)` in the same coordinate system as
 the requested offset, and `returnedLines` equals its length. `nextOffset` is
 `rangeEnd` when further lines remain and `null` at the final page, so callers
 can continue a read without inferring pagination from text content.
+`hasBom` reports whether the raw file starts with the three-byte UTF-8 BOM. The
+decoded `content` intentionally omits that marker, while the explicit flag keeps
+exact-byte and strict-parser validation observable to the Agent.
 
 ## Edit 与 Write 防护 / Edit and write safeguards
 
@@ -115,6 +119,13 @@ never retain raw input or output.
 
 The system prompt and `shell` Tool description identify the actual local shell:
 Windows uses Windows PowerShell and other supported hosts use a POSIX shell.
+Each Shell command has a 10-minute default safety lease. Set `timeoutMs` to a
+shorter deadline for exploratory commands, external dependencies,
+computationally uncertain algorithms, or work that may not terminate; set it
+to a longer value for a bounded build or recovery job that genuinely needs
+more time. This per-command lease is not an Agent Run wall-clock, turn, Tool
+call, or token budget. A timeout or Run cancellation reclaims the observed
+process tree and returns control to the Agent so it can revise its approach.
 Use the optional `stdin` field to send exact multiline UTF-8 input to a child
 process without constructing a shell-specific pipeline. For example, this
 feeds a multiline Python program to the child process:

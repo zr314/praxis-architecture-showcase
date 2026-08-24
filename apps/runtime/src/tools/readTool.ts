@@ -11,7 +11,8 @@ const MAX_LIMIT = 2_000
 export class ReadTool implements RuntimeTool {
   readonly definition = {
     name: 'read',
-    description: 'Read a paginated UTF-8 text file inside the workspace.',
+    description:
+      'Read a paginated UTF-8 text file inside the workspace and report whether it starts with a UTF-8 BOM.',
     parameters: {
       type: 'object',
       properties: {
@@ -36,6 +37,7 @@ export class ReadTool implements RuntimeTool {
         'nextOffset',
         'truncated',
         'encoding',
+        'hasBom',
         'digest',
       ],
       properties: {
@@ -50,6 +52,7 @@ export class ReadTool implements RuntimeTool {
         nextOffset: { type: ['integer', 'null'], minimum: 0 },
         truncated: { type: 'boolean' },
         encoding: { const: 'utf-8' },
+        hasBom: { type: 'boolean' },
         digest: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
       },
       additionalProperties: false,
@@ -97,9 +100,10 @@ export class ReadTool implements RuntimeTool {
     const rangeEnd = offset + returnedLines
     const truncated = rangeEnd < lines.length
     const nextOffset = truncated ? rangeEnd : null
+    const hasBom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
     return {
       ok: true,
-      summary: `Read ${returnedLines} lines [${rangeStart}, ${rangeEnd}) of ${lines.length}.`,
+      summary: `Read ${returnedLines} lines [${rangeStart}, ${rangeEnd}) of ${lines.length}.${hasBom ? ' UTF-8 BOM detected.' : ''}`,
       output: {
         path,
         content: selected.join('\n'),
@@ -112,6 +116,7 @@ export class ReadTool implements RuntimeTool {
         nextOffset,
         truncated,
         encoding: 'utf-8',
+        hasBom,
         digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
       },
     }

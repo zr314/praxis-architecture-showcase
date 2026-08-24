@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { promptDigest, type PromptBuildInput } from '@praxis/core-sdk'
+import { type PromptBuildInput, promptDigest } from '@praxis/core-sdk'
+import { DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET } from '../apps/runtime/src/prompt/promptRegistry.js'
 import { SystemPromptComposer } from '../apps/runtime/src/prompt/systemPromptComposer.js'
 
 const sourceFiles = [
@@ -24,18 +25,18 @@ const fixture: PromptBuildInput = {
       parameters: { type: 'object', properties: { path: { type: 'string' } } },
     },
     {
-      name: 'agent.delegate',
-      description: 'Delegate a bounded objective.',
+      name: 'agent.spawn',
+      description: 'Start one bounded Child Run.',
       parameters: { type: 'object', properties: {} },
     },
     {
-      name: 'workflow.expand',
-      description: 'Expand a durable graph.',
+      name: 'agent.wait',
+      description: 'Wait for one or more Child Runs.',
       parameters: { type: 'object', properties: {} },
     },
   ],
   workflow: { role: 'root', mode: 'auto' },
-  maxSystemPromptTokens: 1_536,
+  maxSystemPromptTokens: DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET,
   skills: [
     {
       id: 'project/review',
@@ -67,7 +68,7 @@ const fixture: PromptBuildInput = {
 }
 
 const composer = new SystemPromptComposer()
-const baseline = composer.compose(fixture)
+const baseline = composer.compose({ ...fixture, variant: 'baseline-v1' })
 const lean = composer.compose({ ...fixture, variant: 'iron-law-lean-v1' })
 const leanVisible = [lean.instructions, ...lean.contextMessages.map(({ content }) => content)].join(
   '\n\n',

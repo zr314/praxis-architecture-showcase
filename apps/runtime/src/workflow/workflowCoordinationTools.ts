@@ -76,6 +76,11 @@ export class WorkflowInboxToolV1 implements RuntimeTool {
         limit: integer(request.input.limit, 1) ?? 100,
       })
       const projection = await this.orchestrator.projection(this.workflowId)
+      const toolActivityNodeIds = new Set(
+        projection.spec.nodes
+          .filter(({ kind }) => kind === 'tool_activity')
+          .map(({ nodeId }) => nodeId),
+      )
       const throughSequence = messages.at(-1)?.sequence ?? afterSequence
       if (request.input.acknowledge === true && throughSequence > afterSequence) {
         await Promise.all(
@@ -96,7 +101,7 @@ export class WorkflowInboxToolV1 implements RuntimeTool {
           throughSequence,
           messages,
           nodes: projection.nodes
-            .filter(({ nodeId }) => nodeId !== 'root')
+            .filter(({ nodeId }) => nodeId !== 'root' && !toolActivityNodeIds.has(nodeId))
             .map(({ nodeId, state, resultRef, errorCode }) => ({
               nodeId,
               state,

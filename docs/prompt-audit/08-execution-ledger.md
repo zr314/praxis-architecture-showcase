@@ -2,7 +2,7 @@
 
 状态：**Phase 0–2 的实现切片与定向验证已完成；逐 unit 机器账本仍未完备。`iron-law-lean-v1` 已于 2026-08-09 晋升为默认，`baseline-v1` 保留为显式回滚；命名式 production alias 尚未创建。**
 
-本页记录 2026-08-08 经用户确认后实际落地的第一批改动，并在第 8–9 节追加后续上下文/cache 结果。第 1–7 节是历史阶段账本，不应把其中“候选尚未晋升”理解为当前状态；现行装配规范见[Prompt、Context 与 Compaction](../prompt-assembly.md)，最终测评见[最终测评总结](../evaluation-final-2026-08-09.md)。
+本页记录 2026-08-08 经用户确认后实际落地的第一批改动，并在第 8–9 节追加后续上下文/cache 结果。第 1–7 节是历史阶段账本，不应把其中“候选尚未晋升”理解为当前状态；现行装配规范见[Prompt、Context 与 Compaction](../prompt-assembly.md)，最终测评见[持续维护的测评档案](../evaluations/README.md)。
 
 ## 1. 本批边界
 
@@ -63,23 +63,23 @@ Provider 仍只接收一个 `instructions` 字符串。manifest 的 `blockCount:
 npm run audit:prompts
 ```
 
-固定 fixture：`prompt-program-root-win32-v1`，cwd=`D:/workspace/praxis`，root/auto，包含 `read`、`agent.delegate`、`workflow.expand`、一个 Skill disclosure 和一份项目说明。计数器沿用当前 Composer 的 UTF-8 bytes/2 静态 estimator，不冒充 Provider tokenizer。
+固定 fixture：`prompt-program-root-win32-v1`，cwd=`D:/workspace/praxis`，root/auto，包含 `read`、`agent.spawn`、`agent.wait`、一个 Skill disclosure 和一份项目说明。计数器沿用当前 Composer 的 UTF-8 bytes/2 静态 estimator，不冒充 Provider tokenizer。fixture 的 `maxSystemPromptTokens` 引用生产唯一常量 `DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET=4096`，不再复制旧数字。
 
-本次实现源码 bundle 使用排序后的 `path NUL bytes NUL` 做 SHA-256，结果为 `sha256:0a2e784f914938a402c7c5e94ab6a0de5103e8321ee02f8b1bbb586e290020d6`；源 Git commit 为 `08e71bca07ead67a19e69f8258e84318f1bde653`。bundle 文件清单由 `npm run audit:prompts` 一并输出。
+2026-08-23 Prompt 1.1.0 工作树的源码 bundle 使用排序后的 `path NUL bytes NUL` 做 SHA-256，结果为 `sha256:256e8f05ffd2632025cbcb769b0020fb9961dca6e1952b749fd6e663ec59d1ee`。bundle 文件清单由 `npm run audit:prompts` 一并输出；`verification-20260808.json` 继续保留为旧版本历史证据，不覆盖成当前结果。
 
 | 指标 | baseline-v1 | iron-law-lean-v1 | 变化 |
 | --- | ---: | ---: | ---: |
-| Trusted Instructions characters | 2741 | 1081 | -60.6% |
-| Trusted Instructions estimated tokens | 1371 | 541 | **-60.5%** |
-| 整个 system/context estimated tokens | 1529 | 826 | **-46.0%** |
-| context messages | 1 | 3 | 动态 facts/context 后置后的预期变化 |
+| Trusted Instructions characters | 3321 | 1798 | -45.9% |
+| Trusted Instructions estimated tokens | 1661 | 899 | **-45.9%** |
+| 整个 system/context estimated tokens | 2027 | 1389 | **-31.5%** |
+| context messages | 2 | 3 | baseline 的 Skill/project context 与 lean 的 facts/Skill/project |
 | Trusted block header count | 不适用旧标题 | 1 | 满足候选不变量 |
 | 候选禁用分层词命中 | 不适用 | 0 | 仅针对本 fixture 的最终渲染内容 |
 
 冻结 digest：
 
-- baseline Trusted Instructions：`sha256:cb60dfbc326a8ee568fd7a388d93c07e53cb84379a76424550d573b2bde3761b`
-- candidate Trusted Instructions：`sha256:f94d96b38d8eb5361bde3adfcc958c3ef03f90b2fad7c9285520eaffdfcfa2ba`
+- baseline Trusted Instructions：`sha256:6ceea4395075deb506303dd6d4f5d83e432ddb0d6090176a02e884018e30769d`
+- candidate Trusted Instructions：`sha256:d062b18c2b73f1039ee56b2dd8026714bb0a150413ae84cf362224d1828d15be`
 
 baseline digest 已写入契约测试，防止无意漂移。candidate digest 由版本化审计脚本输出；候选在全路径与晋升门禁通过前仍允许按审计意见修订。
 
@@ -166,3 +166,39 @@ npm run audit:prompts
 - `agent.handoff` 的工具说明已从 `authoritative low-trust evidence` 改为 `reviewable evidence`，避免把“不能授予权限”和“事实是否可靠”混成一个标签。
 - Tool 输出中的 `authoritativeResult` 仍是兼容字段名，已登记为命名债务；它不改变 Child 结果的 verification 状态。
 - 完整决策与后续审计门禁见[指令权威、来源与事实验证](./10-authority-provenance-and-verification.md)。
+
+## 11. Prompt 1.1.0 与 MiniMax 代表性复验（2026-08-23）
+
+- 两个 variant 升级到 1.1.0，新增通用最终验收合同：多要求任务结束前重读用户验收条件，检查真实产物的 parseability、encoding、schema、exact required headers 和 material semantics；自写测试不能重新定义题意。
+- lean `runtime_facts` 增加结构化 `shellDialect`，明确 Windows PowerShell 5.1 分隔符、不可假设的 POSIX 语法、多行 stdin 和 UTF-8 BOM 风险。
+- 真实 baseline A/B 首次暴露旧 1,536 默认预算无法容纳长 Windows 路径；现统一为 4,096。生产 Runtime、测试和 `audit-prompt-program.ts` 均引用 `DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET`。
+- 静态审计第一次复跑因脚本残留硬编码 1,536 而 `PROMPT_BUDGET_TOO_SMALL`；统一常量后成功，输出本节第 4 节的新 digest 和体积数据。这次失败是审计工具捕获的配置漂移，不是 Provider 失败。
+- 定向 `system-prompt.test.ts` 12/12、全 workspace build 通过；没有在文档更新阶段重复全量测试。
+- 真实任务信号：`080-schema-roundtrip-conversion` 补齐旧 Prompt 遗漏的 conflict report；`041-frontend-state-bug` 推进到另一个隐藏边界。raw score 不单调，因为一个 oracle 要求题面未声明的 CSV EOF newline，且单 rollout 有模型方差。
+- 本轮多个低分任务无 compaction/truncation；最长有效任务上下文约 65K。Prompt 修改不以“修复 compaction”名义包装。
+
+逐题原文、raw/合同调整结果和六层归因见[2026-08-23 代表性续测](../evaluations/minimax-auto-harnessbench-20260823.md)。
+
+## 12. Prompt 1.2.0 自主推进合同与真实 A/B（2026-08-23）
+
+- `fix-git` 的 1.1.0 rollout 已找到遗失 commit；`git merge --ff-only` 返回非 fast-forward 后，模型把 merge/cherry-pick 的纯实现选择退回用户，官方 verifier reward 0。
+- baseline 与 lean 同步增加通用自主推进合同：用户已授权具体结果时，选择合理、可验证、优先可逆的方法；只有信息缺失会实质改变结果、权限或风险时才澄清；一种方法失败后先检查状态并尝试安全替代。
+- 同模型、同任务、同 `auto` 的 1.2.0 复验 reward 1。该结果证明此题的阻塞被解除；单题各一次 rollout 不足以宣称所有任务成功率提升。
+- `system-prompt.test.ts` 20/20、typecheck、workspace build 和 `npm run audit:prompts` 均通过；未再次运行用户已声明通过的全量测试。
+
+当前静态审计：
+
+| 指标 | baseline-v1 1.2.0 | iron-law-lean-v1 1.2.0 | lean 相对变化 |
+| --- | ---: | ---: | ---: |
+| Trusted Instructions characters | 3,702 | 2,179 | -41.1% |
+| Trusted Instructions estimated tokens | 1,851 | 1,090 | -41.1% |
+| 整个 system/context estimated tokens | 2,217 | 1,579 | -28.8% |
+| context messages | 2 | 3 | 仅结构差异 |
+
+冻结标识：
+
+- source bundle：`sha256:709816ca376ba521805b32787217a3aa3336050f60b2154e62069213b1a2fc12`
+- baseline Trusted Instructions：`sha256:a3f6583218006ceac8fac7e4db45cc34499e2c9cbfe6a89511f5de719f653247`
+- lean Trusted Instructions：`sha256:434763811067f5293913ea2b8065ff7337666cf05d3e90a02313e87dae287486`
+
+完整 benchmark、Provider 流恢复、BOM 可观察性和额度终态见[续跑至额度耗尽报告](../evaluations/minimax-auto-benchmark-exhaustion-20260823.md)。

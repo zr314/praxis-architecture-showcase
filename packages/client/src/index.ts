@@ -29,6 +29,7 @@ export type ConnectionFactory = () => Promise<ProtocolConnection>
 
 export type PraxisClientOptions = {
   reconnectAttempts?: number
+  eventBufferCapacity?: number
   client?: { name: string; version: string }
   onRuntimeEpoch?: (transition: RuntimeEpochTransition) => void | Promise<void>
 }
@@ -43,10 +44,20 @@ class EventSequenceError extends Error {
   override readonly name = 'EventSequenceError'
 }
 
+export class EventBufferOverflowError extends Error {
+  override readonly name = 'EventBufferOverflowError'
+}
+
+export class RunEventStreamEndedError extends Error {
+  override readonly name = 'RunEventStreamEndedError'
+}
+
 /** Typed protocol client with event sequence validation and bounded reconnection. */
 export class PraxisClient {
+  readonly supportsConcurrentRuns = true as const
   readonly #factory: ConnectionFactory
   readonly #reconnectAttempts: number
+  readonly #eventBufferCapacity: number
   readonly #client: { name: string; version: string }
   readonly #onRuntimeEpoch?: PraxisClientOptions['onRuntimeEpoch']
   #connection?: ProtocolConnection
@@ -59,10 +70,23 @@ export class PraxisClient {
   #closed = false
   #connecting?: Promise<InitializeResult>
   #reconnecting?: Promise<void>
+  #eventPump?: Promise<void>
+  #eventStreamEnded = false
+  #eventFailure?: unknown
+  #pendingRunRequests = 0
+  readonly #eventSubscribers = new Set<AsyncEventChannel<SessionEvent>>()
+  readonly #runSubscribers = new Map<string, Set<AsyncEventChannel<SessionEvent>>>()
+  readonly #pendingRunEvents = new Map<string, SessionEvent[]>()
+  readonly #pendingRunFailures = new Map<string, unknown>()
+  readonly #ignoredRunIds = new Set<string>()
 
   constructor(factory: ConnectionFactory, options: PraxisClientOptions = {}) {
     this.#factory = factory
     this.#reconnectAttempts = Math.max(0, Math.floor(options.reconnectAttempts ?? 1))
+    this.#eventBufferCapacity = positiveInteger(
+      options.eventBufferCapacity ?? 4_096,
+      'eventBufferCapacity',
+    )
     this.#client = options.client ?? {
       name: '@praxis/client',
       version: PRAXIS_PRODUCT_VERSION,
@@ -160,6 +184,18 @@ export class PraxisClient {
   }
 
   async *events(): AsyncIterable<SessionEvent> {
+    const channel = this.createEventChannel()
+    this.#eventSubscribers.add(channel)
+    this.startEventPump()
+    try {
+      yield* channel
+    } finally {
+      this.#eventSubscribers.delete(channel)
+      channel.complete()
+    }
+  }
+
+  private async pumpEvents(): Promise<void> {
     let reconnects = 0
     while (!this.#closed) {
       try {
@@ -174,10 +210,13 @@ export class PraxisClient {
           }
           this.#lastSequence = notification.params.sequence
           reconnects = 0
-          yield notification.params.event
+          this.publishEvent(notification.params.event)
         }
+        this.#eventStreamEnded = true
+        this.completeEventSubscribers()
         return
       } catch (error) {
+        if (this.#closed) return
         if (error instanceof EventSequenceError) throw error
         if (reconnects >= this.#reconnectAttempts) throw error
         reconnects += 1
@@ -188,6 +227,10 @@ export class PraxisClient {
 
   async createSession(input: CreateSessionInput): Promise<SessionInfo> {
     return this.request('session.create', input)
+  }
+
+  async resumeSession(sessionId: string): Promise<SessionInfo> {
+    return this.request('session.resume', { sessionId })
   }
 
   async listSessions(): Promise<SessionInfo[]> {
@@ -207,15 +250,57 @@ export class PraxisClient {
   }
 
   async *prompt(input: PromptInput): AsyncIterable<SessionEvent> {
-    const result = await this.request<{ runId: string; accepted: true }>('session.prompt', {
-      ...input,
-      clientRequestId:
-        input.clientRequestId ?? `client-${Date.now().toString(36)}-${this.#nextRequestId}`,
-    })
-    for await (const event of this.events()) {
-      if (!('runId' in event) || event.runId !== result.runId) continue
-      yield event
-      if (isTerminal(event)) return
+    yield* this.runPrompt('session.prompt', input)
+  }
+
+  async *followUp(input: PromptInput): AsyncIterable<SessionEvent> {
+    yield* this.runPrompt('session.follow_up', input)
+  }
+
+  async steer(
+    sessionId: string,
+    runId: string,
+    text: string,
+  ): Promise<{ accepted: boolean; applyAt: 'next_safe_boundary' }> {
+    return this.request('session.steer', { sessionId, runId, text })
+  }
+
+  async abort(runId: string): Promise<void> {
+    await this.request('session.abort', { runId })
+  }
+
+  private async *runPrompt(
+    method: 'session.prompt' | 'session.follow_up',
+    input: PromptInput,
+  ): AsyncIterable<SessionEvent> {
+    this.#pendingRunRequests += 1
+    let runId = ''
+    let channel: AsyncEventChannel<SessionEvent> | undefined
+    try {
+      const result = await this.request<{ runId: string; accepted: true }>(method, {
+        ...input,
+        clientRequestId:
+          input.clientRequestId ?? `client-${Date.now().toString(36)}-${this.#nextRequestId}`,
+      })
+      runId = result.runId
+      channel = this.subscribeRun(runId)
+    } finally {
+      this.#pendingRunRequests -= 1
+      if (this.#pendingRunRequests === 0) this.discardUnclaimedRunEvents()
+    }
+
+    let terminalSeen = false
+    try {
+      for await (const event of channel!) {
+        if (isTerminal(event)) terminalSeen = true
+        yield event
+        if (terminalSeen) return
+      }
+      throw new RunEventStreamEndedError(
+        `Praxis event stream ended before Run ${runId} produced a terminal event.`,
+      )
+    } finally {
+      this.unsubscribeRun(runId, channel!, terminalSeen)
     }
   }
 
@@ -228,9 +313,149 @@ export class PraxisClient {
     this.#closed = true
     await this.#connecting?.catch(() => undefined)
     await this.#connection?.close().catch(() => undefined)
+    this.completeEventSubscribers()
     this.#connection = undefined
     this.#initialized = undefined
     this.#subscriptionId = undefined
+  }
+
+  private createEventChannel(): AsyncEventChannel<SessionEvent> {
+    const channel = new AsyncEventChannel<SessionEvent>(this.#eventBufferCapacity)
+    if (this.#eventFailure !== undefined) channel.fail(this.#eventFailure)
+    else if (this.#eventStreamEnded || this.#closed) channel.complete()
+    return channel
+  }
+
+  private subscribeRun(runId: string): AsyncEventChannel<SessionEvent> {
+    const channel = this.createEventChannel()
+    const pending = this.#pendingRunEvents.get(runId) ?? []
+    const pendingFailure = this.#pendingRunFailures.get(runId)
+    this.#pendingRunEvents.delete(runId)
+    this.#pendingRunFailures.delete(runId)
+    this.#ignoredRunIds.delete(runId)
+    let terminalSeen = false
+    for (const event of pending) {
+      channel.push(event)
+      if (isTerminal(event)) terminalSeen = true
+    }
+    if (pendingFailure !== undefined) channel.fail(pendingFailure)
+    else if (terminalSeen) channel.complete()
+    else if (!channel.closed) {
+      const subscribers = this.#runSubscribers.get(runId) ?? new Set()
+      subscribers.add(channel)
+      this.#runSubscribers.set(runId, subscribers)
+    }
+    this.startEventPump()
+    return channel
+  }
+
+  private unsubscribeRun(
+    runId: string,
+    channel: AsyncEventChannel<SessionEvent>,
+    terminalSeen: boolean,
+  ): void {
+    const subscribers = this.#runSubscribers.get(runId)
+    subscribers?.delete(channel)
+    if (subscribers?.size === 0) this.#runSubscribers.delete(runId)
+    channel.complete()
+    if (
+      !terminalSeen &&
+      this.#eventFailure === undefined &&
+      !this.#eventStreamEnded &&
+      !this.#closed
+    ) {
+      this.#ignoredRunIds.add(runId)
+    }
+  }
+
+  private startEventPump(): void {
+    if (
+      this.#eventPump !== undefined ||
+      this.#eventStreamEnded ||
+      this.#eventFailure !== undefined
+    ) {
+      return
+    }
+    this.#eventPump = this.pumpEvents()
+      .catch((error: unknown) => {
+        this.#eventFailure = error
+        this.failEventSubscribers(error)
+      })
+      .finally(() => {
+        this.#eventPump = undefined
+      })
+  }
+
+  private publishEvent(event: SessionEvent): void {
+    for (const channel of this.#eventSubscribers) {
+      channel.push(event)
+      if (channel.closed) this.#eventSubscribers.delete(channel)
+    }
+    const runId = eventRunId(event)
+    if (runId === undefined) return
+    if (this.#ignoredRunIds.has(runId)) {
+      if (isTerminal(event)) this.#ignoredRunIds.delete(runId)
+      return
+    }
+    const subscribers = this.#runSubscribers.get(runId)
+    if (subscribers !== undefined) {
+      for (const channel of subscribers) {
+        channel.push(event)
+        if (channel.closed) subscribers.delete(channel)
+      }
+      if (isTerminal(event)) {
+        for (const channel of subscribers) channel.complete()
+        this.#runSubscribers.delete(runId)
+      } else if (subscribers.size === 0) {
+        this.#runSubscribers.delete(runId)
+        this.#ignoredRunIds.add(runId)
+      }
+      return
+    }
+    if (this.#pendingRunRequests > 0) {
+      const pending = this.#pendingRunEvents.get(runId) ?? []
+      if (pending.length >= this.#eventBufferCapacity) {
+        this.#pendingRunEvents.delete(runId)
+        this.#pendingRunFailures.set(
+          runId,
+          new EventBufferOverflowError(
+            `Run ${runId} emitted more than ${this.#eventBufferCapacity} events before its request completed.`,
+          ),
+        )
+        return
+      }
+      pending.push(event)
+      this.#pendingRunEvents.set(runId, pending)
+    }
+  }
+
+  private discardUnclaimedRunEvents(): void {
+    this.#pendingRunEvents.clear()
+    this.#pendingRunFailures.clear()
+  }
+
+  private completeEventSubscribers(): void {
+    for (const channel of this.#eventSubscribers) channel.complete()
+    for (const subscribers of this.#runSubscribers.values()) {
+      for (const channel of subscribers) channel.complete()
+    }
+    this.#eventSubscribers.clear()
+    this.#runSubscribers.clear()
+    this.#pendingRunEvents.clear()
+    this.#pendingRunFailures.clear()
+    this.#ignoredRunIds.clear()
+  }
+
+  private failEventSubscribers(error: unknown): void {
+    for (const channel of this.#eventSubscribers) channel.fail(error)
+    for (const subscribers of this.#runSubscribers.values()) {
+      for (const channel of subscribers) channel.fail(error)
+    }
+    this.#eventSubscribers.clear()
+    this.#runSubscribers.clear()
+    this.#pendingRunEvents.clear()
+    this.#pendingRunFailures.clear()
+    this.#ignoredRunIds.clear()
   }
 
   private async connection(): Promise<ProtocolConnection> {
@@ -270,12 +495,93 @@ export class PraxisClient {
   }
 }
 
+class AsyncEventChannel<T> implements AsyncIterable<T>, AsyncIterator<T> {
+  readonly #capacity: number
+  readonly #values: T[] = []
+  readonly #waiters: Array<{
+    resolve: (result: IteratorResult<T>) => void
+    reject: (error: unknown) => void
+  }> = []
+  #closed = false
+  #failure?: unknown
+
+  constructor(capacity: number) {
+    this.#capacity = capacity
+  }
+
+  get closed(): boolean {
+    return this.#closed
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return this
+  }
+
+  next(): Promise<IteratorResult<T>> {
+    if (this.#values.length > 0) {
+      return Promise.resolve({ done: false, value: this.#values.shift()! })
+    }
+    if (this.#failure !== undefined) return Promise.reject(this.#failure)
+    if (this.#closed) return Promise.resolve({ done: true, value: undefined })
+    return new Promise<IteratorResult<T>>((resolve, reject) => {
+      this.#waiters.push({ resolve, reject })
+    })
+  }
+
+  push(value: T): void {
+    if (this.#closed) return
+    const waiter = this.#waiters.shift()
+    if (waiter !== undefined) {
+      waiter.resolve({ done: false, value })
+      return
+    }
+    if (this.#values.length >= this.#capacity) {
+      this.fail(
+        new EventBufferOverflowError(
+          `Praxis event consumer exceeded its ${this.#capacity}-event buffer capacity.`,
+        ),
+      )
+      return
+    }
+    this.#values.push(value)
+  }
+
+  complete(): void {
+    if (this.#closed) return
+    this.#closed = true
+    for (const waiter of this.#waiters.splice(0)) {
+      waiter.resolve({ done: true, value: undefined })
+    }
+  }
+
+  fail(error: unknown): void {
+    if (this.#closed) return
+    this.#closed = true
+    this.#failure = error
+    this.#values.length = 0
+    for (const waiter of this.#waiters.splice(0)) waiter.reject(error)
+  }
+}
+
 function isTerminal(event: SessionEvent): boolean {
   return (
     event.type === 'prompt_completed' ||
     event.type === 'prompt_failed' ||
     event.type === 'prompt_aborted'
   )
+}
+
+function eventRunId(event: SessionEvent): string | undefined {
+  return 'runId' in event && typeof event.runId === 'string' && event.runId.length > 0
+    ? event.runId
+    : undefined
+}
+
+function positiveInteger(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new TypeError(`${field} must be a positive integer.`)
+  }
+  return value
 }
 
 function isReadOnlyMethod(method: RuntimeMethod): boolean {
@@ -300,3 +606,5 @@ function isReadOnlyMethod(method: RuntimeMethod): boolean {
     'trace.export',
   ].includes(method)
 }
+
+export * from './agent.js'

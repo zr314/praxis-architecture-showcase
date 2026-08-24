@@ -9,10 +9,31 @@ import {
   isChildCompositionFailure,
 } from './subagent/childComposition.js'
 
-export function runRuntime(): void {
+export { RuntimeKernel, type RuntimeKernelOptions } from './framework/runtimeKernel.js'
+export type {
+  RuntimeMiddleware,
+  RuntimeMiddlewareHealth,
+  RuntimeMiddlewareHealthSnapshot,
+  RuntimeMiddlewareHook,
+  RuntimeMiddlewareHookHealth,
+  RuntimeMiddlewarePolicy,
+  RuntimeMiddlewarePolicyOptions,
+  RuntimeMiddlewareRegistry,
+  RuntimeModelMiddlewareContext,
+  RuntimeToolCallUpdate,
+  RuntimeToolMiddlewareContext,
+} from './framework/runtimeMiddleware.js'
+
+export function runRuntime(options: RuntimeKernelOptions = {}): void {
   try {
     const childProfile = readChildBootstrapProfileFromProcess()
-    createRuntimeKernel(childProfile ? createChildRuntimeComposition(childProfile) : {}).start()
+    createRuntimeKernel(
+      childProfile
+        ? createChildRuntimeComposition(childProfile, {
+            middlewareRegistry: options.childMiddleware?.registry,
+          })
+        : options,
+    ).start()
   } catch (error) {
     if (!isChildBootstrapFailure(error) && !isChildCompositionFailure(error)) throw error
     process.stderr.write(`praxis-runtime: ${error.code}\n`)

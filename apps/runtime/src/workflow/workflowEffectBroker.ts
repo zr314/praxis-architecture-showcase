@@ -63,6 +63,7 @@ export class WorkflowEffectBrokerV1 implements ToolExecutionBrokerV1 {
         : ({ class: 'external_idempotent', idempotencyKey, requiresApproval: true } as const)
     let claim: Awaited<ReturnType<WorkflowOrchestratorV1['claimActivity']>> | undefined
     let effectReserved = false
+    let invocationState: 'not_started' | 'running' | 'returned' = 'not_started'
     try {
       const admitted = await this.orchestrator.admitToolActivity(
         this.workflowId,
@@ -127,35 +128,46 @@ export class WorkflowEffectBrokerV1 implements ToolExecutionBrokerV1 {
       heartbeat.unref?.()
       let result: ToolResult
       try {
+        invocationState = 'running'
         result = await invoke()
+        invocationState = 'returned'
       } finally {
         clearInterval(heartbeat)
       }
       if (!result.ok) {
-        if (workspaceWrite) {
-          const projection = await this.orchestrator.complete(claim, {
-            ok: false,
-            errorCode: result.error?.code ?? 'TOOL_EXECUTION_FAILED',
-            effectReserved,
-            effectKnownFailure: true,
-          })
-          this.onProjection?.(projection)
-          return result
+        // A returned ToolResult is itself an observed, durable outcome. This is
+        // different from invoke() throwing after a process/network effect may
+        // already have happened: only the latter has an unknown outcome. In
+        // particular, ordinary shell exit codes must not poison an otherwise
+        // recoverable Workflow merely because shell is conservatively
+        // classified as a process effect.
+        const failure = await this.artifacts.put({
+          schemaVersion: 1,
+          kind: 'workflow_effect_failure',
+          workflowId: this.workflowId,
+          nodeId: claim.task.nodeId,
+          attemptId: claim.task.attemptId,
+          toolName: prepared.name,
+          inputDigest,
+          ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+          result,
+        })
+        const failureRef = {
+          artifactId: failure.artifactId,
+          digest: failure.digest as `sha256:${string}`,
+          mediaType: failure.mimeType,
         }
-        const projection = await this.orchestrator.markUnknown(
-          claim,
-          result.error?.code ?? 'WORKFLOW_EFFECT_OUTCOME_UNKNOWN',
+        const projection = await this.orchestrator.complete(claim, {
+          ok: false,
+          errorCode: result.error?.code ?? 'TOOL_EXECUTION_FAILED',
+          resultRef: failureRef,
           effectReserved,
-        )
+          effectKnownFailure: true,
+        })
         this.onProjection?.(projection)
         return {
           ...result,
-          summary: `${result.summary} The invocation returned a failure, but any partial process or external side effects are unverified; inspect current state before retrying.`,
-          error: {
-            code: 'WORKFLOW_EFFECT_OUTCOME_UNKNOWN',
-            category: 'execution',
-            retryable: false,
-          },
+          artifacts: [...(result.artifacts ?? []), failure],
         }
       }
       const receipt = await this.artifacts.put({
@@ -187,17 +199,23 @@ export class WorkflowEffectBrokerV1 implements ToolExecutionBrokerV1 {
         artifacts: [...(result.artifacts ?? []), receipt],
       }
     } catch (error) {
+      const invocationOutcomeUnknown = invocationState === 'running'
+      const unknownCode = invocationOutcomeUnknown
+        ? 'WORKFLOW_EFFECT_OUTCOME_UNKNOWN'
+        : 'WORKFLOW_EFFECT_RECEIPT_PERSIST_FAILED'
       if (claim !== undefined) {
         await this.orchestrator
-          .markUnknown(claim, 'WORKFLOW_EFFECT_RECEIPT_PERSIST_FAILED', effectReserved)
+          .markUnknown(claim, unknownCode, effectReserved)
           .then((projection) => this.onProjection?.(projection))
           .catch(() => undefined)
       }
       return {
         ok: false,
-        summary: 'Mutable Tool execution could not be committed with a durable receipt.',
+        summary: invocationOutcomeUnknown
+          ? 'Mutable Tool execution ended without a result; inspect current state before retrying.'
+          : 'Mutable Tool execution could not be committed with a durable receipt.',
         error: {
-          code: errorCode(error),
+          code: invocationOutcomeUnknown ? unknownCode : errorCode(error),
           category: 'execution',
           retryable: false,
         },

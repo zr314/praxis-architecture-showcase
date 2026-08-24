@@ -9,11 +9,13 @@ flowchart TB
     CLI["CLI / Ink TUI"] <-->|"NDJSON JSON-RPC"| K["RuntimeKernel"]
     K --> SS["SessionService"]
     SS --> SJ["SessionJournalV3\nJSONL or SQLite"]
-    K --> AW["AutoWorkflowPlanner"]
+    K --> AW["Auto execution container"]
     AW --> WA["SQLite WorkflowAuthority"]
     AW --> AL["Root AgentLoop"]
     AL --> TR["ToolRuntime"]
-    AL --> AD["delegate / handoff / graph / loop / subworkflow"]
+    AL --> AD["agent.spawn / wait / result / cancel / steer"]
+    AL -. "explicit workflow policy" .-> WF["coarse Workflow tools"]
+    WF --> OR
     AD --> OR["WorkflowOrchestrator"]
     OR --> WA
     WA --> MB["typed Workflow mailbox"]
@@ -59,7 +61,7 @@ supervisor -> workflow
 auto|solo|workflow -> AutoWorkflowPlannerV1
 ```
 
-每个 Prompt 先事务创建 Workflow、根 Node、Attempt 和 ready Task。Root Worker claim Lease 后运行同一个 AgentLoop。`solo` 不暴露拓扑工具；`auto/workflow` 暴露 delegate、handoff、graph、bounded loop 和 subworkflow 工具。
+每个 Prompt 当前仍先事务创建一个内部 execution container、根 Node、Attempt 和 ready Task，以复用已经验证的 Lease、恢复和 Artifact 基础设施；这不表示模型需要规划外层 Workflow。Root Worker claim Lease 后运行同一个 AgentLoop。`solo` 不暴露协作工具；`auto` 默认暴露 `agent.spawn/wait/result/cancel/steer`，让模型以 Child 句柄增量形成 Run Tree；只有显式 `workflow` policy 才额外暴露 delegate、handoff、graph、loop 和 subworkflow 等粗粒度业务编排工具。
 
 内部 `AgentTaskPlanner` 只是“一个已准入 AgentTask 如何进入 AgentLoop”的 adapter，不是 Direct 产品模式。
 
@@ -76,7 +78,7 @@ auto|solo|workflow -> AutoWorkflowPlannerV1
 
 SQLite 表在同一事务中保存 workflows、events、transactions、tasks、outbox、mailbox messages、timers、signals、human tasks 和 profiles。Projection 是事件 reducer 的物化结果。
 
-`workflow.expand` 允许 Root 选择 `rootAction=wait|continue`。`wait` 保持同步 join；`continue` 只完成图准入，非根 Task 由后台 durable Worker 执行，Root 继续同一个 AgentLoop，之后通过 `workflow.inbox` 读取类型化增量、通过 `workflow.join` 显式等待 all/any/quorum。默认仍为 `wait`；AgentLoop 完成门禁会阻止 Root 在必需后台节点 pending 或其结果未消费时直接结束。
+默认 `auto` 中，`agent.spawn` 只持久化一个非外层成功条件的 Child Task 并立即返回 `childId`；Root 可继续 ReAct，再用 `agent.result` 非阻塞读取、`agent.wait` 执行 all/any/quorum 等待、`agent.steer` 持久投递新指令，或用 `agent.cancel` 结束失去价值的分支。结构化并发门禁仍要求所有 Child 进入终态并消费结果后 Root 才结束，但可选探索分支自身失败或取消不会把外层执行自动判失败。显式 `workflow` policy 仍保留 `workflow.expand/inbox/join` 的完整 DAG 语义。
 
 Root 不会自动继承 Child transcript 或隐藏推理。Child 完成时，Node/Attempt/Task 终态与一条 Root 收件的 `result/error` 消息在同一 Authority 事务提交；完整正文留在 ArtifactStore，消息只携带有界元数据和引用。用户 steer 也先持久化为 `instruction`，SessionJournal 提交成功后再精确确认。Mailbox 与基础设施 Outbox 分离：前者供 Agent 协调和确认，后者供 Task/通知可靠发布。
 
@@ -93,7 +95,7 @@ parent capability snapshot
   = attempt capability bundle
 ```
 
-Child 通过 fd 认证和 bootstrap profile 启动；Provider 凭证由 broker handle 提供；MCP 通过父 broker 调用。Child 的 policy 固定禁止 descendant，因此不能递归启动 Praxis 绕过账本。
+Child 通过 fd 认证和 bootstrap profile 启动；Provider 凭证由 broker handle 提供；MCP 通过父 broker 调用。当前迁移第一阶段已经把 Root 的默认协作面改为 Run Tree 句柄，但 Child bootstrap 仍固定禁止 descendant；后续阶段会通过父 Runtime 的受认证 spawn broker 开放结构化后代，而不是允许 Child 递归启动 Praxis CLI 或直接修改外层 Workflow。
 
 ## 6. 写工作区
 
@@ -110,11 +112,11 @@ Session authority 可选：
 
 一个运行只选择一个 Session 后端，不双写。JSONL 普通启动信任已校验 Catalog/Projection，`doctor --deep` 才完整 replay。
 
-Workflow authority 默认是本地 SQLite。设置 `PRAXIS_WORKFLOW_AUTHORITY_LISTEN=127.0.0.1:PORT` 与至少 32 字符的 `PRAXIS_WORKFLOW_AUTHORITY_TOKEN` 可同时暴露认证的 Authority/Artifact RPC；远程 Runtime 设置同一 token 和 `PRAXIS_WORKFLOW_AUTHORITY_URL=http://HOST:PORT` 后，通过相同 Port 竞争 Lease 并读取同一 mailbox，不直接打开服务端 SQLite。Session conversation 与 Workflow execution 用 ID 关联，但拥有独立的 schema 和生命周期。
+Workflow authority 默认是本地 SQLite。设置 `PRAXIS_WORKFLOW_AUTHORITY_LISTEN=127.0.0.1:PORT` 与至少 32 字符的 `PRAXIS_WORKFLOW_AUTHORITY_TOKEN` 可同时暴露认证的 Authority/Artifact RPC；远程 Runtime 设置同一 token 和 `PRAXIS_WORKFLOW_AUTHORITY_URL=http://HOST:PORT` 后，通过相同 Port 竞争 Lease 并读取同一 mailbox，不直接打开服务端 SQLite。Provider-aware capacity group 随 Workflow Spec 持久化，Authority 在 claim 事务内同时完成容量 admission 和 Lease 所有权变更，因此本地/远程 Worker 共享瞬时并发边界。Session conversation 与 Workflow execution 用 ID 关联，但拥有独立的 schema 和生命周期。
 
 ## 8. Prompt 与上下文
 
-默认 `iron-law-lean-v1` 由 `SystemPromptComposer` 与 `PromptAssembler` 分段装配：唯一 Trusted Instructions；runtime facts、Skill catalog、project guidance；Child pinned ContextPacket；Run-stable Session ContextView；native/semantic checkpoint；最近完整消息后缀。Tool definitions 是独立 Provider 字段，不拼进 system 文案。父 Agent 始终读取 journal context view；旧 CompactPlan 不再创建、注入或作为 `/plan` 来源。
+默认 `iron-law-lean-v1` 由 `SystemPromptComposer` 与 `PromptAssembler` 分段装配：唯一 Trusted Instructions；runtime facts、Skill catalog、project guidance；本次 Root/Child Run 的逐字 pinned task contract；Child 可选签名 ContextPacket；Run-stable Session ContextView；native/semantic checkpoint；最近完整消息后缀。Tool definitions 是独立 Provider 字段，不拼进 system 文案。逐字任务合同位于 compactable history 之外并与 canonical live message 去重；父 Agent 始终读取 journal context view；旧 CompactPlan 不再创建、注入或作为 `/plan` 来源。
 
 Reasoning 与 Tool-result editing 只生成 Provider 发送视图，不改 canonical SessionJournal。Compaction 始终保存 portable semantic checkpoint；OpenAI Responses 可叠加与 provider/model/instructions 精确绑定的 opaque native state。Workflow 恢复只读取 Workflow journal，不读取自然语言摘要。详细装配顺序和变更门禁见 [Prompt、Context 与 Compaction](prompt-assembly.md)。
 
@@ -134,6 +136,6 @@ Trace 关联 Session、Run、Workflow、Attempt、Provider、Tool、Policy 和 p
 
 ## 12. 当前边界
 
-已接入：SQLite/认证远程 Authority 边界、统一 auto、动态 AgentTask DAG、Root 自主 wait/continue、持久类型化 mailbox、显式 inbox/join、Local/远程 durable Worker、后台 Lease recovery、不可变执行快照、带 digest 的 Profile、显式预算计费与取消、Skill/MCP、隔离 Git 写入和 Workflow projection。真实 Provider smoke 已覆盖 quorum、cross-review、结构化 Child 提交、局部 synthesis recovery 和 semantic compaction。
+已接入：SQLite/认证远程 Authority 边界、统一执行容器、默认 `auto` 的异步 Child Run 句柄、Root 自主 spawn/wait/result/cancel/steer、显式 `workflow` policy 的 DAG/loop/subworkflow、持久类型化 mailbox、Local/远程 durable Worker、后台 Lease recovery、不可变执行快照、带 digest 的 Profile、Skill/MCP、隔离 Git 写入和 Workflow projection。真实 Provider 的旧 DAG smoke 已覆盖 quorum、cross-review、结构化 Child 提交、局部 synthesis recovery 和 semantic compaction；2026-08-22 MiniMax A/B 验证了自主组可选择 0 Child、受控组修复后 2 Child 的 spawn/wait/result 与全终态收敛，随后动态改计划实验又验证了 Root 在新 Observation 后取消运行中旧分支、向排队分支持久 steer、只等待保留分支，并以 `succeeded/cancelled/succeeded` 正确收敛。它证明工具链和动态路线修订可用，不证明模型会稳定选择最佳委派或写出完全正确的最终综合。
 
-未接入：PostgreSQL authority、租户级分布式熔断、高可用通知渠道、任意递归 subworkflow 和连接器声明驱动自动补偿。MiniMax 单次确定性硬重启已验证相同 Workflow 接管、成功 Attempt 不变、中断 Attempt 重试、后继 synthesis/join/root 收敛且无非终态 Task；这补齐了端到端合同证据，但仍不是重复故障或跨机 SLA。代码中的旧 DAG/PlanGenerator/Verifier 类可作为底层库和测试资产，但不构成第二条产品执行路径。完整证据见[最终小样本测评与优化总结](evaluation-final-2026-08-09.md)。
+未接入：PostgreSQL authority、租户级分布式熔断、高可用通知渠道、任意递归 subworkflow 和连接器声明驱动自动补偿。MiniMax 单次确定性硬重启已验证相同 Workflow 接管、成功 Attempt 不变、中断 Attempt 重试、后继 synthesis/join/root 收敛且无非终态 Task；这补齐了端到端合同证据，但仍不是重复故障或跨机 SLA。代码中的旧 DAG/PlanGenerator/Verifier 类可作为底层库和测试资产，但不构成第二条产品执行路径。完整证据见[持续维护的测评档案](evaluations/README.md)。

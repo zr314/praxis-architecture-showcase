@@ -1,6 +1,7 @@
-import { promptDigest, type PromptProgramManifest, type PromptVariant } from '@praxis/core-sdk'
+import { type PromptProgramManifest, type PromptVariant, promptDigest } from '@praxis/core-sdk'
 
 export const DEFAULT_PROMPT_VARIANT: PromptVariant = 'iron-law-lean-v1'
+export const DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET = 4_096
 
 export type PromptProgramDefinition = Readonly<{
   variant: PromptVariant
@@ -11,12 +12,12 @@ export type PromptProgramDefinition = Readonly<{
 const PROMPT_PROGRAMS: Readonly<Record<PromptVariant, PromptProgramDefinition>> = Object.freeze({
   'baseline-v1': Object.freeze({
     variant: 'baseline-v1',
-    version: '1.0.0',
+    version: '1.2.0',
     trustedInstructionsId: 'praxis.trusted-instructions',
   }),
   'iron-law-lean-v1': Object.freeze({
     variant: 'iron-law-lean-v1',
-    version: '1.0.0',
+    version: '1.2.0',
     trustedInstructionsId: 'praxis.trusted-instructions',
   }),
 })

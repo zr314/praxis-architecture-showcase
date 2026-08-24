@@ -100,6 +100,10 @@ test('method-level request fixtures satisfy the protocol schema', () => {
         text: 'hello',
         clientRequestId: 'c-1',
         commandInvocationId: 'command:protocol-1',
+        agent: {
+          name: 'reviewer',
+          instructions: 'Review the request and return a concise answer.',
+        },
       },
     ],
     ['session.follow_up', { sessionId: 's-1', text: 'again', clientRequestId: 'c-2' }],
@@ -275,6 +279,21 @@ test('result and discriminated event fixtures satisfy the protocol schema', () =
       runId: 'r-1',
       reason: 'user_requested',
       usage: { turns: 0, toolCalls: 0, subagents: 0 },
+    },
+    {
+      type: 'workflow_update',
+      runId: 'r-1',
+      update: {
+        workflowId: 'workflow-1',
+        runId: 'workflow-run-1',
+        sessionId: 's-1',
+        revision: 1,
+        sequence: 1,
+        state: 'running',
+        topology: 'single_agent',
+        objective: 'Route this projection to the active prompt stream.',
+        nodes: [{ nodeId: 'root', title: 'Root AgentTask', kind: 'agent_task', state: 'running' }],
+      },
     },
   ]
   for (const [index, event] of events.entries()) {

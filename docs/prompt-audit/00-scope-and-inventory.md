@@ -61,7 +61,7 @@
 
 内置工具：`artifact_read`、`edit`、`find`、`glob`、`grep`、`ls`、`read`、`shell`、`write`、`skill`。
 
-工作流工具：`agent.delegate`、`agent.handoff`、`workflow.expand`、`workflow.subworkflow`、`workflow.loop`、`workflow.compensate`、`workflow.wait`、`workflow.human_task`、`workflow.timer`。
+默认 Agent Run Tree 工具：`agent.spawn`、`agent.wait`、`agent.result`、`agent.cancel`、`agent.steer`。显式 Workflow 工具：`agent.delegate`、`agent.handoff`、`workflow.expand`、`workflow.subworkflow`、`workflow.loop`、`workflow.compensate`、`workflow.wait`、`workflow.human_task`、`workflow.timer`。
 
 第三方 Plugin/MCP 工具定义是运行时输入：Runtime 只装配其名称、描述和 schema，固定原文不在 Praxis 仓库内。
 
@@ -120,7 +120,7 @@ Claude copy 已带一套逆向审计资料：
 | MCP instructions | MCP server | 标题分块/动态 attachment | Claude system/delta；其他取决于实现 | 连接、重连或请求重建 |
 | 工具结果 | Runtime/tool | provider 原生 tool result | tool result；来源/receipt 由 Runtime 记录 | 每次工具完成后下一轮 |
 | checkpoint | 压缩器/持久层 | summary wrapper | context user | 历史超预算或恢复会话 |
-| 环境事实 | Runtime | `runtime_facts`；baseline 为 workspace section | 默认 user context；baseline system/instructions | 主请求装配时 |
+| 环境事实 | Runtime | `runtime_facts`（含 shell dialect）；baseline 为 workspace section | 默认 user context；baseline system/instructions | 主请求装配时 |
 | 子任务包 | Planner/父 Agent | canonical JSON/envelope | child user/context | 子 Agent 启动时 |
 
 本表的 Runtime `trust` 是路由、持久化和兼容元数据，不是内容真伪等级，也不等于 Provider role。默认生产 Prompt 不把它渲染成“低可信”标签；具体事实是否可靠由 provenance、时效、receipt、verifier 和冲突状态判断。详见[指令权威、来源与事实验证](./10-authority-provenance-and-verification.md)。
@@ -138,15 +138,16 @@ Claude copy 已带一套逆向审计资料：
 
 | 源文件 | SHA-256 |
 | --- | --- |
-| Praxis `prompt/systemPromptComposer.ts` | `71f3139addaced102db08121ec92d9a2eb838380ff536a8028619673499377c8` |
-| Praxis `prompt/promptAssembler.ts` | `6c2b3882be987fa4b0e64bca75917ce06e0cf5d3cb9f087e264a5ff0c3d55c0d` |
-| Praxis `memory/contextWindow.ts` | `d8c4d976c47fc560444117305608567c2450736ae378743b190a4451fb55ba5e` |
-| Praxis `planner/providerPlanGenerator.ts` | `8a4dd7c255e2923868787bb845229d633b049f3caa02a1d3f28ac4dd787e06d7` |
+| Praxis `prompt/promptRegistry.ts` | `52bb80e7b4ce38807d0258f40163a0a57afe8c8b185bb8513d86e1eb9c8c7e74` |
+| Praxis `prompt/systemPromptComposer.ts` | `f9b76fad067c83c7995ad76651ee8d841f58224b24a6b5330fbb46c8ccb4d811` |
+| Praxis `prompt/promptAssembler.ts` | `cec74bdcba95528de8b1870922822ab8c5a8abc28901c9c592852912815b45c8` |
+| Praxis `memory/contextWindow.ts` | `e49530bba6959c968df6ed68b195df8c90ebce297c8de86b941d4877e4b8af9c` |
+| Praxis `planner/providerPlanGenerator.ts` | `f89daf42ecc09c61096a6c7a651f2d412a201ef943efaffff55d9161014d8dc5` |
 | Praxis `planner/planGenerator.ts` | `58179b14cc6ee5ab00d8a58aa99bd10284dd0a515c70358fb47e7eef5c4f0ee4` |
-| Praxis `planner/providerSemanticVerifier.ts` | `8165bcc32897ca6a0a8f68aec180ca7b8526637fd99220cf10f99c10b9678441` |
+| Praxis `planner/providerSemanticVerifier.ts` | `39db70176111c10a7737869d3d8e8d6f64cd4fe03d540401319ab870bb2a2c34` |
 | Praxis `workflow/agentAssembly.ts` | `9a4dfdaa3587799170584d659acb92432ca2e6e7ae1b2fb503d0d4976c46fb95` |
-| Praxis `workflow/localWorkflowAgentWorker.ts` | `795466c2078cc5a1f10dafd126ace39815c3920b4053f1071b83ee2c3d747e2d` |
-| Praxis `subagent/contextPacket.ts` | `cb87332343d6b48ca11984bdd6dcbfefa8fdb3b953380e6eba74984330226582` |
+| Praxis `workflow/localWorkflowAgentWorker.ts` | `2d6022800001d63730a9cf1580fdae3e4f154d7f75ab6e0bd9bba6b5fc0719e9` |
+| Praxis `subagent/contextPacket.ts` | `49ef99fec32a71d37626d607693b9ee0e8ccb014056c3ae5fb08d809a502f63b` |
 | Pi `core/system-prompt.ts` | `677c3cf2ca259d15c27466961702a489244e9505829a6c994d0de314b2a469ef` |
 | Pi `core/agent-session.ts` | `4fb0c7cafa450588a8786617f2212c08356160af325c137b8cc7f065a4a9bc9e` |
 | Pi `core/compaction/compaction.ts` | `0ce643e2e3c97e4dc160e888e93cb8b5b53914e609a6d333765493d630b6b731` |

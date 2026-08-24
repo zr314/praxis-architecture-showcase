@@ -60,7 +60,14 @@ export class MockProvider implements ChatProvider {
       return
     }
 
-    const latest = request.messages.at(-1)
+    const latestHistory = request.messages.at(-1)
+    const currentTask = [...(request.contextMessages ?? [])]
+      .reverse()
+      .find((message) => message.role === 'user' && message.trust === 'user')
+    // The current Run task contract is pinned outside compactable history. It must
+    // win over an older assistant turn, while a Tool result from this same turn
+    // still wins so the mock does not repeat the Tool call forever.
+    const latest = latestHistory?.role === 'tool' ? latestHistory : (currentTask ?? latestHistory)
     const packet = contextPacketFromMessages(request)
     const resultSubmissionAvailable = request.tools.some(
       ({ name }) => name === 'praxis_submit_child_result',
@@ -150,7 +157,7 @@ export class MockProvider implements ChatProvider {
         ? [
             'Praxis Runtime has accepted this request. ',
             'This response comes from the deterministic Mock Provider. ',
-            `Conversation turns: ${request.messages.length}. `,
+            `Conversation turns: ${request.messages.length + (currentTask === undefined ? 0 : 1)}. `,
             `Latest prompt: ${prompt}`,
           ]
         : [
@@ -178,8 +185,9 @@ type MockContextPacket = Readonly<{
 }>
 
 function contextPacketFromMessages(request: ProviderRequest): MockContextPacket | undefined {
-  for (let index = request.messages.length - 1; index >= 0; index -= 1) {
-    const message = request.messages[index]
+  const messages = [...(request.contextMessages ?? []), ...request.messages]
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
     if (message?.role !== 'user') continue
     const packet = parseContextPacket(providerContentText(message.content))
     if (packet !== undefined) return packet

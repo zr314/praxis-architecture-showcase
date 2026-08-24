@@ -200,6 +200,23 @@ test('broker deadline fails closed even when the Provider ignores its AbortSigna
   assert.equal(Date.now() - startedAt < 1_000, true)
 })
 
+test('v4 long-lived credential deadline does not overflow the native timer', async () => {
+  const broker = brokerFixture({
+    now: Date.now,
+    stream: async function* () {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+      yield {
+        type: 'completed',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }
+    },
+  })
+  const grant = broker.issue(scope({ deadlineAt: '9999-12-31T23:59:59.999Z', maxTokens: 2 }))
+  const chunks = await collect(broker.invoke(invocation(grant.handleId, 'request-long-lived')))
+  assert.equal(chunks.at(-1)?.type, 'completed')
+})
+
 test('ephemeral token refs require explicit Provider support and bounded expiry', async () => {
   const now = Date.parse('2026-08-03T00:00:00.000Z')
   const revoked: string[] = []

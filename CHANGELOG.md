@@ -5,6 +5,17 @@ and semantic versioning.
 
 ## Unreleased
 
+### Added
+
+- Added a high-level `defineAgent` SDK with typed state/output, application
+  middleware, Session resume, cancellation, and Run-scoped instructions.
+- Added one bounded client notification pump that multiplexes interleaved
+  concurrent Runs without losing events emitted before a prompt response.
+- Added trusted Runtime host middleware for `beforeModel/afterModel` and
+  `beforeTool/afterTool`, with authority-preserving validation and fail-closed
+  errors, per-hook deadlines, consecutive-failure circuit breaking, bounded
+  health diagnostics, and opt-in registry-based Child Runtime inheritance.
+
 ## [0.2.0] - 2026-08-10
 
 Praxis 0.2 consolidates the production-shaped Agent Runtime, durable Workflow,

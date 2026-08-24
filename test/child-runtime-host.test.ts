@@ -334,6 +334,7 @@ test('child runtime host binds an immutable bootstrap profile through the dedica
         'events.subscribe',
         'session.create',
         'session.prompt',
+        'session.steer',
         'permission.decide',
         'session.abort',
         'shutdown',
@@ -455,7 +456,7 @@ test('formal child host rejects descendant authority before spawn or charge', as
   }
 })
 
-test('child runtime host executes the shipping Runtime through formal session RPC', async () => {
+test('child runtime host executes and accepts early steer through formal session RPC', async () => {
   const home = await mkdtemp(join(tmpdir(), 'praxis-child-host-production-'))
   const ledger = new InMemorySubagentAdmissionLedger()
   ledger.registerRootScope({
@@ -498,7 +499,8 @@ test('child runtime host executes the shipping Runtime through formal session RP
   try {
     const deadlineAt = new Date(Date.now() + 60_000).toISOString()
     const profile = bootstrapProfile(home, deadlineAt)
-    const result = await host.run({
+    const steer = host.steer('production-child', 'tool:read {"path":"package.json","limit":5}')
+    const resultPromise = host.run({
       packet: {
         ...contextPacket(profile, deadlineAt),
         outputSchema: {
@@ -514,6 +516,8 @@ test('child runtime host executes the shipping Runtime through formal session RP
       },
       bootstrapProfile: profile,
     })
+    assert.equal(await steer, true)
+    const result = await resultPromise
 
     assert.equal(result.schemaVersion, 1)
     assert.equal(result.childRunId, 'production-child')
@@ -788,6 +792,54 @@ test('execution deadline is independent from handshake timeout and aborts the ch
   }
 })
 
+test('long-lived child deadline is not clipped to the native timer range', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'praxis-child-host-long-deadline-'))
+  const cancellation = new CancellationTree()
+  const ledger = new InMemorySubagentAdmissionLedger()
+  ledger.registerRootScope({
+    runId: 'production-parent',
+    budget: rootBudget({ maxTurns: 4, maxToolCalls: 4, maxDepth: 2 }),
+  })
+  const progress: ChildRuntimeProgressEventV1[] = []
+  const host = new ChildRuntimeHost({
+    ledger,
+    cancellation,
+    handshakeTimeoutMs: 1_500,
+    shutdownGraceMs: 500,
+    progress: { publish: ({ event }) => progress.push(event) },
+  })
+
+  try {
+    const expectedRemainingMs = 3_000_000_000
+    const deadlineAt = new Date(Date.now() + expectedRemainingMs).toISOString()
+    const profile = bootstrapProfile(home, deadlineAt)
+    const execution = host.run({
+      packet: contextPacket(profile, deadlineAt),
+      parentUsage: { turns: 0, toolCalls: 0 },
+      launch: {
+        command: process.execPath,
+        args: ['--import', 'tsx', controlledRuntime],
+        cwd: process.cwd(),
+      },
+      bootstrapProfile: profile,
+    })
+
+    await waitFor(() => progress.some((event) => event.type === 'tool_start'))
+    const started = progress.find((event) => event.type === 'tool_start')
+    const transmitted = Number(
+      started?.type === 'tool_start' && typeof started.input === 'object' && started.input !== null
+        ? Reflect.get(started.input, 'timeoutMs')
+        : 0,
+    )
+    assert.ok(transmitted > 2_147_483_647)
+    assert.ok(transmitted <= expectedRemainingMs)
+    host.cancel('production-parent', 'user_abort')
+    assert.equal((await execution).status, 'cancelled')
+  } finally {
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
 test('no-progress deadline aborts an idle child without consuming its total deadline', async () => {
   const home = await mkdtemp(join(tmpdir(), 'praxis-child-host-no-progress-'))
   const cancellation = new CancellationTree()
@@ -923,6 +975,7 @@ function bootstrapProfile(
     'events.subscribe',
     'session.create',
     'session.prompt',
+    'session.steer',
     'permission.decide',
     'session.abort',
     'shutdown',

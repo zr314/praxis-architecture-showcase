@@ -191,8 +191,12 @@ test('a replayed model compaction candidate is bounded and falls back with prove
       model: 'summary-fixture',
     },
   })
-  assert.equal(modelCheckpoint.summary?.constraints.length, 24)
-  assert.ok(modelCheckpoint.summary!.constraints.every((value) => value.length <= 240))
+  assert.deepEqual(
+    modelCheckpoint.summary?.constraints,
+    [],
+    'model-only constraints cannot manufacture task authority beyond the Runtime baseline',
+  )
+  assert.ok(modelCheckpoint.summary?.decisions.includes('semantic decision'))
 
   const fallbackCheckpoint = await new CompactionService({
     generator: new FailingModelSummaryGenerator(),

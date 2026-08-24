@@ -1,8 +1,10 @@
 # Praxis 当前生产 Prompt 中文全量说明
 
-最后核对：2026-08-18。
+最后核对：2026-08-24。
 
 本文只记录当前默认并实际使用的 `iron-law-lean-v1`，不再保存旧版、候选版、历史对比或英文原文。仓库中的固定 Prompt 源码目前仍以英文编写；本文按要求只给出中文等义文本。工具名、JSON 字段名、枚举值、错误码和 envelope 标签保留源码拼写，以便检索和调试。
+
+当前 Prompt program 版本为 `1.2.0`。默认 system Prompt 装配预算由 `promptRegistry.ts` 的唯一常量 `DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET=4096` 提供；它只限制可信指令、Runtime facts、Skill catalog 和 project guidance 的装配体积，不是模型上下文、任务总 token、turn、Tool call 或墙钟上限。必需合同超过预算时仍以 `PROMPT_BUDGET_TOO_SMALL` fail closed，不会静默删除安全核心。
 
 这里的“Prompt”按模型实际可见范围定义，包括：
 
@@ -47,6 +49,7 @@
 唯一可信指令
   + Runtime 固定上下文
   + Run 级能力与项目上下文
+  + 本次 Run 的逐字任务合同
   + 不可压缩的 Child ContextPacket（仅 Child）
   + Run 稳定的 Session ContextView
   + Provider 原生上下文或语义 checkpoint
@@ -66,14 +69,16 @@ systemContextMessages
   + project_guidance（可选）
 
 contextMessages
-  = pinned Child ContextPacket（Child 可选）
+  = pinned 逐字 Run task contract
+  + pinned Child ContextPacket（Child 可选）
   + session_view
   + Provider-native context 或 session_checkpoint（可选）
   + skill_invocation_replay（可选）
 
 messages
   = checkpoint 之后仍需保留的完整对话后缀
-  + 当前用户输入、Tool call/result、steer 和运行时追加消息
+  + Tool call/result、steer 和运行时追加消息
+  + 与 pinned task contract 不相同的用户消息
 
 tools
   = 当前 Run 真正获准的内置、Skill、MCP、协作和终止工具 schema
@@ -129,15 +134,15 @@ Root 始终追加：
 
 - 当前角色是 Root；
 - Planner mode 不是 `solo`；
-- 实际工具表中存在 `agent.delegate` 或 `workflow.expand`。
+- 实际工具表中存在 `agent.spawn`、`agent.delegate` 或 `workflow.expand`。
 
 追加文本的中文语义为：
 
 ```text
-对于耗时较长、跨多个领域或高风险，并且其中存在独立工作流的任务，在开展大量串行工作之前，使用 agent.delegate 或 workflow.expand 至少委派一次边界明确的调查或审查；任务较短或高度耦合时直接完成；连续失败后重新评估是否应委派。
+不要仅仅因为任务耗时较长就委派。只有当独立上下文、并行分支、隔离能力、持久等待或独立验证带来的质量、延迟、恢复或上下文收益预计大于协调成本时，才 spawn Child。方向不明确时，先直接调查或只 spawn 一个边界明确的 scout，再根据证据修改当前工作计划，不要猜测完整路线。
 ```
 
-这个检查点不是“见到复杂任务就强制拆分”。必须同时存在可独立执行的工作流；短任务和强耦合修改仍应直接完成。
+该检查点明确删除了旧版“长任务至少委派一次”的倾向。委派率不是目标，是否获得可测量的质量、并行、恢复或上下文收益才是目标。
 
 ### 2.4 Child 角色合同
 
@@ -155,7 +160,13 @@ Child 是否可再委派不是靠文字约定：Child capability bundle 同时�
 
 ```text
 只使用已提供的工具。在可行时，先检查再进行有意义的修改；选择侵入性最低且与任务相关的操作；保留用户已有改动；验证结果；对不确定之处明确说明。
+
+当用户已经授权一个具体结果、只是没有规定实现方式时，在权限边界内选择合理、可验证并优先可逆的方式继续。只有缺失信息会实质改变结果、权限或风险时才请求澄清；一种方法失败后，先检查当前状态并尝试安全替代路径，不要把纯实现细节的选择退回给用户。
+
+对于包含多个要求的工作，在最终结束前重新阅读用户的验收条件，并按任务需要检查真实产物是否可解析、编码是否正确、schema 是否符合、必需 header 是否精确，以及关键业务语义是否成立。自己编写的测试不能重新定义用户要求的结果。
 ```
+
+第二段是当前自主推进合同：用户已授权结果时，不因纯实现方式选择而无谓暂停；失败后先检查状态并尝试安全替代路径。第三段是当前通用最终验收合同。两者都不包含 benchmark 专用字段：前者减少不必要的澄清阻塞，后者防止模型只验证“文件存在”或只通过自己写的错误测试，就把任务视为完成。本页只描述当前 Prompt，不保留旧版文案；历史变更证据见执行台账。
 
 ### 2.6 三种最终形态
 
@@ -188,7 +199,14 @@ ${JSON(payload)}
   "workspace": {
     "cwd": "当前工作区绝对路径",
     "platform": "运行平台",
-    "shell": "powershell 或 posix"
+    "shell": "powershell 或 posix",
+    "shellDialect": {
+      "name": "windows-powershell-5.1 或 posix",
+      "commandSeparator": "当前可用的命令分隔符",
+      "unavailableSyntax": ["当前不可用的典型语法"],
+      "multilineInput": "多行进程输入使用 shell 工具的 stdin 字段",
+      "utf8FileWrites": "精确 UTF-8 文本的写入方式"
+    }
   },
   "workflow": {
     "role": "root 或 child",
@@ -198,7 +216,7 @@ ${JSON(payload)}
 }
 ```
 
-没有 Workflow 上下文时省略 `workflow`。这里不再放冗长的 shell 教程或 Workflow 策略；模型根据实际工具说明工作。
+没有 Workflow 上下文时省略 `workflow`。`shellDialect` 是简短、结构化的当前环境事实，不是通用 shell 教程。在 Windows 下它明确 `;` 分隔符，说明 `&&`、`$(pwd)` 和 `head` 等 POSIX-only 语法不可假设可用，并提示 PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会写 BOM；精确文本优先用 `write/edit`，确需 shell 时使用无 BOM 的 UTF-8 编码。POSIX 路径给出对应的方言事实。
 
 ### 3.2 `skill_catalog`
 
@@ -266,6 +284,23 @@ ${JSON(payload)}
 ```
 
 序列化 payload 上限为 65,536 UTF-8 字节。它提供连续性视图，不是权限声明；真正 authority 仍由 Runtime 的有效 grant 决定。
+
+### 3.4.1 本次 Run 的逐字任务合同
+
+每次 `session.prompt` 或 follow-up 编译出已校验的 `PromptEnvelope` 后，`RuntimeKernel` 都把 `effectiveText` 固定为本次 Agent Run 的一条 user context message：
+
+```json
+{
+  "role": "user",
+  "content": "本次 PromptEnvelope 的逐字 effectiveText",
+  "intent": "prompt 或 follow_up",
+  "trust": "user"
+}
+```
+
+它只在本 Run 内固定，不是跨任务常驻的 system Prompt。它同时作为 canonical user message 写入 SessionJournal；`PromptAssembler` 按完整 message 相等性去重，因此 Provider 每轮只看到一份题面。区别在于：Journal 中的副本可以进入窗口选择和 compaction 覆盖范围，而 pinned 副本始终在这些范围之外，每轮都在 `session_view` 和 checkpoint 之前重新装配。
+
+这层只固定用户实际给出的任务合同，不固定模型的计划、推测或中间路线。Root 和 Child 都有它；Child 还会额外收到第 7 节的签名 ContextPacket。真实 batching 复验中，semantic checkpoint 曾出现 `…[task contract truncated]…` 并混淆两个 bucket 的不同阈值；加入逐字固定层后，模型经历 3 次 compaction 仍保持两套正确阈值，最终官方 verifier 6/6。
 
 ### 3.5 `session_checkpoint`
 
@@ -609,7 +644,7 @@ fallback Tool 输出合同：
 使用完整摘要调用 submit_compaction_summary，且只调用一次。不要输出其他文字。
 ```
 
-Compactor 使用 `reasoning.mode="compact"`、`reasoning.effort="low"`。最大输出至少为 2048 token，通常按目标摘要预算的三倍预留。
+Compactor 使用 `reasoning.mode="compact"`、`reasoning.effort="low"`。当前默认 semantic checkpoint 预算为 4096 token；Provider 最大输出至少为 2048 token，并通常按目标摘要预算的三倍预留。这里限制的是单个检查点的工作记忆大小，不是 Agent 的任务寿命、Turn 或 Tool-call 数量。
 
 ### 6.2 Compactor context message
 
@@ -665,10 +700,10 @@ OpenAI Responses 的 Provider-native compact 直接复用当时真实的 `Provid
 
 不匹配时退回可移植的 semantic checkpoint。最终摘要还会由 Runtime 确定性合并：
 
-- 用户目标和 Child ContextPacket 合同不能由摘要模型改写；
+- 本次 Run 的逐字用户任务和 Child ContextPacket 合同不能由摘要模型改写；
 - 工具证据、已修改文件和 open loop 不能被模型输出的空数组抹掉；
 - 未经历史证明的“已完成”不会获得执行权威；
-- Child ContextPacket 固定在普通可压缩历史之外。
+- 每个 Run 的逐字任务合同固定在普通可压缩历史之外；Child ContextPacket 也在该边界之外。
 
 ## 7. Child / Subagent 的完整 Prompt
 
@@ -806,8 +841,8 @@ Tool description 和参数 schema 通过 Provider 原生 `tools` 字段发送，
 | `glob` | 列出匹配 glob 的工作区文件。 | `pattern` 必填；最多 200 项；忽略 `.git/node_modules/.praxis`；只读、可并行。 |
 | `grep` | 对 UTF-8 工作区文件执行字面量或正则搜索。 | `query` 必填；优先用 `pathPattern`，`pattern` 是兼容别名；可选 `regex/ignoreCase/before/after/maxMatches`；上下文行 0–20，最多 100 个匹配；只读、可并行。 |
 | `ls` | 列出一个工作区目录及各条目的类型。 | `path` 可选，默认 `"."`；最多 500 项；忽略 `.git/node_modules/.praxis`；只读、可并行。 |
-| `read` | 分页读取工作区内的 UTF-8 文本文件。 | `path` 必填；`offset>=0`；`limit` 1–2000，默认 200 行；文件上限 5,000,000 字节；拒绝二进制和非 UTF-8；返回 digest 与 `nextOffset`；只读、可并行。 |
-| `shell` | 在工作区运行一条 Windows PowerShell 或 POSIX shell 命令，内联输出有界。命令默认没有隐式超时；只有确需硬截止时间时才传 `timeoutMs`；多行进程输入通过 `stdin`。 | `command` 必填；`stdin` 最多 256,000 字符；`workingDirectory` 相对 Session workspace；stdout/stderr 各最多约 100,000 字节；进程副作用、全局冲突、不可并行。 |
+| `read` | 分页读取工作区内的 UTF-8 文本文件，并报告文件是否带 UTF-8 BOM。 | `path` 必填；`offset>=0`；`limit` 1–2000，默认 200 行；文件上限 5,000,000 字节；拒绝二进制和非 UTF-8；返回 digest、`nextOffset` 与 `hasBom`；只读、可并行。 |
+| `shell` | 在工作区运行一条 Windows PowerShell 或 POSIX shell 命令，内联输出有界，默认安全 deadline 为 10 分钟。用 `timeoutMs` 为探索性/外部命令缩短租约，或为已知有界的长命令显式延长；单命令租约不限制 Agent Run 的总寿命。多行进程输入通过 `stdin`。 | `command` 必填；`timeoutMs` 是覆盖默认值的正安全整数；`stdin` 最多 256,000 字符；`workingDirectory` 相对 Session workspace；stdout/stderr 各最多约 100,000 字节；进程副作用、全局冲突、不可并行；超时/取消回收进程树。 |
 | `write` | 用给定内容替换或创建 UTF-8 文本文件。 | `path/content` 必填；内容最多 1,000,000 字节；可选 `expectedDigest` 或 `createOnly`，两者不能同时使用；写入、同目标不可并行。 |
 | `skill` | 从当前 Run snapshot 中按 capability ID 或名称加载一个已启用 Agent Skill。 | `name` 必填，最多 256；`arguments` 最多 4096；无副作用、可并行；结果转为 `skill_invocation` context。 |
 
@@ -815,21 +850,28 @@ Tool description 和参数 schema 通过 Provider 原生 `tools` 字段发送，
 
 ### 8.2 Child assembly 公共字段
 
-`agent.delegate`、`agent.handoff`、`workflow.expand`、`workflow.subworkflow` 和 `workflow.loop` 可使用以下公共请求：
+`agent.spawn` 以及显式 workflow policy 下的 `agent.delegate`、`agent.handoff`、`workflow.expand`、`workflow.subworkflow` 和 `workflow.loop` 可使用以下公共能力请求：
 
 - `tools`：最多 256 个继承工具名；省略通常表示请求所有与 grant 兼容的工具；执行命令必须显式包含 `shell`；
 - `skills`：最多 128 个 Skill；
 - `mcpServers`：最多 128 个 MCP server；
 - `workspace`：`none/read/write`，默认 `read`；编辑、构建、安装或可变 shell 工作应请求 `write`；
 - `network`：只请求继承父侧已有的网络 authority；
-- `maxWallClockMs`：最小 1000 ms；
-- `maxTokens`：可选硬上限；省略表示 v4 Child 默认不设 token 上限；
-- `maxToolCalls/maxTurns`：可选正整数；
 - 第 7.4 节的 Profile、模型、reasoning、result 和 success criteria。
 
-这些字段都是能力请求。Runtime 会按父 grant、当前可用能力、workspace isolation 和剩余预算编译 effective assembly。
+显式 Workflow 工具还可声明 `maxWallClockMs/maxTokens/maxToolCalls/maxTurns`。默认 `agent.spawn` 不暴露这些数值字段：模型无法可靠把任务难度换算为整个 Child 生命周期的累计 Provider input+output，普通 Run Tree Child 应继承父 Run/组织策略。Runtime 会按父 grant、当前可用能力、workspace isolation 和剩余预算编译 effective assembly。
 
-### 8.3 `agent.delegate`
+### 8.3 默认 Agent Run Tree 工具
+
+- `agent.spawn`：只要求 `objective`，默认 `worker/read`；立即返回稳定 `childId`，不要求模型编写 DAG，也不允许模型猜测 per-Child 数值预算。
+- `agent.result`：非阻塞读取一个或多个 Child 的状态和 result Artifact，可确认已经消费的终态消息。
+- `agent.wait`：对 `childIds` 执行 `all/any/quorum` Durable Future 等待；不创建模型可见 Join Node。
+- `agent.cancel`：取消失去价值的 Child，保留历史和已经产生的证据。
+- `agent.steer`：把有界 instruction 先写入 durable mailbox；活跃 Child 在安全边界接收，未启动 Child 在 bootstrap 前读取。
+
+当前 `auto` 只默认暴露以上工具；完整 DAG 工具属于显式 `workflow` policy。迁移第一阶段 Child 仍不能创建后代。
+
+### 8.4 `agent.delegate`（显式 Workflow 兼容）
 
 中文等义说明：
 
@@ -845,7 +887,7 @@ Tool description 和参数 schema 通过 Provider 原生 `tools` 字段发送，
 
 它创建一个独立 durable Child 节点。工具标记为 process，可与不同目标的其他 delegate 并行；Child 永远得到 `mayDelegate=false`。
 
-### 8.4 `agent.handoff`
+### 8.5 `agent.handoff`
 
 ```text
 把要求的结果交给一个具名 Agent Profile。该专家结果成为父响应可审查的证据；Runtime 把 handoff 持久化为 synthesis 节点。
@@ -853,7 +895,7 @@ Tool description 和参数 schema 通过 Provider 原生 `tools` 字段发送，
 
 `profile/objective` 必填，其他字段使用公共 assembly。它是串行、workspace 冲突的 synthesis 节点。返回对象仍有兼容字段名 `authoritativeResult`，但字段名不代表结果已完成事实验证；工具说明明确把它定义为 reviewable evidence。
 
-### 8.5 `workflow.expand`
+### 8.6 `workflow.expand`
 
 ```text
 请求一个持久化 Child Agent DAG。没有依赖的节点并行运行；依赖关系形成串行阶段，也可表达独立交叉审查。依赖可以引用本次调用中的节点，也可以引用较早 expansion 返回的、已经成功的精确内部节点 ID，使替换节点继承已经持久化的前置 Artifact。每个节点都可以请求自己的角色、能力、模型、推理强度、预算、结果合同和成功标准；Runtime authority 始终具有最终效力。成功的替换图可以显式取代较早失败 expansion 中已经终止的节点 ID。
@@ -1015,17 +1057,19 @@ Praxis 没有把主工作区初始化为 Git 仓库。
 2. `runtime_facts`；
 3. 可选 `skill_catalog`；
 4. 可选 `project_guidance`；
-5. Child 可选 pinned ContextPacket；
-6. `session_view`；
-7. 精确匹配的 Provider-native context，或 `session_checkpoint`；
-8. 可选 `skill_invocation_replay`；
-9. checkpoint 后最近完整消息；
-10. 当前有效 Tool、Skill、MCP、Workflow 和终止工具 schema。
+5. 当前 Root/Child Run 的逐字 pinned task contract；
+6. Child 可选签名 ContextPacket；
+7. `session_view`；
+8. 精确匹配的 Provider-native context，或 `session_checkpoint`；
+9. 可选 `skill_invocation_replay`；
+10. checkpoint 后最近完整消息；
+11. 当前有效 Tool、Skill、MCP、Workflow 和终止工具 schema。
 
 生命周期规则：
 
 - Trusted Instructions 只随 variant、角色或协作可用性改变；
-- `runtime_facts` 反映当前 workspace 和工具可用面；
+- `runtime_facts` 反映当前 workspace、shell 方言和工具可用面；
+- 本次 Run 的逐字任务合同在 Run 内固定，不能被 compact 或窗口裁剪；
 - ContextView 在一个 Run 内冻结，成功 compact 后换代；
 - semantic checkpoint 是跨 Provider、跨进程恢复的可移植底座；
 - Provider-native opaque context 只是精确绑定时的性能优化；
@@ -1041,7 +1085,7 @@ Praxis 没有把主工作区初始化为 Git 仓库。
 生产模型请求入口核对后，当前固定自然语言 Prompt 只有以下几组：
 
 1. Root/Child 共用的 lean Trusted Instructions；
-2. Runtime facts、Skill、项目说明、ContextView、checkpoint、Prompt resource 等中性 envelope；
+2. Runtime facts、Skill、项目说明、逐字 Run task contract、ContextView、checkpoint、Prompt resource 等中性 envelope；
 3. Planner 的 route/DAG Prompt 与结构化输出合同；
 4. Semantic Verifier 的证据约束 Prompt；
 5. Semantic Compactor 的 durable continuation Prompt；

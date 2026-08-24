@@ -5,12 +5,12 @@ import { join } from 'node:path'
 import test from 'node:test'
 import {
   createPromptEnvelope,
-  promptDigest,
-  validatePromptEnvelope,
   type PromptEnvelope,
   type ProviderMessage,
+  promptDigest,
   type SessionProjectionV3,
   type SystemPromptBuild,
+  validatePromptEnvelope,
 } from '@praxis/core-sdk'
 import { DeterministicTestTokenizer } from '../apps/runtime/src/memory/index.js'
 import {
@@ -355,6 +355,15 @@ test('PromptAssembler pins an authenticated Child task contract outside compacta
     systemPrompt: SYSTEM_PROMPT,
     messages: [pinned, { role: 'assistant', content: 'Work is in progress.' }],
     pinnedContextMessages: [pinned],
+    checkpoint: {
+      id: 'checkpoint-with-truncated-task-contract',
+      messageStart: 0,
+      messageEnd: 1,
+      content: 'Objective: Review…[task contract truncated]…',
+      digest: promptDigest('Objective: Review…[task contract truncated]…'),
+      estimatedTokens: 16,
+      createdAt: '2026-08-24T00:00:00.000Z',
+    },
     tools: [TOOL],
     tokenizer: new DeterministicTestTokenizer(),
     budget: budget(2_048),
@@ -365,7 +374,44 @@ test('PromptAssembler pins an authenticated Child task contract outside compacta
     assembled.messages.some((message) => String(message.content) === pinned.content),
     false,
   )
+  assert.match(String(assembled.contextMessages.at(-1)?.content), /task contract truncated/u)
   assert.ok(assembled.manifest.budget.pinnedContextTokens > 0)
+})
+
+test('PromptAssembler preserves a selected current task after prior conversation history', () => {
+  const priorUser: ProviderMessage = { role: 'user', content: 'Remember the value ready.' }
+  const priorAssistant: ProviderMessage = { role: 'assistant', content: 'I will remember it.' }
+  const currentTask: ProviderMessage = { role: 'user', content: 'Write the remembered value.' }
+  const assembled = new PromptAssembler().assemble({
+    envelope: createPromptEnvelope({
+      id: 'prompt-follow-up-order',
+      source: 'user_text',
+      effectiveText: String(currentTask.content),
+    }),
+    contextView: compatibilityContextView({
+      sessionId: 'follow-up-session',
+      messages: [],
+      memory: { sessionId: 'follow-up-session' },
+    }),
+    capabilitySnapshot: promptCapabilitySnapshot({ snapshotId: 'follow-up-order', toolCount: 1 }),
+    bundleScoped: false,
+    target: { provider: 'fixture', model: 'multi-turn' },
+    systemPrompt: SYSTEM_PROMPT,
+    messages: [priorUser, priorAssistant, currentTask],
+    pinnedContextMessages: [currentTask],
+    tools: [TOOL],
+    tokenizer: new DeterministicTestTokenizer(),
+    budget: budget(2_048),
+  })
+
+  assert.equal(
+    assembled.contextMessages.some(
+      (message) => message.role === currentTask.role && message.content === currentTask.content,
+    ),
+    false,
+  )
+  assert.deepEqual(assembled.messages, [priorUser, priorAssistant, currentTask])
+  assert.deepEqual([...assembled.contextMessages, ...assembled.messages].at(-1), currentTask)
 })
 
 test('PromptAssembler replays native context only for its exact Provider, model, and instruction binding', () => {

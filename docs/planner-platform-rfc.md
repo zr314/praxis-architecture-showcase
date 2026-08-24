@@ -1,10 +1,10 @@
 # RFC：统一、持久化的 Planner 与多智能体平台
 
-状态：目标 RFC；阶段 1-5 与阶段 6 的统一 broker/远程 Worker 纵向切片已接入，PostgreSQL/租户治理仍是部署提案
+状态：历史目标 RFC；持久执行容器部分继续有效，默认模型可见编排面已由 [ADR-008](adr/ADR-008-agent-run-tree.md) 取代
 面向读者：Praxis Runtime、Planner、Protocol、Storage 与安全模块维护者
 最后更新：2026-08-07
 
-当前实现边界以 [项目状态](project-status.md) 和 [统一 Workflow 与多 Agent](workflow-platform.md) 为准。当前已交付统一 `auto`、Root AgentTask、delegate/expand、SQLite Task/Lease、Local Child Runtime、不可变 Profile/执行快照、后台恢复、HumanTask/Timer、Workflow projection、Git 候选合并、调用前 effect reservation、Saga 账本和认证远程 Worker Authority/Artifact 边界；PostgreSQL、租户治理、高可用通知和连接器自动补偿仍未交付。
+当前实现边界以 [项目状态](project-status.md) 和 [Agent Run Tree 与可选 Workflow](workflow-platform.md) 为准。当前默认 `auto` 已改为 Root AgentTask + `agent.spawn/wait/result/cancel/steer`；本 RFC 后文关于 auto 直接使用 delegate/expand 的段落只保留为历史设计背景。SQLite Task/Lease、Local Child Runtime、执行快照、后台恢复、显式 Workflow、HumanTask/Timer、effect reservation、Saga 和远程 Authority/Artifact 边界继续有效。
 
 ## 结论
 
@@ -566,7 +566,7 @@ Trace 与 Eval 必须记录版本化 Route/Planner/Profile/Schema，才能重放
 | `ArtifactStore` | 继续保存大结果 | 增加 durable metadata、ACL、retention 和跨 Workflow ref |
 | Permission Port | 演进为 durable HumanTask/Approval | 决策、过期、Signal 和恢复全部写 Journal |
 
-当前架构事实见 [统一 Workflow 与多 Agent](workflow-platform.md) 和 [当前架构](architecture.md)。本 RFC 同时保留后续阶段的目标形态，不能仅凭目标章节宣称功能已经交付。
+当前架构事实见 [Agent Run Tree 与可选 Workflow](workflow-platform.md) 和 [当前架构](architecture.md)。本 RFC 同时保留后续阶段的目标形态，不能仅凭目标章节宣称功能已经交付。
 
 ## 实施顺序与交付门
 

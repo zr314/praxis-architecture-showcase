@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { runtimeError } from '@praxis/core-sdk'
+import { createBuiltinTools } from '../apps/runtime/src/builtin-tools/builtinTools.js'
 import { ToolRuntime } from '../apps/runtime/src/tools/toolRuntime.js'
 import type { RuntimeTool } from '../apps/runtime/src/tools/types.js'
 
@@ -324,6 +325,7 @@ test('read pagination, ls/find, regex context, binary detection, and ignore rule
       nextOffset: 3,
       truncated: true,
       encoding: 'utf-8',
+      hasBom: false,
       digest: `sha256:${createHash('sha256').update('zero\none\nTWO\nthree\nfour').digest('hex')}`,
     })
 
@@ -394,6 +396,12 @@ test('shell uses the local platform adapter with timeout handling', async () => 
   const workspace = await mkdtemp(join(tmpdir(), 'praxis-shell-tools-'))
   try {
     const tools = new ToolRuntime()
+    const shellDefinition = tools.definitions().find(({ name }) => name === 'shell')
+    assert.match(shellDefinition?.description ?? '', /10-minute default safety deadline/u)
+    assert.match(
+      JSON.stringify(shellDefinition?.parameters ?? {}),
+      /overrides the 10-minute default/u,
+    )
     const controller = new AbortController()
     const command = process.platform === 'win32' ? 'Write-Output shell-proof' : 'printf shell-proof'
     const result = await tools.execute('shell', { command }, workspace, controller.signal)
@@ -423,6 +431,16 @@ test('shell uses the local platform adapter with timeout handling', async () => 
     )
     assert.equal(timedOut.ok, false)
     assert.match(timedOut.summary, /timed out/)
+
+    const shortLeaseTools = new ToolRuntime(createBuiltinTools({ defaultTimeoutMs: 20 }))
+    const defaultTimedOut = await shortLeaseTools.execute(
+      'shell',
+      { command: slowCommand },
+      workspace,
+      controller.signal,
+    )
+    assert.equal(defaultTimedOut.ok, false)
+    assert.match(defaultTimedOut.summary, /timed out after 20ms/)
     assert.equal(tools.requiresPermission('shell', { command }, workspace), true)
   } finally {
     await rm(workspace, { recursive: true, force: true })

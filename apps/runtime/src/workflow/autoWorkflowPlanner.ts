@@ -5,6 +5,7 @@ import type {
   WorkflowAuthorityPortV1,
   WorkflowModePolicyV1,
   WorkflowProjectionV1,
+  WorkflowSchedulingPolicyV1,
 } from '@praxis/core-sdk'
 import { promptDigest } from '@praxis/core-sdk'
 import { LONG_LIVED_EXECUTION_POLICY_V1 } from '../longLivedExecutionPolicy.js'
@@ -13,6 +14,14 @@ import type { Planner, PlannerExecution } from '../planner-api/index.js'
 import type { ToolRuntime } from '../tools/toolRuntime.js'
 import { AgentDelegateToolV1, type WorkflowAgentWorkerPortV1 } from './agentDelegateTool.js'
 import { AgentHandoffToolV1 } from './agentHandoffTool.js'
+import {
+  AgentCancelToolV1,
+  AgentResultToolV1,
+  AgentSpawnToolV1,
+  AgentSteerToolV1,
+  AgentWaitToolV1,
+  type AgentRunTreeControlPortV1,
+} from './agentRunTreeTools.js'
 import { SubworkflowToolV1 } from './subworkflowTool.js'
 import { WorkflowCompensationToolV1 } from './workflowCompensationTool.js'
 import { WorkflowInboxToolV1, WorkflowJoinToolV1 } from './workflowCoordinationTools.js'
@@ -38,9 +47,15 @@ export type AutoWorkflowPlannerOptionsV1 = Readonly<{
   worker(input: PlannerExecution): WorkflowAgentWorkerPortV1 | Promise<WorkflowAgentWorkerPortV1>
   artifacts: ConstructorParameters<typeof WorkflowEffectBrokerV1>[1]
   emitProjection?(projection: WorkflowProjectionV1, input: PlannerExecution): void
+  scheduling?(providerId: string): WorkflowSchedulingPolicyV1
+  runTreeControl: AgentRunTreeControlPortV1
 }>
 
-/** One execution path: every prompt is a durable Workflow with a root AgentTask. */
+/**
+ * One durable execution path. In auto mode the Workflow record is an internal
+ * execution container for an autonomous Agent Run Tree; explicit graph tools
+ * are exposed only by the workflow policy.
+ */
 export class AutoWorkflowPlannerV1 implements Planner {
   readonly #orchestrator: WorkflowOrchestratorV1
   #initialized?: Promise<void>
@@ -62,6 +77,9 @@ export class AutoWorkflowPlannerV1 implements Planner {
       rootGrant: this.options.grant(input),
       budget: workflowBudget(input.run),
       executionTarget: { providerId: input.session.provider, model: input.session.model },
+      ...(this.options.scheduling === undefined
+        ? {}
+        : { scheduling: this.options.scheduling(input.session.provider) }),
     })
     run.workflowId = projection.workflowId
     this.options.emitProjection?.(projection, input)
@@ -99,8 +117,31 @@ export class AutoWorkflowPlannerV1 implements Planner {
     workflowTools = run.tools.fork([], { executionBroker: effectBroker })
     run.tools = workflowTools
     const worker = await this.options.worker(input)
-    const modelTools: RuntimeTool[] =
+    const runTreeTools: RuntimeTool[] =
       mode === 'solo'
+        ? []
+        : [
+            new AgentSpawnToolV1(this.#orchestrator, projection.workflowId, 'root', (next) =>
+              this.options.emitProjection?.(next, input),
+            ),
+            new AgentWaitToolV1(this.#orchestrator, projection.workflowId, 'root', (next) =>
+              this.options.emitProjection?.(next, input),
+            ),
+            new AgentResultToolV1(this.#orchestrator, projection.workflowId),
+            new AgentCancelToolV1(
+              this.#orchestrator,
+              this.options.runTreeControl,
+              projection.workflowId,
+              (next) => this.options.emitProjection?.(next, input),
+            ),
+            new AgentSteerToolV1(
+              this.#orchestrator,
+              this.options.runTreeControl,
+              projection.workflowId,
+            ),
+          ]
+    const explicitWorkflowTools: RuntimeTool[] =
+      mode !== 'workflow'
         ? []
         : [
             new AgentDelegateToolV1(
@@ -134,6 +175,7 @@ export class AutoWorkflowPlannerV1 implements Planner {
               this.options.emitProjection?.(next, input),
             ),
           ]
+    const modelTools = [...runTreeTools, ...explicitWorkflowTools]
     for (const tool of modelTools) workflowTools.register(tool)
     const toolDefinitions = workflowTools.definitions()
     const executionSnapshot = await this.options.artifacts.put(

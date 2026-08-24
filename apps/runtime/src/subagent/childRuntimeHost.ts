@@ -162,6 +162,7 @@ export type ChildRuntimeTerminalEvent = Extract<
 type ClosableChildConnection = {
   close(): Promise<void>
   cancel?(reason: CancellationReason): void
+  steer?(text: string): Promise<boolean>
   cancellationReason?(): CancellationReason | undefined
   complete?(): void
   readonly stderr?: string
@@ -190,6 +191,15 @@ export class ChildRuntimeHost {
   private readonly shutdownGraceMs: number
   private readonly noProgressTimeoutMs?: number
   private readonly children = new Map<string, ClosableChildConnection>()
+  private readonly connectionWaiters = new Map<
+    string,
+    Set<
+      Readonly<{
+        resolve: (connection: ClosableChildConnection | undefined) => void
+        timer: NodeJS.Timeout
+      }>
+    >
+  >()
 
   constructor(private readonly options: ChildRuntimeHostOptions) {
     this.registry = options.registry ?? new DisabledSubagentRegistry()
@@ -524,6 +534,57 @@ export class ChildRuntimeHost {
     return cancelled
   }
 
+  async steer(childRunId: string, text: string): Promise<boolean> {
+    const child = this.children.get(childRunId) ?? (await this.waitForConnection(childRunId))
+    if (child?.steer === undefined) return false
+    return child.steer(text)
+  }
+
+  private waitForConnection(childRunId: string): Promise<ClosableChildConnection | undefined> {
+    const connected = this.children.get(childRunId)
+    if (connected !== undefined) return Promise.resolve(connected)
+    return new Promise((resolve) => {
+      const waiter = {
+        resolve,
+        timer: setTimeout(
+          () => this.settleConnectionWaiter(childRunId, waiter, undefined),
+          this.handshakeTimeoutMs,
+        ),
+      }
+      const waiters = this.connectionWaiters.get(childRunId) ?? new Set()
+      waiters.add(waiter)
+      this.connectionWaiters.set(childRunId, waiters)
+    })
+  }
+
+  private settleConnectionWaiters(
+    childRunId: string,
+    connection: ClosableChildConnection | undefined,
+  ): void {
+    const waiters = this.connectionWaiters.get(childRunId)
+    if (waiters === undefined) return
+    this.connectionWaiters.delete(childRunId)
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer)
+      waiter.resolve(connection)
+    }
+  }
+
+  private settleConnectionWaiter(
+    childRunId: string,
+    waiter: Readonly<{
+      resolve: (connection: ClosableChildConnection | undefined) => void
+      timer: NodeJS.Timeout
+    }>,
+    connection: ClosableChildConnection | undefined,
+  ): void {
+    const waiters = this.connectionWaiters.get(childRunId)
+    if (waiters === undefined || !waiters.delete(waiter)) return
+    if (waiters.size === 0) this.connectionWaiters.delete(childRunId)
+    clearTimeout(waiter.timer)
+    waiter.resolve(connection)
+  }
+
   private async execute<T>(
     input: ChildRuntimeBaseRun,
     bootstrapProfile: ChildRuntimeBootstrapProfile | undefined,
@@ -559,6 +620,7 @@ export class ChildRuntimeHost {
       bootstrapLaunch,
       attachConnection: (connection) => {
         this.children.set(prepared.childRunId, connection)
+        this.settleConnectionWaiters(prepared.childRunId, connection)
       },
       acceptExecution: () => {
         if (accepted) return
@@ -599,6 +661,7 @@ export class ChildRuntimeHost {
     } finally {
       const connection = this.children.get(prepared.childRunId)
       this.children.delete(prepared.childRunId)
+      this.settleConnectionWaiters(prepared.childRunId, undefined)
       const finalizationErrors: unknown[] = []
       try {
         await connection?.close()
@@ -713,6 +776,7 @@ class FormalChildControl implements ClosableChildConnection {
   #deadlineKind?: 'total' | 'no_progress'
   #forceCloseTimer?: NodeJS.Timeout
   #abortStarted = false
+  readonly #bindWaiters = new Set<(bound: boolean) => void>()
 
   constructor(
     private readonly connection: RuntimeProtocolConnection,
@@ -739,6 +803,7 @@ class FormalChildControl implements ClosableChildConnection {
   bind(sessionId: string, runId: string): void {
     this.#sessionId = sessionId
     this.#runId = runId
+    this.settleBindWaiters(this.#reason === undefined)
     if (this.#reason !== undefined) this.#startAbort()
   }
 
@@ -769,7 +834,28 @@ class FormalChildControl implements ClosableChildConnection {
 
   cancel(reason: CancellationReason): void {
     this.#reason ??= reason
+    this.settleBindWaiters(false)
     this.#startAbort()
+  }
+
+  async steer(text: string): Promise<boolean> {
+    if (this.#reason !== undefined) return false
+    if (this.#sessionId === undefined || this.#runId === undefined) {
+      const bound = await new Promise<boolean>((resolve) => this.#bindWaiters.add(resolve))
+      if (!bound) return false
+    }
+    if (this.#sessionId === undefined || this.#runId === undefined || this.#reason !== undefined) {
+      return false
+    }
+    const result = await this.client.request<{
+      accepted: boolean
+      applyAt: 'next_safe_boundary'
+    }>('session.steer', {
+      sessionId: this.#sessionId,
+      runId: this.#runId,
+      text,
+    })
+    return result.accepted
   }
 
   cancellationReason(): CancellationReason | undefined {
@@ -781,6 +867,7 @@ class FormalChildControl implements ClosableChildConnection {
   }
 
   complete(): void {
+    this.settleBindWaiters(false)
     this.#deadlineTimer?.cancel()
     this.#noProgressTimer?.cancel()
     if (this.#forceCloseTimer) clearTimeout(this.#forceCloseTimer)
@@ -792,6 +879,11 @@ class FormalChildControl implements ClosableChildConnection {
   async close(): Promise<void> {
     this.complete()
     await this.connection.close()
+  }
+
+  private settleBindWaiters(bound: boolean): void {
+    for (const resolve of this.#bindWaiters) resolve(bound)
+    this.#bindWaiters.clear()
   }
 
   #startAbort(): void {
@@ -1257,6 +1349,7 @@ function assertFormalSessionMethods(methodAllowlist: readonly string[]): void {
     'events.subscribe',
     'session.create',
     'session.prompt',
+    'session.steer',
     'permission.decide',
     'session.abort',
     'shutdown',
@@ -1335,7 +1428,11 @@ function assertExecutionDeadline(deadlineAt: string): void {
 }
 
 function remainingDeadlineMs(deadlineAt: string): number {
-  return Math.max(1, Math.min(2_147_483_647, Date.parse(deadlineAt) - Date.now()))
+  // session.prompt stores this value as the Child Run's durable budget. It is
+  // not a native timer delay, so clipping it to setTimeout's ~24.8 day range
+  // silently turns an unlimited v4 Child into a finite run. Runtime deadline
+  // timers are re-armed safely by scheduleLongDurationTimer().
+  return Math.max(1, Date.parse(deadlineAt) - Date.now())
 }
 
 function nonNegativeInteger(value: unknown): value is number {

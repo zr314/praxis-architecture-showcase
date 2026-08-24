@@ -273,6 +273,7 @@
       "required": ["type", "update"],
       "properties": {
         "type": { "const": "workflow_update" },
+        "runId": { "type": "string" },
         "update": { "$ref": "#/$defs/workflowUpdate" }
       },
       "additionalProperties": false

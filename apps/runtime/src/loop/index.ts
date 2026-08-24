@@ -87,6 +87,33 @@ export type AgentLoopPorts = {
       baseRequest: ProviderRequest,
     ) => ProviderRequest | Promise<ProviderRequest>,
   ): AsyncIterable<import('@praxis/core-sdk').ProviderChunk>
+  beforeModel?(
+    session: AgentSession,
+    run: AgentRun,
+    request: ProviderRequest,
+    context: TraceContext,
+  ): ProviderRequest | Promise<ProviderRequest>
+  afterModel?(
+    session: AgentSession,
+    run: AgentRun,
+    request: ProviderRequest,
+    result: ProviderTurnResult,
+    context: TraceContext,
+  ): void | Promise<void>
+  beforeTool?(
+    session: AgentSession,
+    run: AgentRun,
+    toolCall: ProviderToolCall,
+    context: TraceContext,
+  ): ProviderToolCall | Promise<ProviderToolCall>
+  afterTool?(
+    session: AgentSession,
+    run: AgentRun,
+    toolCall: ProviderToolCall,
+    prepared: PreparedToolInvocation | undefined,
+    result: ToolResult,
+    context: TraceContext,
+  ): ToolResult | Promise<ToolResult>
   tools(session: AgentSession, run: AgentRun): AgentToolPort
   terminalTool?(session: AgentSession, run: AgentRun): Readonly<{ name: string }> | undefined
   commitMessage(session: AgentSession, run: AgentRun, message: ProviderMessage): Promise<void>
@@ -185,22 +212,32 @@ type TerminalAgentEvent = Extract<
 type TraceInput = Omit<TraceRecord, 'schemaVersion' | 'timestamp'>
 
 const MAX_PERSISTABLE_TURN_BYTES = 768 * 1_024
+const DEFAULT_PROVIDER_STREAM_RECOVERY_LIMIT = 1
 
 /** Provider/tool execution loop. It depends exclusively on ports supplied by the framework. */
 export class AgentLoop {
   private readonly runStartedAt = new Map<string, number>()
   private readonly contextPolicy: ContextPolicy
   private readonly compactionPolicy: CompactionPolicy
+  private readonly providerStreamRecoveryLimit: 0 | 1
 
   constructor(
     private readonly ports: AgentLoopPorts,
     policies: {
       contextPolicy?: Partial<ContextPolicy>
       compactionPolicy?: Partial<CompactionPolicy>
+      /**
+       * Retries one uncommitted malformed/empty Provider stream before durable
+       * text exists, or one transport failure before a Tool could execute. A
+       * transport retry may discard already-streamed partial text; trace records it.
+       */
+      providerStreamRecoveryLimit?: 0 | 1
     } = {},
   ) {
     this.contextPolicy = contextPolicy(policies.contextPolicy)
     this.compactionPolicy = compactionPolicy(policies.compactionPolicy)
+    this.providerStreamRecoveryLimit =
+      policies.providerStreamRecoveryLimit ?? DEFAULT_PROVIDER_STREAM_RECOVERY_LIMIT
   }
 
   async execute(session: AgentSession, run: AgentRun): Promise<void> {
@@ -313,6 +350,8 @@ export class AgentLoop {
 
         let turn: ProviderTurnResult
         let overflowRetries = 0
+        let providerStreamRecoveries = 0
+        let publishedTextProviderOutput = false
         while (true) {
           const selectedManifest = selected.manifest ?? promptBuild.manifest
           if (!promptManifestRecorded) {
@@ -321,7 +360,7 @@ export class AgentLoop {
             promptManifestRecorded = true
           }
           await this.traceContextSelection(turnContext, selected.report)
-          const providerRequest: ProviderRequest = {
+          const baseProviderRequest: ProviderRequest = {
             model: session.model,
             messages: selected.messages,
             contextMessages: [...promptBuild.contextMessages, ...(selected.contextMessages ?? [])],
@@ -339,6 +378,9 @@ export class AgentLoop {
               ? {}
               : { maxOutputTokens: providerOutputLimit(run, modelOutputTokenLimit) }),
           }
+          const providerRequest =
+            (await this.ports.beforeModel?.(session, run, baseProviderRequest, turnContext)) ??
+            baseProviderRequest
           try {
             turn = await consumeProviderTurn(
               (
@@ -395,6 +437,7 @@ export class AgentLoop {
                 maxBufferedBytes: MAX_PERSISTABLE_TURN_BYTES,
                 onText: (text) => {
                   if (this.shouldStop(run)) return
+                  if (text.length > 0) publishedTextProviderOutput = true
                   this.ports.emit(
                     { type: 'text_delta', runId: run.id, text },
                     session.sessionId,
@@ -411,8 +454,29 @@ export class AgentLoop {
                 },
               },
             )
+            await this.ports.afterModel?.(session, run, providerRequest, turn, turnContext)
             break
           } catch (error) {
+            if (
+              providerStreamRecoveries < this.providerStreamRecoveryLimit &&
+              isRecoverableProviderStreamFailure(error)
+            ) {
+              providerStreamRecoveries += 1
+              await this.trace({
+                kind: 'provider.retry',
+                context: turnContext,
+                attributes: {
+                  providerId: provider.id,
+                  model: session.model,
+                  errorCode: providerStreamFailureCode(error),
+                  errorCategory: 'provider',
+                  health: 'degraded',
+                  discardedVisibleText: publishedTextProviderOutput,
+                },
+                metrics: { candidateIndex: 0, attemptIndex: providerStreamRecoveries },
+              })
+              continue
+            }
             if (
               overflowRetries >= this.compactionPolicy.overflowRetryLimit ||
               !this.ports.compactContext ||
@@ -450,7 +514,20 @@ export class AgentLoop {
           }
         }
         if (this.shouldStop(run)) return
-        const toolCalls = turn.toolCalls
+        const toolCalls: ProviderToolCall[] = []
+        for (const providerToolCall of turn.toolCalls) {
+          const toolCall =
+            (await this.ports.beforeTool?.(session, run, providerToolCall, turnContext)) ??
+            providerToolCall
+          if (toolCall.id !== providerToolCall.id) {
+            throw runtimeError(
+              'RUNTIME_MIDDLEWARE_FAILED',
+              'configuration',
+              'Runtime middleware cannot replace a Provider Tool call ID.',
+            )
+          }
+          toolCalls.push(toolCall)
+        }
         stopReason = turn.stopReason
         usage = turn.usage
         this.recordUsage(run, usage, toolCalls.length)
@@ -738,6 +815,7 @@ export class AgentLoop {
     })
 
     let result: ToolResult
+    let preparedForMiddleware: PreparedToolInvocation | undefined
     let toolOutcome: NonNullable<TraceAttributes['toolOutcome']> = 'invocation_failed'
     let errorCode: string | undefined
     const tools = this.ports.tools(session, run)
@@ -756,6 +834,7 @@ export class AgentLoop {
         }
       } else {
         const prepared = preparedInvocation ?? tools.prepare(toolCall.name, input, session.cwd)
+        preparedForMiddleware = prepared
         if (
           prepared.permission &&
           this.ports.hasPermissionRule(toolCall.name, prepared.permission, session.cwd)
@@ -830,6 +909,16 @@ export class AgentLoop {
       }
     }
 
+    result =
+      (await this.ports.afterTool?.(
+        session,
+        run,
+        toolCall,
+        preparedForMiddleware,
+        result,
+        toolContext,
+      )) ?? result
+
     if (toolOutcome === 'invocation_failed') {
       toolOutcome = result.ok ? 'completed' : 'invocation_failed'
       if (!result.ok) errorCode = result.error?.code ?? 'TOOL_RETURNED_ERROR'
@@ -885,7 +974,9 @@ export class AgentLoop {
     const output = result.output
     if (!isRecord(output)) return
     let count = 0
-    if (toolName === 'agent.delegate' || toolName === 'agent.handoff') {
+    if (toolName === 'agent.spawn') {
+      count = typeof output.childId === 'string' ? 1 : 0
+    } else if (toolName === 'agent.delegate' || toolName === 'agent.handoff') {
       count = typeof output.nodeId === 'string' ? 1 : 0
     } else if (toolName === 'workflow.subworkflow') {
       count = typeof output.childWorkflowId === 'string' ? 1 : 0
@@ -1235,6 +1326,22 @@ function toFailure(error: unknown): {
   return { code: failure.code, category: failure.category, message: failure.message }
 }
 
+function isRecoverableProviderStreamFailure(error: unknown): boolean {
+  if (error instanceof ProviderStreamProtocolError) return true
+  return (
+    isRuntimeError(error) &&
+    error.category === 'provider' &&
+    (error.code === 'PROVIDER_STREAM_INVALID' ||
+      error.code === 'PROVIDER_EMPTY_STREAM' ||
+      error.code === 'PROVIDER_TRANSPORT_ERROR')
+  )
+}
+
+function providerStreamFailureCode(error: unknown): string {
+  if (error instanceof ProviderStreamProtocolError) return error.code
+  return isRuntimeError(error) ? error.code : 'PROVIDER_STREAM_INVALID'
+}
+
 function toolFailure(error: unknown): {
   code: string
   category: string
@@ -1263,7 +1370,8 @@ function toolFailure(error: unknown): {
 function isUnrecoverableToolBoundary(error: unknown): boolean {
   return (
     isRuntimeError(error) &&
-    (error.category === 'plugin' ||
+    (error.code === 'RUNTIME_MIDDLEWARE_FAILED' ||
+      error.category === 'plugin' ||
       error.category === 'persistence' ||
       error.category === 'subagent')
   )

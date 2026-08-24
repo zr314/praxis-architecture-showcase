@@ -85,6 +85,30 @@ export class DurableWorkflowWorkerServiceV1 {
     }
   }
 
+  async cancelNodes(
+    workflowId: string,
+    nodeIds: readonly string[],
+    reason = 'parent_route_changed',
+  ): Promise<number> {
+    const selected = new Set(nodeIds)
+    const matching = [...this.#active.values()].filter(
+      ({ claim }) => claim.task.workflowId === workflowId && selected.has(claim.task.nodeId),
+    )
+    for (const entry of matching) {
+      entry.controller.abort(reason)
+      await entry.worker.cancel?.(entry.claim, reason).catch(() => undefined)
+    }
+    return matching.length
+  }
+
+  async steerNode(workflowId: string, nodeId: string, instruction: string): Promise<boolean> {
+    const entry = [...this.#active.values()].find(
+      ({ claim }) => claim.task.workflowId === workflowId && claim.task.nodeId === nodeId,
+    )
+    if (entry?.worker.steer === undefined) return false
+    return entry.worker.steer(entry.claim, instruction)
+  }
+
   async pump(): Promise<void> {
     if (this.#pumping) return
     this.#pumping = true
@@ -174,7 +198,9 @@ export class DurableWorkflowWorkerServiceV1 {
       stage = 'complete'
       const completed = await this.#orchestrator.complete(claim, {
         ok: outcome.ok,
+        cancelled: outcome.cancelled,
         errorCode: outcome.errorCode,
+        retryable: outcome.retryable,
         resultRef: outcome.artifacts?.[0],
         usage: outcome.usage,
       })
@@ -185,10 +211,6 @@ export class DurableWorkflowWorkerServiceV1 {
         this.#circuits.delete(circuitKey)
       } else if (outcome.retryable) {
         this.recordFailure(circuitKey)
-        const retried = await this.options.authority
-          .retryNode(claim.task.workflowId, claim.task.nodeId)
-          .catch(() => undefined)
-        if (retried !== undefined) this.options.onProjection?.(retried)
       }
     } catch (error) {
       await this.options.onError?.(claim, error, stage)

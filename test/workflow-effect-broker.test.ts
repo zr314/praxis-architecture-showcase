@@ -8,6 +8,7 @@ import { ArtifactStore } from '../apps/runtime/src/artifacts/artifactStore.js'
 import { ToolRuntime } from '../apps/runtime/src/tools/toolRuntime.js'
 import { SqliteWorkflowAuthorityV1 } from '../apps/runtime/src/workflow/sqliteWorkflowAuthority.js'
 import { WorkflowCompensationToolV1 } from '../apps/runtime/src/workflow/workflowCompensationTool.js'
+import { WorkflowInboxToolV1 } from '../apps/runtime/src/workflow/workflowCoordinationTools.js'
 import { WorkflowEffectBrokerV1 } from '../apps/runtime/src/workflow/workflowEffectBroker.js'
 import {
   registerBuiltinAgentProfilesV1,
@@ -37,6 +38,25 @@ test('external Tool broker journals success and receipt in the same durable Acti
       receipt?.artifactRef.digest,
       projection.nodes.find(({ nodeId }) => nodeId === activity?.nodeId)?.resultRef?.digest,
     )
+    assert.deepEqual(
+      await fixture.authority.listMessages({
+        workflowId: fixture.workflowId,
+        recipientNodeId: 'root',
+      }),
+      [],
+      'synchronous Tool Activities must not pollute the Child coordination mailbox',
+    )
+    const inbox = await new WorkflowInboxToolV1(fixture.orchestrator, fixture.workflowId).execute({
+      name: 'workflow.inbox',
+      input: {},
+      cwd: 'D:/praxis',
+      signal: new AbortController().signal,
+    })
+    assert.deepEqual(
+      (inbox.output as { nodes: readonly unknown[] }).nodes,
+      [],
+      'synchronous Tool Activities must not pollute the Child node projection',
+    )
   } finally {
     await fixture.close()
   }
@@ -61,7 +81,7 @@ test('solo mode journals mutable Tool Activities without admitting child agents'
   }
 })
 
-test('failed non-idempotent external Tool becomes unknown instead of being blindly retryable', async () => {
+test('returned non-idempotent Tool failure is recorded as known and does not poison recovery', async () => {
   const fixture = await createFixture()
   try {
     const runtime = toolRuntime(fixture, false)
@@ -72,13 +92,19 @@ test('failed non-idempotent external Tool becomes unknown instead of being blind
       new AbortController().signal,
     )
     assert.equal(result.ok, false)
-    assert.equal(result.error?.code, 'WORKFLOW_EFFECT_OUTCOME_UNKNOWN')
-    assert.match(result.summary, /inspect current state before retrying/u)
-    const projection = await fixture.authority.get(fixture.workflowId)
+    assert.equal(result.error?.code, 'CONNECTION_LOST')
+    assert.equal(result.artifacts?.length, 1)
+    let projection = await fixture.authority.get(fixture.workflowId)
     assert.equal(
       projection.nodes.find(({ nodeId }) => nodeId.startsWith('activity-'))?.state,
-      'unknown',
+      'failed',
     )
+    assert.ok(
+      projection.nodes.find(({ nodeId }) => nodeId.startsWith('activity-'))?.resultRef,
+      'the known failure envelope remains durable for audit and recovery',
+    )
+    projection = await fixture.orchestrator.complete(fixture.rootClaim, { ok: true })
+    assert.equal(projection.state, 'completed')
   } finally {
     await fixture.close()
   }
@@ -102,6 +128,28 @@ test('known workspace Tool failures release reservations and do not poison root 
     )
     projection = await fixture.orchestrator.complete(fixture.rootClaim, { ok: true })
     assert.equal(projection.state, 'completed')
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('thrown non-idempotent Tool execution remains unknown', async () => {
+  const fixture = await createFixture()
+  try {
+    const result = await toolRuntime(fixture, 'throws').execute(
+      'process__fixture__send',
+      { value: 'uncertain-throw' },
+      'D:/praxis',
+      new AbortController().signal,
+    )
+    assert.equal(result.ok, false)
+    assert.equal(result.error?.code, 'WORKFLOW_EFFECT_OUTCOME_UNKNOWN')
+    assert.match(result.summary, /inspect current state before retrying/u)
+    const projection = await fixture.authority.get(fixture.workflowId)
+    assert.equal(
+      projection.nodes.find(({ nodeId }) => nodeId.startsWith('activity-'))?.state,
+      'unknown',
+    )
   } finally {
     await fixture.close()
   }
@@ -220,7 +268,7 @@ async function createFixture(modePolicy: 'auto' | 'solo' = 'auto') {
 
 function toolRuntime(
   fixture: Awaited<ReturnType<typeof createFixture>>,
-  succeeds: boolean,
+  succeeds: boolean | 'throws',
   onInvoke?: () => void,
   sideEffect: 'process' | 'write' = 'process',
 ): ToolRuntime {
@@ -245,6 +293,7 @@ function toolRuntime(
     },
     execute: async () => {
       onInvoke?.()
+      if (succeeds === 'throws') throw new Error('transport lost after invocation')
       return succeeds
         ? { ok: true, summary: 'sent', output: { accepted: true } }
         : {

@@ -1,18 +1,32 @@
-# 统一 Workflow 与多 Agent
+# Agent Run Tree 与可选 Workflow
 
-Praxis 的产品执行入口现在只有一套：每个 Prompt 创建一个 durable Workflow 和根 `AgentTask`。默认策略是 `auto`，根模型在普通 ReAct 中自主决定直接回答、调用 Tool、委派 Agent 或扩展 Workflow；Runtime 负责最终准入和状态推进。
+Praxis 的默认通用执行路径正在从“模型编写动态 DAG”转向“plan-guided ReAct + 自主 Agent Run Tree”。每个 Prompt 目前仍创建一个内部 durable execution container 和根 `AgentTask`，用于复用 Authority、Lease、Artifact 和恢复；它不是要求模型维护的业务 Workflow。只有显式 `workflow` policy 才向模型提供完整 DAG、loop、subworkflow 和持久等待等粗粒度编排能力。决策记录见 [ADR-008](adr/ADR-008-agent-run-tree.md)。
 
 ## 模式不是三套实现
 
 | Policy | 语义 | 实现 |
 | --- | --- | --- |
-| `auto` | 模型可保持单 Agent，也可调用 delegate/handoff/graph/loop/subworkflow | 统一 Orchestrator + AgentLoop |
+| `auto` | 模型保持 plan-guided ReAct，并可自主 spawn/wait/result/cancel/steer Child | AgentLoop + durable Run handles |
 | `solo` | 硬性禁止增加 Child | 同一实现，child budget 为零 |
-| `workflow` | 非平凡副作用前要求图化 | 同一实现，增加 admission 约束 |
+| `workflow` | 显式粗粒度业务编排 | Run Tree 工具加完整 Workflow 工具 |
 
 旧 `direct` 与 `supervisor` 只在输入解析时迁移为 `solo` 与 `workflow`。不存在 ProductSupervisor fallback，也不存在先失败再从头运行另一套 Planner 的行为。
 
-## 模型可调用的拓扑工具
+## 默认 `auto`：Agent Run Tree 工具
+
+### `agent.spawn`
+
+启动一个独立 durable Child 并立即返回稳定 `childId`，Root 不会在本次 Tool call 中隐式等待。模型只描述目标和所需能力，不填写依赖边、Join Node 或 token/turn/tool/墙钟数字；Child 继承父 Run 与组织策略，避免模型把累计 Provider 成本误当单轮输出额度。该 Child 是可选证据分支：结构化并发要求它在 Root 结束前进入终态，但失败或取消不会自动把外层执行判失败。
+
+### `agent.result` 与 `agent.wait`
+
+`agent.result` 非阻塞读取一个或多个 Child 的状态和 result Artifact；`agent.wait` 对 Child 句柄提供 `all/any/quorum` Durable Future 语义。等待关系由 Runtime 处理，模型不创建显式 Join Node。
+
+### `agent.cancel` 与 `agent.steer`
+
+`agent.cancel` 终止已经失去价值的分支并保留历史和已有证据。`agent.steer` 先写入 durable instruction；活跃 Child 通过 Runtime 的 `session.steer` 在安全边界接收，尚未启动的 Child 在 bootstrap 前读取。当前 Child 仍不能继续 spawn 后代，因此这是 Root Run Tree 的第一阶段，而不是任意递归已经交付。
+
+## 显式 `workflow` policy：高级编排工具
 
 ### `agent.delegate`
 
@@ -31,7 +45,7 @@ Root 必须为每次扩展选择 `rootAction`：
 | `wait` | 当前 Tool call 同步等待图达到 join；这是兼容默认值 | Root 的下一步立即依赖 Child 结果 |
 | `continue` | 只持久化图并返回 node ID，Child 由后台 durable Worker 执行；Root 继续自己的 AgentLoop | Root 还有真正独立的调查、编辑或验证工作 |
 
-`continue` 不是把 DAG 丢进一段易失内存。Task 会带 `coordinationMode=background`，即使同一 Workflow 的 Root Run 仍活跃，后台 Worker 也可以领取这些非根 Task。Root 后续用 `workflow.inbox` 读取增量结果，用 `workflow.join` 在自己选择的边界等待 `all`、`any` 或 `quorum`。AgentLoop 的完成门禁会在最终用户响应前检查后台节点和未消费结果：有 pending 节点时要求 join，有未确认结果时要求 inbox 或 join，然后继续下一 Turn。当前后台扩展不接受 `supersedes`；替换失败分支仍使用同步 `wait`，从而保证“replacement 成功后才替换旧图”的原子语义。
+在显式 `workflow` policy 中，`continue` 不是把 DAG 丢进一段易失内存。Task 会带 `coordinationMode=background`，即使同一 Workflow 的 Root Run 仍活跃，后台 Worker 也可以领取这些非根 Task。Root 后续用 `workflow.inbox` 读取增量结果，用 `workflow.join` 在自己选择的边界等待 `all`、`any` 或 `quorum`。这组接口只服务显式 Workflow；默认 `auto` 对应使用 `agent.result` 和 `agent.wait`。AgentLoop 的完成门禁会在最终用户响应前检查后台节点和未消费结果：有 pending 节点时要求 join，有未确认结果时要求 inbox 或 join，然后继续下一 Turn。当前后台扩展不接受 `supersedes`；替换失败分支仍使用同步 `wait`，从而保证“replacement 成功后才替换旧图”的原子语义。
 
 Scheduler 不把完成集合保存在 Tool 内存中。成功结果先进入 ArtifactStore，再把 `resultRef` 写入 Node/Attempt projection。后继 Child 从同一 projection 解析前驱 `resultRef`，把校验过的 Artifact 摘要作为低信任 Context Reference，并将解析后的输入引用写入 execution snapshot；因此串行综合和交叉审查不是只控制顺序。Worker 还递归解析 result wrapper 中精确的 `artifact://` 闭包，把父 Artifact root 与允许读取的内容寻址 ID 列表写入签名 bootstrap profile。Child 的 `artifact_read` 因而可以读取被委派的前驱完整输出和 evidence manifest，但读取任意其他父 Artifact 仍返回不存在。每次 Agent 执行前还会持久化 Profile、Provider、预算以及 Tool/Skill/MCP digest 的不可变 execution snapshot。进程重建后，后台 durable Worker pump 会恢复过期 Lease，并从持久化 Node/Edge 重新推导执行前沿、释放后继阶段、解析 decision join；它不依赖已丢失的 `workflow.expand` 内存调用栈。已经成功的节点保持原 Attempt，不会重跑；被中断节点才创建新 Attempt。恢复 Root 会等非根 DAG 全部收敛后再接管，并把所有持久化 descendant `resultRef` 作为 Context Reference 注入，结果重新写回 Session 与同一 Workflow。
 
@@ -138,7 +152,7 @@ Worker claim 通过 Authority CAS 获取 Lease，并按 heartbeat 延期。启�
 - 尝试耗尽：进入 `manual_intervention`；
 - `workspace_write/external_non_idempotent`：进入 `unknown`，禁止盲重试。
 
-Root Attempt 成功只表示该 AgentTask 已结束，不再直接把 Workflow 标为完成。`all_required` 由 Authority reconciliation 单独判定：仍有 admitted/scheduled/running/waiting descendant 时保持 `running`；依赖就绪后持久化调度下一阶段；join 与所有 required 节点收敛后才写 `workflow.terminal`。并行 Child 同时提交 Node/Attempt 终态时会在 SQLite sequence CAS 冲突后读取新 projection 重试，避免把正常结果误降级为 `unknown`。条件裁剪或确定不可达的未租赁 Task 与 Node/Attempt 在同一事务中取消，避免长期积累 ready 垃圾任务。
+Root Attempt 成功只表示该 AgentTask 已结束，不再直接把 Workflow 标为完成。`all_required` 由 Authority reconciliation 单独判定：仍有 admitted/scheduled/running/waiting descendant 时保持 `running`；依赖就绪后持久化调度下一阶段；join 与所有 required 节点收敛后才写 `workflow.terminal`。并行 Child 同时提交 Node/Attempt 终态时会在 SQLite sequence CAS 冲突后读取新 projection 重试，避免把正常结果误降级为 `unknown`。可重试 Agent 失败会在同一个 Authority 事务中保存旧 Attempt 的失败证据、创建带退避时间的新 Attempt/Task，并把 Node 恢复为 `scheduled`；因此 `any/quorum` join 不会在“失败已提交、重试尚未创建”的事务缝隙中错误收敛，Root 也只会在重试耗尽后收到最终错误消息。条件裁剪或确定不可达的未租赁 Task 与 Node/Attempt 在同一事务中取消，避免长期积累 ready 垃圾任务。
 
 Root 与后台 Child 同时工作时，Runtime 用三种机制避免“并发修改”变成最后写入者获胜：Authority 的 `BEGIN IMMEDIATE` 与 sequence CAS 串行化控制面事务；Task Lease 保证同一执行权只属于一个 Worker；Tool conflict key、隔离 worktree/目录快照和受控 merge 约束工作区写入。普通 Root 原地写与 Child 候选写仍可能发生业务层冲突，但冲突会在占用、基线或合并校验阶段显式失败，不会静默覆盖。
 
@@ -181,17 +195,19 @@ Profile 带版本、内容 digest、带 digest 的指令引用、模型策略、
 
 暂停会阻止新 Task 获得 Lease；恢复后才能继续 claim。取消或终止活动 Workflow 时，Runtime 同时中止父 AgentLoop、后台 Worker、Child Host 和待处理权限。Signal、HumanTask resolution 与到期 Timer 都以幂等事务写入事件；Workflow 处于 `waiting` 时会恢复为 `running`。启动会扫描已到期 Timer。
 
-Runtime 发送 `workflow_update`，包含 Workflow ID、Run ID、revision、sequence、topology、state、节点状态和 terminal code。TUI 的 `WORKFLOW` 面板先从持久化 projection 恢复，再叠加实时事件；模型不再猜测 Plan 失败原因。
+Runtime 发送 `workflow_update`，包含 Workflow ID、Run ID、revision、sequence、topology、state、节点状态和 terminal code。同一 `(workflowId, sequence, runId)` 只投影一次；轮询 `join` 不会重复广播没有新增持久化事实的快照。新 Run 还保证先发送 `prompt_started`，再刷新该 Run 最新的 Workflow projection，避免控制面事件越过生命周期起点。TUI 的 `WORKFLOW` 面板先从持久化 projection 恢复，再叠加实时事件；模型不再猜测 Plan 失败原因。
 
 ## 预算
 
 当前 v4 长生命周期策略采用“默认无预算、显式才限制”：根 Run、Child 和 Workflow 不再因内置 turns、Tool calls、tokens、wall clock、累计 Child、depth、loop 或累计图演化次数而终止。usage 仍逐轮写入 Journal，取消、恢复、公平调度、权限与审计继续生效。内部 v1 数据结构必须携带数字时，用 safe-integer/Date-safe 的 unlimited 哨兵编码，并由 overflow-safe timer 实现；这不是对外配额。Local Runtime 的 256 并行只表达 worker-pool 容量，不限制累计工作量。用户、CLI、组织策略或节点 Proposal 可显式收紧任一维度。Profile v1-v3 的旧预算与 digest 保持不可变，新任务统一钉住 v4。
 
-同一原则应用到执行边界：Provider stream、Shell command、MCP Tool 和 Process Plugin capability invocation 默认无隐式执行超时；显式 timeout 仍受支持。初始化、协议发现、健康检查、取消和关闭属于控制面 liveness，不等同于 Agent 任务期限。
+累计任务预算与瞬时资源容量是两件事。新 Workflow 会把 Provider 容量组和 limit 快照写进 Spec；Authority 在 claim 的 SQLite `BEGIN IMMEDIATE` 事务内统计未过期的 Agent/Subworkflow Lease，并原子拒绝超容量 claim。限制因此同时覆盖 Root、前台 DAG、后台 Child、重启恢复和连接同一远程 Authority 的 Worker，不会出现“先占住 Task、再在进程里等待”的悬空状态。不同 Provider 容量组仍可并行；滚动配置期间，同组已持久策略取更严格 limit。默认 Provider lane 为 4，MiniMax 为 Root + 单 Child 的总容量 2，可用 `PRAXIS_WORKFLOW_PROVIDER_CONCURRENCY` 集中覆盖。该容量只限制同时执行数，不限制长任务累计时长或累计 Child 数。
+
+同一原则应用到执行边界，但“任务寿命”和“单次活动租约”必须分开：Provider stream、MCP Tool 和 Process Plugin capability invocation 不继承 Agent 的累计任务上限；Shell command 则默认有 10 分钟、可由 `timeoutMs` 缩短或延长的安全租约。初始化、协议发现、健康检查、单次请求 deadline、Lease、取消和关闭都属于控制面 liveness，不等同于 Agent 任务期限。
 
 ## 已交付与后续边界
 
-已交付：统一 `auto` 产品路径、`solo/workflow` policy、动态 delegate/handoff/expand/loop/subworkflow、条件分支与持久化 `all/any/quorum` join、SQLite Workflow authority、Task/Lease/recovery、版本化 Profile、Local Child Runtime、Skill/MCP 能力衰减、Git worktree 与非 Git snapshot 写合并、Projection API/TUI，以及本地 durable pause/resume/cancel/terminate、Signal/Timer wake 和 HumanTask query/resolve。
+已交付：统一 `auto` Agent Run Tree、`solo/workflow` policy、默认 spawn/wait/result/cancel/steer、显式 Workflow 的 delegate/handoff/expand/loop/subworkflow、条件分支与持久化 `all/any/quorum` join、SQLite Workflow authority、Task/Lease/recovery、版本化 Profile、Local Child Runtime、Skill/MCP 能力衰减、Git worktree 与非 Git snapshot 写合并、Projection API/TUI，以及本地 durable pause/resume/cancel/terminate、Signal/Timer wake 和 HumanTask query/resolve。
 
 `resolve-unknown` 要求操作人先把未知副作用明确判定为 succeeded、failed 或 manual；只有进入 failed 且未耗尽 RetryPolicy 的节点才能 `retry-node`。未知外部副作用不会自动重试。
 
@@ -201,6 +217,6 @@ Runtime 发送 `workflow_update`，包含 Workflow ID、Run ID、revision、sequ
 
 Saga compensation 不允许模型仅用文字宣称“已撤销”。模型必须先正常调用补偿 MCP/process/API Tool，得到第二份 committed receipt；此后才动态暴露 `workflow.compensate`，把源 receipt 与补偿 receipt 原子关联，并写 `effect.compensated` 事件。自动选择哪个业务补偿动作仍依赖各连接器提供明确 descriptor，Runtime 不猜测逆操作。
 
-远程 Worker 已通过认证的 Authority/Artifact HTTP 边界接线：Authority Runtime 设置 `PRAXIS_WORKFLOW_AUTHORITY_LISTEN` 和 `PRAXIS_WORKFLOW_AUTHORITY_TOKEN`，远程 Runtime 设置 `PRAXIS_WORKFLOW_AUTHORITY_URL` 和同一 token；所有 Worker 竞争同一 durable Lease，SQLite 文件不会跨机器共享。当前公平性以持久 `last_claimed_at` 做跨 Workflow 轮转，Worker 对连续基础设施失败做有界熔断。
+远程 Worker 已通过认证的 Authority/Artifact HTTP 边界接线：Authority Runtime 设置 `PRAXIS_WORKFLOW_AUTHORITY_LISTEN` 和 `PRAXIS_WORKFLOW_AUTHORITY_TOKEN`，远程 Runtime 设置 `PRAXIS_WORKFLOW_AUTHORITY_URL` 和同一 token；所有 Worker 竞争同一 durable Lease，SQLite 文件不会跨机器共享。当前公平性以持久 `last_claimed_at` 做跨 Workflow 轮转，Provider capacity admission 与 claim 使用同一事务，Worker 对连续基础设施失败做有界熔断。
 
-尚未宣称交付：PostgreSQL Authority、租户级分布式熔断、高可用外部通知渠道与 HumanTask TUI 一键操作、任意嵌套 Subworkflow，以及连接器声明驱动的自动补偿策略。规模化 restart/soak、远程多 Worker 故障组合和统计成功率也未验证。目标设计见 [Planner Platform RFC](planner-platform-rfc.md)，本轮运行证据见[最终小样本测评与优化总结](evaluation-final-2026-08-09.md)。
+尚未宣称交付：PostgreSQL Authority、租户级分布式熔断、高可用外部通知渠道与 HumanTask TUI 一键操作、任意嵌套 Subworkflow，以及连接器声明驱动的自动补偿策略。规模化 restart/soak、远程多 Worker 故障组合和统计成功率也未验证。目标设计见 [Planner Platform RFC](planner-platform-rfc.md)，实际题目和运行证据见[持续维护的测评档案](evaluations/README.md)。

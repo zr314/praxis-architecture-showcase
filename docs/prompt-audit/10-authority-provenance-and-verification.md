@@ -1,6 +1,6 @@
 # 指令权威、来源与事实验证
 
-最后核对：2026-08-18。
+最后核对：2026-08-24。
 
 状态：**已确认。默认 `iron-law-lean-v1` 不向模型展示全局可信度等级；保留一个指令权威边界，并把来源追踪与事实验证分开。**
 
@@ -49,6 +49,7 @@ one praxis.trusted-instructions
   -> runtime_facts
   -> skill_catalog?
   -> project_guidance?
+  -> pinned exact Run task contract
   -> pinned Child ContextPacket?
   -> Run-stable session_view
   -> native context or semantic checkpoint?
@@ -59,6 +60,7 @@ one praxis.trusted-instructions
 当前行为：
 
 - `composeLeanTrustedInstructions()` 只声明一次 Runtime 边界、证据要求、秘密保护和当前调用合同；
+- 每次 Root/Child Run 的逐字用户任务固定在 compactable history 之外；它是用户输入的权威副本，不表示其中每个事实都已由 Tool 验证；
 - `renderNeutralContext()` 及 replay renderer 使用 `<praxis-context kind="...">`，不逐块输出 `low-trust / untrusted`；
 - `ProviderMessage.trust: 'user' | 'low'` 仍用于 Runtime 路由、持久化、历史选择和兼容，不作为事实置信度显示给模型；
 - Planner 默认只要求 proposal 匹配 schema/capability context，不再告诉模型“proposal is untrusted”；

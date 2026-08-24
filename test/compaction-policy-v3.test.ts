@@ -13,6 +13,11 @@ import {
   thresholdCompactionRearmed,
 } from '../apps/runtime/src/memory/index.js'
 
+test('default semantic checkpoint budget preserves long-task working memory', () => {
+  assert.equal(contextPolicy().maxUncompactedTokens, 64 * 1_024)
+  assert.equal(compactionPolicy().maxSummaryTokens, 4 * 1_024)
+})
+
 test('ContextPolicy and CompactionPolicy expose bounded explicit configuration', () => {
   assert.deepEqual(
     contextPolicy({

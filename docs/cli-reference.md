@@ -264,10 +264,12 @@ the SessionJournal; use `/transcript`, Session resume/export, or another protoco
 client if the terminal emulator has discarded old scrollback. `/copy` is
 available when selecting text is inconvenient.
 
-Interactive runs allow 128 cumulative Provider turns and 512 Tool calls by default. Planner,
-child Runtime, and parent synthesis usage share this ceiling. A
-non-interactive run can override those limits with `--max-turns` and
-`--max-tool-calls`.
+Current v4 interactive and print runs do not impose an implicit cumulative
+Provider-turn, Tool-call, token, or wall-clock budget. `--max-turns`,
+`--max-tool-calls`, `--max-tokens`, and `--timeout-ms` are opt-in controls for
+users or deployment policy that intentionally need a finite run. Child and
+Workflow execution inherit explicit parent budgets; historical v1-v3 profile
+limits exist only so already-persisted runs can resume deterministically.
 
 ### Pickers and permissions
 
@@ -363,6 +365,7 @@ content.
 | `PRAXIS_HOME` | Override the Runtime data directory. |
 | `PRAXIS_PLANNER_MODE` | Initial policy for new sessions (`auto`, `solo`, or `workflow`); normally set by `--planner`. |
 | `PRAXIS_PROMPT_VARIANT` | Prompt program override (`iron-law-lean-v1` default; `baseline-v1` rollback/A-B). Unknown values are rejected. |
+| `PRAXIS_WORKFLOW_PROVIDER_CONCURRENCY` | JSON Provider lane limits, for example `{"*":4,"minimax":2}`; snapshotted into each new Workflow and enforced atomically by the Authority. |
 | `PRAXIS_SESSION_STORE` | Expected V3 authority (`jsonl` or `sqlite`); normally set by `--storage`. |
 | `PRAXIS_SUBMIT_KEY` | Set to `ctrl-enter` to swap submit/newline bindings. |
 | `MOONSHOT_API_KEY` | Kimi fallback credential. |

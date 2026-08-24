@@ -1,5 +1,7 @@
 # Praxis 当前分层架构：Planner、Prompt、Context 与 Storage
 
+最后核对：2026-08-22。本文以当前工作区源码和测试为准。
+
 本文只描述当前代码已经接入的架构，不讨论历史方案、评测过程或未来路线。读完后，你应该能回答：
 
 - 一条用户输入怎样经过 Praxis；
@@ -41,7 +43,7 @@ flowchart TB
 这张图最重要的边界是：
 
 1. **Session 保存对话与 Run 生命周期，Workflow 保存可调度执行。** 两者通过 ID 关联，但不是同一种状态。
-2. **Planner 组织执行，AgentLoop 执行一个 AgentTask。** Planner 不负责逐字生成最终回答。
+2. **Planner 建立持久执行边界，AgentLoop 执行一个 AgentTask。** 默认 `auto` 由模型在 ReAct 中按证据增量形成 Agent Run Tree，而不是先生成完整 DAG。
 3. **Prompt 是给模型的输入视图，不是执行账本。** 模型摘要不能证明命令已经执行。
 4. **Tool 是模型触发 workspace 或外部动作的唯一入口。** Runtime 自己仍会写 Journal、调度和恢复。
 5. **Child 是受限的独立 Agent 进程。** 它不会继承父 Agent 的全部权限和凭证。
@@ -59,7 +61,7 @@ Extension 是 Skill、MCP 或插件等扩展能力；Storage/Authority 是持久
 | Session | 一段可恢复的对话 | 一个 Session 可以有很多 Run |
 | Run | 一条 Prompt 或 follow-up 的完整执行 | 当前产品路径为每个 Run 创建一个根 Workflow |
 | Turn | Run 内的一次模型请求 | 调用 Tool 后通常会进入下一 Turn |
-| Workflow | 一次 Run 的持久执行账本 | 保存节点、依赖、任务、租约和副作用 |
+| Workflow | 一次 Run 的持久 execution container；显式模式下也表示业务 DAG | 保存节点、依赖、任务、租约和副作用 |
 | AgentTask | 一个 Agent 要完成的工作单元 | 根 Agent 和每个 Child 各自执行一个 AgentTask |
 | Node | Workflow 图中的逻辑步骤 | 一个 Node 可以有多次 Attempt |
 | Attempt | Node 的一次具体执行尝试 | 崩溃重试会创建新 Attempt |
@@ -184,7 +186,7 @@ durable worker service 领取，不必经过根 AgentLoop 的当前调用栈。
 6. 统一 Planner 创建根 Workflow；
 7. Worker 领取根 Task 的 Lease；
 8. AgentLoop 反复装配 Prompt、调用模型并执行 Tool；
-9. 如果模型扩展 Workflow，Child 和后继节点由 durable scheduler 调度；
+9. 如果模型 spawn Child，后台 Worker 按句柄执行；显式 `workflow` policy 下才可能进一步扩展 DAG；
 10. Session 与 Workflow 分别提交自己的终态。
 
 `PromptEnvelope` 是版本化输入信封，记录有效文本、来源、组成部分、摘要和持久化策略。
@@ -247,139 +249,235 @@ RuntimeKernel 负责“接线”和跨模块流程，不应自己实现数据库
 
 ## 6. 第 4 层：Planner 与 Workflow
 
-### 6.1 当前只有一个产品 Planner
+### 6.1 先把五个容易混淆的“计划”概念分开
 
-当前每条 Prompt 都进入 `AutoWorkflowPlannerV1`。Planner 的职责是：
+当前源码里同时出现 Planner、Plan、Workflow、Run Tree 和 ReAct。它们不是同一件事。
 
-1. 创建 Workflow 和根 AgentTask；
-2. 绑定执行模式、workspace、能力 Grant 和 Budget；
-3. 创建 Node、Attempt、Task 并让 Worker claim；
-4. 在模型提出委派或图扩展时执行准入；
-5. 推进依赖、join、等待、恢复和最终状态。
+| 名词 | 新手解释 | 当前是否控制产品执行 |
+| --- | --- | --- |
+| working plan | 模型在执行过程中维护的工作思路，可随 Observation 改变 | 只指导模型下一步，不是持久化 authority |
+| `Planner` 接口 | 只有 `execute({ session, run })` 的 Runtime 执行入口合同 | 是 |
+| `AutoWorkflowPlannerV1` | 根 Runtime 对每个 Run 使用的唯一产品 Planner 实现 | 是 |
+| Agent Run Tree | Root 用 Child 句柄逐个 spawn、等待、转向或取消形成的父子执行树 | 是；默认 `auto` 的模型可见协作面 |
+| 显式 Workflow DAG | 带 Node、Edge、Join、Loop、HumanTask、Timer 的粗粒度业务图 | 只在显式 `workflow` policy 中向模型开放 |
+| `PlanGraphV1` | `packages/core-sdk/src/plan.ts` 中的旧计划图合同 | 仍是库与测试资产，不是第二条根产品路径 |
 
-**Grant** 是 Runtime 已批准的能力集合；**Budget** 是显式的 token、Turn、Tool、Child 或时间限制。
+**Observation（观察）** 是一次模型调用后得到的新事实，例如 ToolResult、Child 状态或用户 steer。
+
+**Run Tree（运行树）** 是 Root 与 Child 的父子关系；它强调“谁启动了谁、谁还在运行、结果在哪里”。
+**DAG（有向无环图）** 是显式依赖图；它强调“哪个节点必须等哪个前驱完成”，并且不能形成环。
+
+这一区分很重要：默认 `auto` 不要求模型先猜出完整路线，再把路线固化成 DAG。模型可以先直接调查，证据表明
+存在独立工作流时再 spawn 一个 Child；新 Observation 出现后，还可以 steer 或 cancel 已有分支。
+
+### 6.2 当前产品 Planner 的入口和边界
+
+根 Runtime 的每条 Prompt 都进入 `AutoWorkflowPlannerV1`。它实现的接口非常小：
+
+```ts
+interface Planner {
+  execute(input: { session: AgentSession; run: AgentRun }): Promise<void>
+}
+```
+
+小接口不代表内部工作少。`AutoWorkflowPlannerV1` 负责：
+
+1. 为当前 Run 建立持久 execution container；
+2. 创建并领取 Root 的 Node、Attempt、Task 和 Lease；
+3. 绑定 policy、workspace、Grant、Budget、Provider 和 model；
+4. 给本次 Root AgentLoop 注册正确的协作 Tool；
+5. 把可变 Tool 放到 Workflow effect broker 后面；
+6. 保存不可变 execution snapshot，并维持 Root Lease heartbeat；
+7. 在 AgentLoop 结束时提交 Root 和外层 execution container 的终态。
+
+**execution container（执行容器）** 是一组持久对象的外壳。默认 `auto` 仍用 Workflow 表保存 Root、Child、Lease、
+消息和结果，但这不等于模型正在编写业务 Workflow。
+
+**Grant（授权集合）** 是 Runtime 已允许使用的能力。
+
+**Budget（预算）** 是 Turn、Tool call、token、Child 数量、并发数或截止时间等上限。
+**effect broker（副作用代理）** 在真正执行 write、process 或 network Tool 前登记 Activity、幂等信息与 receipt。
 
 Planner 不负责：
 
-- 决定每一 Turn 的具体 Tool call；
-- 拼接最终 ProviderRequest；
-- 把自然语言计划直接当成执行状态；
-- 代替 AgentLoop 生成最终回答。
+- 决定每个 Turn 的具体 Tool call；这是模型与 AgentLoop 的 ReAct；
+- 拼接最终 ProviderRequest；这是 SystemPromptComposer、PromptAssembler 与 AgentLoop 的职责；
+- 把模型写出的自然语言计划直接升级成执行 authority；
+- 读取 Child 的隐藏推理或把所有 Child transcript 拼回 Root；
+- 代替 AgentLoop 生成面向用户的最终回答。
 
-`planner` 目录包含图验证、恢复、workspace 隔离和 verifier 等可复用组件；产品入口仍是
-`workflow/autoWorkflowPlanner.ts`。
-
-**verifier** 是独立检查一个结果是否满足成功标准的验证器，不等同于执行该任务的 Agent 自我声明。
-
-### 6.2 三种模式是 Policy，不是三套实现
-
-**Policy** 是同一实现上的行为限制。
-
-| 模式 | 当前行为 |
-| --- | --- |
-| `auto` | 默认；模型可以直接执行，也可以调用协作工具扩展 Workflow |
-| `solo` | 不向模型提供创建 Child 或图的拓扑工具 |
-| `workflow` | 使用同一 Planner；非只读副作用前要求先形成非 single-agent 拓扑 |
-
-`auto` 下，Root Prompt 会要求模型在以下情况重新评估委派价值：任务很长、跨多个领域、风险较高、
-存在独立调查/审查工作流，或者直接执行已重复失败。短任务和强耦合任务仍可保持单 Agent。
-
-### 6.3 Workflow 的持久对象
+Root 和 Child 进入 AgentLoop 的路径不同，但不是两套产品模式：
 
 ```text
-WorkflowSpec       声明目标、模式、图、预算和完成规则
-WorkflowProjection 当前 Workflow / Node / Attempt 状态
-Node               一个逻辑步骤
-Attempt            Node 的一次执行尝试
-Task               等待 Worker 执行的持久任务
-Lease              Worker 对 Task 的限时所有权
-Event              造成状态变化的追加式事实
-Message            Agent、用户或 Runtime 之间有类型、可确认的协调消息
-Artifact           通过内容摘要寻址的完整结果或证据
+Root Prompt
+  → PlannerRouter 解析 policy
+  → AutoWorkflowPlannerV1 建立持久执行边界
+  → Root AgentLoop
+
+已准入的 Child AgentTask
+  → Child Runtime 获得受限 bootstrap profile
+  → AgentTaskPlanner 这个薄 adapter
+  → Child AgentLoop
 ```
 
-Workflow 图是 **DAG**，即有向无环图。边表示依赖；无依赖节点可并行，有依赖节点必须等待前驱成功。
+`AgentTaskPlanner` 只做一件事：把已经准入的 AgentTask 交给 AgentLoop。它不是旧 `direct` 模式，也不创建另一套
+Workflow authority。
 
-**join** 是汇合规则：
+### 6.3 三种模式只是 Policy，不是三套 Planner
 
-- `all`：所有必需分支都成功；
-- `any`：任一分支成功；
-- `quorum`：达到指定成功数量。
+**Policy（策略）** 是同一执行实现上的行为限制。`PlannerRouter` 只规范化模式并给出 Child Budget；它的
+`select()` 对三种模式都返回同一个 `AutoWorkflowPlannerV1`。
 
-**HumanTask** 是必须由人提供决定或输入后才能继续的持久节点；**Timer** 是到指定时间自动唤醒 Workflow
-的持久计时器；**GraphPatch** 是一组经过校验后应用到现有图上的节点和边变更。
-
-Scheduler 只读取持久化 Node/Edge/projection。它不依赖调用 `workflow.expand` 的进程内变量，因此重启后
-仍能释放后继节点。
-
-### 6.4 模型可调用的拓扑工具
-
-**拓扑工具**是改变 Workflow 结构的模型 Tool。
-
-| Tool | 作用 |
-| --- | --- |
-| `agent.delegate` | 创建一个有界 Child AgentTask，并同步等待其结果 |
-| `agent.handoff` | 把一个结果责任交给专业 Agent，保存为 synthesis Node |
-| `workflow.expand` | 一次提交多个有依赖关系的 AgentTask；Root 选择 `wait` 或 `continue` |
-| `workflow.inbox` | 分页读取 Root 的持久化类型消息与节点状态，不加载 Child transcript |
-| `workflow.join` | Root 在自己选择的时点等待后台节点满足 all/any/quorum |
-| `workflow.loop` | 每轮用新 GraphPatch 展开迭代，并用结构化条件退出 |
-| `workflow.wait` | 创建 HumanTask 或 Timer，Workflow 可跨重启等待 |
-| `workflow.subworkflow` | 创建具有独立 ID 的子 Workflow |
-
-**synthesis Node** 是负责汇总、比较或整合前驱结果的节点；它通常不重新执行前驱任务。**Agent Profile**
-是带版本的 Agent 配置，规定可选模型、Tool/Skill/MCP allowlist、预算和执行属性。
-
-模型提交的是 Proposal（提案）。Runtime 会验证：
-
-- 当前模式是否允许；
-- 图是否无环、依赖是否存在；
-- 父 Grant 和 Profile 是否允许；
-- Tool、Skill、MCP、网络和 workspace 请求是否可用；
-- 模型、推理强度和 Budget 是否在允许范围内；
-- 结果 Schema 和成功标准是否合法。
-
-### 6.5 Root 等 DAG，还是继续工作
-
-Root 不是在发出 DAG 后固定阻塞。`workflow.expand` 的 `rootAction` 有两个值：
-
-```text
-rootAction=wait
-  admit graph → 当前 Tool call 调度并等待 join → 结果直接回到本轮 ReAct
-
-rootAction=continue
-  admit graph → 返回 node ID → 后台 durable Worker 执行 Child
-                                  ↘ Root 继续独立工作
-  Root 之后调用 workflow.inbox / workflow.join
-```
-
-**默认是 `wait`**，保证旧调用和“下一步立刻依赖结果”的任务不改变语义。只有 Root 确实有独立工作时才应选择
-`continue`。后台 Task 带 `coordinationMode=background`，因此同一 Workflow 的 Root Run 活跃时，Worker 仍能领取
-这些非根 Task。显式 `workflow.join` 会再次等待，但这是 Root 在合适边界做出的决定，不是 Planner 强制一开始就阻塞。
-在 Root 尝试输出最终响应时，AgentLoop 的完成门禁会读取 Authority：后台节点仍未终结就注入 join 指引，节点已
-终结但结果未消费就注入 inbox/join 指引，然后继续下一 Turn。这个门禁保证 `continue` 用于重叠独立工作，而
-不是悄悄绕过必需结果。
-
-Root 也不会一直自动看到 Child 的所有消息。当前通信模型是：
-
-| 信息 | 保存位置 | Root 怎样看到 |
+| 模式 | Root 可见的协作面 | 关键限制 |
 | --- | --- | --- |
-| Node 是否运行/成功/失败 | Workflow projection | `workflow.inbox` 或 `workflow.join` 返回有界状态 |
-| `result/error/instruction` 等短消息 | `workflow_messages` | inbox 按 sequence、类型和未确认状态读取 |
-| Child 完整结果和长证据 | ArtifactStore | 通过消息或 Node 的 `resultRef` 按需读取 |
-| Child 的完整 Session / 隐藏推理 | Child 临时 Session | 不自动共享给 Root |
+| `auto` | `agent.spawn/wait/result/cancel/steer` | 默认；按证据增量形成 Run Tree，不开放完整图编辑 |
+| `solo` | 无 Child 或拓扑 Tool | Child Budget 为 0；仍走同一 Planner、Workflow 容器和 AgentLoop |
+| `workflow` | Run Tree Tool，再加 delegate、handoff、expand、inbox、join、loop、wait、subworkflow | 用于显式粗粒度业务编排；普通 write/process/network 前必须已形成非 single-agent topology |
 
-这里的 **mailbox（信箱）** 是持久化消息队列；**acknowledge（确认）** 表示消费者已经处理过某条消息，
-不等于删除。每条消息包含固定 message ID、Workflow 内递增 sequence、sender、recipient、type、payload、
-可选 Artifact 引用和确认时间。Child 完成时，结果消息与 Node/Attempt/Task 终态在同一个 Authority 事务提交，
-所以不会出现“节点成功但完成通知永久丢失”。inbox 使用类型过滤并确认时只确认实际返回的 message ID，不会跨过
-未展示的其他类型消息。join 达到成功或确定失败终态时，也会精确确认本次所选节点的 `result/error` 消息。
+旧配置值只在输入边界迁移：`direct → solo`，`supervisor → workflow`。它们不会选回旧执行器。
 
-当前自动生产者只有两类：Child 终态生成 `result/error`；用户 steer 生成 `instruction`。协议还定义
-`progress/milestone/question/answer/control`，但它们是已预留的受控消息类型，不代表当前 Child 会不断把思考过程
-推给 Root。
+默认 Root Prompt 使用 **plan-guided ReAct**：模型保留一份可修改的工作计划，但直接工作是默认选择。只有独立上下文、
+可并行分支、能力隔离、持久等待或独立验证的收益预计大于协调成本时，才适合创建 Child。单纯“任务文字很长”不是
+委派理由；方向不确定时应先直接调查，或只 spawn 一个有界 scout（侦察 Child）。
 
-一条 Child 成功消息在概念上是下面的形状；具体 ID 和时间由 Runtime 生成：
+### 6.4 一条根 Prompt 进入 Planner 后发生什么
+
+下面是当前 `AutoWorkflowPlannerV1.execute()` 的真实顺序。它比“先让模型生成一个 Plan JSON”更接近代码：
+
+```mermaid
+flowchart TD
+    A["SessionJournal 已 beginRun"] --> B["Orchestrator.start"]
+    B --> C["原子创建 execution container + Root Node/Attempt/Task"]
+    C --> D["Root Worker claim Lease 并 markRunning"]
+    D --> E["fork 本 Run 的 ToolRuntime + effect broker"]
+    E --> F{"Planner policy"}
+    F -->|solo| G["不注册协作 Tool"]
+    F -->|auto| H["注册 Agent Run Tree Tool"]
+    F -->|workflow| I["注册 Run Tree + 显式 Workflow Tool"]
+    G --> J["保存 execution snapshot"]
+    H --> J
+    I --> J
+    J --> K["启动 Root Lease heartbeat"]
+    K --> L["AgentLoop.execute"]
+    L --> M["Session Run 与 Root Workflow 分别提交终态"]
+```
+
+`Orchestrator.start()` 初始写入：
+
+```text
+WorkflowSpec(modePolicy, workspace, objective, budget, executionTarget)
+  └─ root Node
+      └─ Attempt #1
+          └─ ready Task
+              └─ claim 后得到 Lease
+```
+
+这几个对象分别回答不同问题：
+
+| 对象 | 回答的问题 |
+| --- | --- |
+| `WorkflowSpec` | 这次执行的目标、策略、能力、预算和完成规则是什么 |
+| `WorkflowProjection` | 事件归并后，Workflow、Node、Attempt 当前是什么状态 |
+| Node | 一个逻辑工作单元现在成功、失败、等待还是取消 |
+| Attempt | 这个 Node 是第几次尝试，哪次尝试产生了结果 |
+| Task | 哪份工作可以被 Worker 领取 |
+| Lease | 当前哪个 Worker 在什么期限内拥有提交权 |
+| execution snapshot | 这次 Attempt 实际使用了哪个 Provider、model、Profile、Tool Schema 和能力摘要 |
+
+**snapshot（快照）** 是某个时刻冻结的执行输入；以后配置变化也不能改写它。Tool 能力以名称和 Schema digest
+记录。**digest（内容摘要）** 是根据内容计算的标识，用于检测配置漂移，而不是自然语言摘要。
+
+Root 在 AgentLoop 中运行时，Planner 只维持执行外壳和 Lease。每个 Turn 仍由 AgentLoop 装配 Prompt、请求 Provider、
+执行 Tool、保存消息并决定是否继续。Root 结束时，Planner 用 Root 的 outcome 与 usage 完成 Attempt、Node、Task，
+然后由 Orchestrator 根据所有后代状态结算外层 execution container。
+
+### 6.5 默认 `auto`：模型操作的是 Agent Run Tree
+
+`auto` 只把五个父子协作 Tool 暴露给 Root。模型只持有稳定 `childId`，不必填写 Node 之间的依赖边或创建 Join Node。
+
+| Tool | 是否阻塞 | 当前语义 |
+| --- | --- | --- |
+| `agent.spawn` | 否 | 启动一个 durable Child，立即返回 `childId` 与 `scheduled` 状态 |
+| `agent.result` | 否 | 查询一个或多个 Child 的当前状态和 `resultRef`；默认确认已消费的终态结果 |
+| `agent.wait` | 是 | 等待所选 Child 满足 `all`、`any` 或 `quorum`；返回状态和持久结果引用 |
+| `agent.steer` | 否 | 给一个 Child 持久追加有界指令；活跃 Child 在安全边界接收，排队 Child 在启动前接收 |
+| `agent.cancel` | 否 | 取消已经失去价值的分支；保留历史和已经产生的证据 |
+
+**Durable Future** 可以理解为“重启后仍然存在的异步任务句柄”。`agent.wait` 等的是持久 Node 状态，不是某个
+JavaScript Promise，因此父进程重启不会让 Child 身份消失。
+
+一次典型的增量规划是：
+
+```text
+Root 直接读取关键入口
+  ├─ agent.spawn(独立调查 A) → childId=A → Root 继续工作
+  └─ agent.spawn(独立审查 B) → childId=B → Root 继续工作
+
+新 Observation 到达
+  ├─ A 的路线仍有价值 → agent.steer(A, 新要求)
+  └─ B 的路线已失效   → agent.cancel(B)
+
+Root 完成独立部分
+  → agent.wait([A], all)
+  → 根据 A 的 resultRef 综合最终回答
+```
+
+`agent.spawn` 内部仍调用 Orchestrator 的 delegate admission，但传入两个关键标志：
+
+- `coordinationMode='background'`：Child 可以在 Root 仍活跃时被 durable worker 领取；
+- `required=false`：该 Child 是可选证据分支，失败或取消不会自动判定 Root 失败。
+
+这里“可选”不等于“可以遗忘”。所有后台 Child 仍必须在 Root 最终结束前进入终态，Root 也必须消费终态结果或错误。
+这叫 **structured concurrency（结构化并发）**：父任务不能留下无人负责的活动分支。
+
+模型在 `agent.spawn` 中可以申请 objective、`default/worker/explorer` harness、Tool/Skill/MCP 子集、workspace、network、
+model class、reasoning、返回 Schema 和成功标准。模型不能填写 Child 的具体 token/Turn/Tool/墙钟数值；当前实现令
+Run Tree Child 继承父 Run 与组织执行策略，因为模型很难把任务难度可靠换算成累计 Provider 成本。显式 Workflow Node
+仍保留逐节点预算申请。
+
+### 6.6 等待、失败隔离和最终完成门禁
+
+`agent.wait` 的规则是：
+
+- `all`：所选 Child 全部成功；
+- `any`：至少一个成功；
+- `quorum`：至少 `minimum` 个成功；
+- 当剩余未终态 Child 已不可能达到目标时，立即返回 `AGENT_WAIT_UNREACHABLE`，不会无限等待。
+
+**终态** 是不会自行继续变化的状态。当前 Child 终态包括 `succeeded`、`failed`、`cancelled`、`skipped`、`unknown`
+和 `manual_intervention`。`unknown` 表示 Runtime 无法确认副作用到底是否发生；`manual_intervention` 表示必须由人处理。
+
+Root 尝试给用户最终回答时，AgentLoop 的 completion guidance 会读取 Workflow authority：
+
+1. 还有 background Child 未终态：注入“调用 `agent.wait`”的下一 Turn 指引；
+2. Child 已终态但 `result/error` 消息未确认：注入“调用 `agent.result` 或 `agent.wait`”的指引；
+3. 所有后台 Child 已终态且结果已消费：才允许 Root 正常结束。
+
+随后 `workflowSettlement()` 仍要求所有 descendant 进入终态。对 `required=false` 的 Run Tree Child，它忽略失败或取消
+对外层成功条件的影响；对显式 Workflow 的 required Node，无法被成功 join 吸收的失败仍会令 Workflow 失败。
+
+因此当前语义不是“Child 失败 = 整体失败”，也不是“Child 失败完全不管”，而是：
+
+```text
+生命周期必须收敛 + 结果必须被消费 + 最终判断仍由 Root 负责
+```
+
+### 6.7 Root 与 Child 交换什么信息
+
+Root 不会自动继承 Child transcript 或隐藏推理。当前通信分为四层：
+
+| 信息 | 保存位置 | Root 怎样取得 |
+| --- | --- | --- |
+| `scheduled/running/succeeded/...` 状态 | Workflow projection | `agent.result` 或 `agent.wait` |
+| `result/error/instruction` 短消息 | Workflow mailbox | Run Tree Tool 精确读取或确认；显式 Workflow 可用 inbox |
+| 完整结果和长证据 | ArtifactStore | 通过 Node 或消息中的 `resultRef` 按需读取 |
+| Child 完整 Session 与隐藏推理 | Child 临时 Session | 不共享给 Root |
+
+**mailbox（信箱）** 是按 Workflow 排序、按收件人读取并可确认的持久消息队列。**acknowledge（确认）** 表示消费者
+已经处理过消息，不等于删除。Child 结束时，Node、Attempt、Task 终态与 Root 收件的 `result/error` 在同一个
+Authority 事务中提交，避免出现“节点成功但完成通知永久丢失”。
+
+一条成功消息的概念形状如下；ID 和时间由 Runtime 生成：
 
 ```json
 {
@@ -387,11 +485,11 @@ Root 也不会一直自动看到 Child 的所有消息。当前通信模型是�
   "messageId": "result-attempt-...",
   "workflowId": "workflow-...",
   "sequence": 12,
-  "sender": { "kind": "node", "id": "graph-node-...", "attemptId": "attempt-..." },
+  "sender": { "kind": "node", "id": "delegate-...", "attemptId": "attempt-..." },
   "recipient": { "kind": "node", "id": "root" },
   "type": "result",
   "payload": {
-    "nodeId": "graph-node-...",
+    "nodeId": "delegate-...",
     "attemptId": "attempt-...",
     "state": "succeeded",
     "resultRef": {
@@ -400,25 +498,69 @@ Root 也不会一直自动看到 Child 的所有消息。当前通信模型是�
       "mediaType": "application/json"
     }
   },
-  "artifactRefs": [{ "artifactId": "artifact-...", "digest": "sha256:...", "mediaType": "application/json" }],
+  "artifactRefs": [
+    { "artifactId": "artifact-...", "digest": "sha256:...", "mediaType": "application/json" }
+  ],
   "causationId": "task-...",
   "correlationId": "workflow-run-...",
-  "createdAt": "2026-08-21T00:00:00.000Z"
+  "createdAt": "2026-08-22T00:00:00.000Z"
 }
 ```
 
-`sequence` 是同一 Workflow 内的读取顺序；`causationId` 指向直接导致消息的 Task；`correlationId` 把消息与
-同一 Run 串起来。消息被消费后会增加 `acknowledgedAt`，原消息仍保留供审计。
+`sequence` 是同一 Workflow 内的消息顺序；`causationId` 指向直接导致消息的 Task；`correlationId` 把相关执行串在
+一起。当前自动生产者主要是 Child 终态的 `result/error` 和 steer 的 `instruction`。协议预留了
+`progress/milestone/question/answer/control`，不代表 Child 会持续把思考过程推给 Root。
 
-**steer** 是用户在 Run 执行中追加的方向调整。Runtime 先把它持久化到 Root mailbox，再放入进程内 steer
-queue；AgentLoop 在安全边界把 steer 写入 SessionJournal，成功后按 message ID 精确确认。顺序是“先 durable、
-后可执行、最后确认”，从而缩小崩溃丢消息窗口。
+`agent.steer` 的交付顺序是：先写入 Child mailbox，再尝试交给活跃 Child。若 Child 正在运行，Worker 把指令送入
+`session.steer`，Child AgentLoop 在安全边界把它写入自己的 SessionJournal，然后按 message ID 确认；若 Child 尚未
+启动，Worker 在 bootstrap 前读取指令，成功装配后再确认。这样即使进程在“发送”附近崩溃，指令仍有持久来源。
 
-这套设计与“直接 ReAct”不同：ReAct 的 Tool result 自动进入同一个 Agent 的下一轮消息；多 Agent 中每个 Child
-有独立 Prompt、Session、权限和 ReAct 循环，Root 只消费结构化状态与证据引用。这样并行 Agent 不会把各自对话
-混成一个无边界上下文。
+### 6.8 显式 `workflow` policy：何时才需要完整 DAG
 
-### 6.6 Child Runtime
+`workflow` 模式在五个 Run Tree Tool 之外，再提供高级粗粒度编排 Tool：
+
+| Tool | 作用 |
+| --- | --- |
+| `agent.delegate` | 创建一个有界、required 的 Child AgentTask，并在本次 Tool 调用内等待 |
+| `agent.handoff` | 把结果责任交给 synthesis Node；synthesis 表示汇总、比较或整合前驱证据 |
+| `workflow.expand` | 一次提交多个带依赖关系的 AgentTask，可选择 `wait` 或 `continue` |
+| `workflow.inbox` | 分页读取持久消息和节点状态，不加载 Child transcript |
+| `workflow.join` | 对显式后台节点执行 `all/any/quorum` 汇合 |
+| `workflow.loop` | 每轮追加经过验证的 GraphPatch，用结构化条件退出 |
+| `workflow.wait` | 创建 HumanTask 或 Timer，使 Workflow 能跨重启等待 |
+| `workflow.subworkflow` | 创建具有独立 Workflow ID 的子 Workflow |
+
+**synthesis Node** 是专门整合上游证据的节点。**HumanTask** 是等待人类决定或输入的持久节点。**Timer** 是到期后
+由 Runtime 唤醒的持久计时器。**GraphPatch** 是对现有图追加或替换节点、边的版本化变更。
+
+模型提交的永远是 Proposal（提案），不是 authority。Runtime 会检查：
+
+- 当前 policy 是否允许；
+- `expectedRevision` 是否仍匹配，防止并发覆盖；
+- Node ID、依赖和条件边是否合法，图是否无环；
+- 父 Grant、Agent Profile 与衰减后的 Capability 是否允许；
+- Tool、Skill、MCP、network 和 workspace 请求是否可用；
+- Budget、结果 Schema、成功标准、重试和 effect 合同是否合法。
+
+`workflow.expand` 的 `rootAction`：
+
+```text
+wait
+  admit graph → 当前 Tool 调用调度并等待 join → 结果回到当前 ReAct
+
+continue
+  admit graph → 返回节点 ID → durable Worker 在后台执行
+                           ↘ Root 同时完成真正独立的工作
+  Root 稍后用 workflow.inbox/workflow.join，或通用 agent.result/agent.wait
+```
+
+`wait` 是兼容默认值；只有 Root 确实还有独立工作可以与 DAG 重叠时，才应选择 `continue`。
+
+显式 Workflow Node 默认是 required，因此失败通常会影响外层 Workflow；`any/quorum` 的成功 Join 可以把少数失败或
+取消分支判定为“不再必需”。Scheduler 与恢复器只读取持久 Node、Edge、Task 和 projection，不依赖原
+`workflow.expand` 调用栈，所以 Runtime 重启后仍能重新推导前沿、释放后继节点和解析 Join。
+
+### 6.9 Child Runtime 怎样执行一个 AgentTask
 
 Child 是受授权的独立 Runtime 进程，不是一段附加 Prompt。它通过 `ChildRuntimeHost` 启动，并获得：
 
@@ -448,10 +590,15 @@ Child 是受授权的独立 Runtime 进程，不是一段附加 Prompt。它通�
 **capability snapshot** 是 Run 开始时冻结的可用能力清单；**allowlist** 是明确允许项列表。取交集意味着 Child
 只能获得每一层都允许的能力，任何一层拒绝都会把该能力移除。
 
-Child 固定不能创建 descendant（下一代 Child），防止绕过 Workflow ancestry、权限和预算账本。
-**ancestry** 是父子 Agent 的来源链，用来追踪责任和授权从哪里传下去。
+当前迁移阶段，Child 的 session policy 固定为 `solo`，不能再创建 descendant（下一代 Child）。这不是 Run Tree
+在概念上只能有一层，而是当前实现尚未接入受认证的递归 spawn broker。硬性禁止 Child 自己启动嵌套 Praxis CLI，
+可防止绕过 Workflow ancestry、权限和预算账本。**ancestry** 是父子 Agent 的来源链，用来追踪责任和授权从哪里传下去。
 
-### 6.7 Lease 与恢复
+Child 领取到已经准入的 Task 后，`AgentTaskPlanner` 只把 Child Session 和 Run 交给 Child AgentLoop。真正的
+准入、Profile 解析、workspace 隔离、能力衰减、Provider credential handle、结果 Artifact 与状态提交都发生在
+父侧 Orchestrator、Worker 和 Child bootstrap 边界，不由这个薄 adapter 再规划一次。
+
+### 6.10 Lease、Worker 与恢复
 
 Worker claim Task 时，Authority 写入随机 lease token、worker ID、到期时间和 heartbeat。只有持有相同 token
 的 Worker 才能继续更新 Task。
@@ -468,6 +615,38 @@ Lease 过期后：
 
 这里的 **pure/read** 指不改变外部状态的纯计算或读取；`RetryPolicy` 是 Runtime 明确规定“哪些失败、最多几次、
 在什么条件下可以重试”的规则。
+
+当前 Root 与后台 Child 的执行方式也不同：
+
+- Root Task 由 `AutoWorkflowPlannerV1` 立即 claim，并每 30 秒 heartbeat；
+- 后台 Child Task 由 `DurableWorkflowWorkerServiceV1` 扫描 ready 队列，按 provider-aware capacity 领取；
+- Worker 启动前会调用 `reconcileWorkflow()`，仅根据持久 projection 重新推导可运行前沿；
+- Worker 完成后把 usage、Attempt、Node、Task、result/error message 与 Artifact 引用交回 Orchestrator；
+- Authority 使用 sequence/CAS 防止两个 Worker 并发覆盖同一 Workflow revision。
+
+**provider-aware capacity** 是按 Provider 分组的并发上限，避免所有 Workflow 同时挤占同一模型后端。
+
+**CAS（compare-and-swap，比较后交换）** 是“只有我读到的 sequence 仍是最新版本才允许提交”；冲突时重新读取再算。
+
+### 6.11 `planner/` 目录现在到底是什么
+
+目录名保留了历史演进痕迹，不能看到 `planner/` 就假定其中每个类都在根产品主链上。
+
+| 文件组 | 当前地位 |
+| --- | --- |
+| `plannerRouter.ts` | 活跃；解析 `auto/solo/workflow` policy，不选择不同实现 |
+| `agentTaskPlanner.ts` | 活跃；已准入 Child AgentTask 进入 AgentLoop 的薄 adapter |
+| `workspaceIsolationManager.ts`、`directoryWorkspaceIsolation.ts`、`controlledWorkspaceMerge.ts`、`workspaceWriteGuard.ts` | 活跃；被 Child Worker 用于隔离写入、校验和安全合并 |
+| `verifier.ts` | 活跃；Child Worker 用它检查规则或语义成功标准 |
+| `planGenerator.ts`、`providerPlanGenerator.ts`、`planValidator.ts`、`dag*`、`serialSupervisor.ts`、`replanCoordinator.ts` | 保留的 Plan/DAG 库与测试资产；当前 Root Prompt 不先经过它们生成 `PlanGraphV1` |
+| `planner-api/index.ts` | 活跃；定义最小 `Planner` 产品接口 |
+| `workflow/autoWorkflowPlanner.ts` | 当前根产品 Planner 实现；虽然文件位于 `workflow/`，但它才是 Root 主入口 |
+
+**verifier（验证器）** 是独立检查结果是否满足成功标准的组件，不等同于执行 Agent 自己声称“已经完成”。
+
+判断一段 Planner 代码是否真的在产品路径上，最好从 `RuntimeKernel.requirePlanner()` 和构造函数的 `new` 调用反向追踪，
+再用测试确认；不要只看 export 或类名。当前结论是：根产品路径只有 `AutoWorkflowPlannerV1`，默认模型可见协作面是
+Agent Run Tree，完整 DAG 是显式 `workflow` policy 的附加能力。
 
 ## 7. 第 5–6 层：AgentLoop、Provider、Tool 与权限
 
@@ -588,7 +767,7 @@ Praxis 中常见的四个对象：
 随后：
 
 - `SystemPromptComposer` 生成 Trusted Instructions、runtime facts、Skill catalog 和 project guidance；
-- `PromptAssembler` 加入 Child ContextPacket、Session ContextView、checkpoint/native context 和消息后缀；
+- `PromptAssembler` 加入逐字 Run task contract、Child 可选签名 ContextPacket、Session ContextView、checkpoint/native context 和消息后缀；逐字合同与 canonical live message 去重且不能被 compaction 删除；
 - `AgentLoop` 附加 Tool definitions，形成最终 `ProviderRequest`。
 
 当前默认 Prompt variant 是 `iron-law-lean-v1`；其中 **lean** 表示使用较精简、减少重复规则的指令版本。
@@ -765,7 +944,7 @@ Skill turn 或未完成后缀的安全切分位置。
 | `maxUncompactedTokens` | 65,536 | checkpoint 后 canonical 正文的软阈值 |
 | `hysteresis` | 0.1 | 压力和正文都下降后才重新武装 |
 | `keepRecentTokens` | 8,192 | checkpoint 外保留有意义的最新完整执行前沿 |
-| `maxSummaryTokens` | 1,024 | semantic summary 上限 |
+| `maxSummaryTokens` | 4,096 | semantic checkpoint 上限；给长任务保留硬约束、最佳证据和活动计划的空间 |
 | `overflowRetryLimit` | 1 | Provider context overflow 最多压缩重试一次 |
 | `generatorDeadlineMs` | 120,000 | summary generator 的 deadline |
 
@@ -792,7 +971,7 @@ Skill turn 或未完成后缀的安全切分位置。
 4. Runtime 先确定性提取 continuation frontier；
 5. semantic generator 总结 decisions、unresolved 和 active plan；
 6. 按字段所有权合并 Runtime baseline 与模型摘要；
-7. 压缩到 1,024 token，并优先保留继续执行所需字段；
+7. 压缩到 4,096 token，并优先保留继续执行所需字段；
 8. 检查 estimated gain；
 9. 把 checkpoint 写入 Session authority。
 
@@ -1059,8 +1238,8 @@ authority 标记；正常运行路径不做双写。
 7. 新事件提交后重新计算后继 Node 是否 ready。
 
 未确认的 mailbox 消息也会跨重启保留。当前正常 AgentLoop 会在 Session steer 落盘后精确确认对应消息；
-Child 结果由 Root 使用 inbox/join 消费。恢复路径依然以 projection、execution snapshot 和 Artifact 引用重建
-执行输入，不会把整段 Child transcript 拼回 Root。
+默认 Run Tree 的 Child 结果由 Root 使用 `agent.result/agent.wait` 消费，显式 Workflow 也可使用 inbox/join。
+恢复路径依然以 projection、execution snapshot 和 Artifact 引用重建执行输入，不会把整段 Child transcript 拼回 Root。
 
 **Execution snapshot（执行快照）** 是某个 Attempt 启动时已经解析和校验过的输入、能力、引用与版本。它使
 恢复后的 Worker 不必重新猜测当时看到了什么。
@@ -1168,10 +1347,11 @@ PRAXIS_HOME/traces/YYYY-MM-DD/<trace-id>.jsonl
 | --- | --- |
 | Runtime 如何把所有实现接起来 | `apps/runtime/src/framework/runtimeKernel.ts` |
 | Prompt 请求如何进入 Session | `apps/runtime/src/session/`、`apps/runtime/src/session-db/sessionRepositoryV3.ts` |
-| `auto/solo/workflow` 怎样决定拓扑 | `apps/runtime/src/workflow/autoWorkflowPlanner.ts` |
+| `auto/solo/workflow` 怎样解析 policy 与注册 Tool | `apps/runtime/src/planner/plannerRouter.ts`、`apps/runtime/src/workflow/autoWorkflowPlanner.ts` |
 | Workflow 如何调度和恢复 | `apps/runtime/src/workflow/durableWorkflowScheduler.ts`、`apps/runtime/src/workflow/durableWorkflowWorkerService.ts`、`apps/runtime/src/workflow/sqliteWorkflowAuthority.ts` |
-| delegate/handoff/expand/loop 做什么 | `apps/runtime/src/workflow/` 下的 `agent*Tool.ts` 和 `workflow*Tool.ts` |
-| Root 如何读取后台结果与显式 join | `apps/runtime/src/workflow/workflowCoordinationTools.ts` |
+| 默认 Run Tree 的 spawn/wait/result/cancel/steer 做什么 | `apps/runtime/src/workflow/agentRunTreeTools.ts` |
+| 显式 Workflow 的 delegate/handoff/expand/loop 做什么 | `apps/runtime/src/workflow/` 下对应 `agent*Tool.ts` 和 `workflow*Tool.ts` |
+| 显式 Workflow 怎样读取 inbox 与 join | `apps/runtime/src/workflow/workflowCoordinationTools.ts` |
 | mailbox 如何落 SQLite / 走远程 authority | `apps/runtime/src/workflow/sqliteWorkflowAuthority.ts`、`apps/runtime/src/workflow/remoteWorkflowAuthority.ts` |
 | steer 如何先持久化再进入 AgentLoop | `apps/runtime/src/framework/runtimeKernel.ts`、`apps/runtime/src/loop/index.ts` |
 | Child 如何启动和隔离 | `apps/runtime/src/subagent/childRuntimeHost.ts`、`apps/runtime/src/workflow/localWorkflowAgentWorker.ts` |
@@ -1196,7 +1376,7 @@ PRAXIS_HOME/traces/YYYY-MM-DD/<trace-id>.jsonl
 RuntimeKernel
   → SessionRepositoryV3
   → AutoWorkflowPlanner
-  → WorkflowOrchestrator / Scheduler
+  → AgentRunTreeTools / WorkflowOrchestrator / DurableWorkerService
   → LocalWorkflowAgentWorker
   → AgentLoop
   → SystemPromptComposer + PromptAssembler
@@ -1234,8 +1414,9 @@ RuntimeKernel
 | Mailbox | 按 Workflow 排序、按收件人读取并可确认的持久协调消息队列 |
 | Native context | Provider 专有、仅在精确匹配时可重放的不透明上下文 |
 | Node | Workflow 图中的一个工作节点 |
-| Planner | 把任务变成可执行 Workflow 拓扑的组件 |
 | Projection | 把事件序列归并得到的当前状态 |
+| Planner | 为一个 Run 建立持久执行边界、注册策略能力并驱动 Root AgentLoop 的组件 |
+| Policy | 同一实现上的行为限制，例如是否允许创建 Child 或完整 DAG |
 | Prompt | System、消息、Tool、Skill 等组成的完整模型输入 |
 | Prompt variant | 一套已命名的 Prompt 渲染程序 |
 | Provider | 实际提供模型推理服务的后端适配器 |
@@ -1246,6 +1427,7 @@ RuntimeKernel
 | ReAct | 模型推理、调用 Tool、观察结果、再继续的循环 |
 | Revision | 对象状态版本号，用于并发控制 |
 | Run | 用户一次 Prompt 或 follow-up 触发的完整执行 |
+| Run Tree | Root 用稳定 Child 句柄增量形成的父子 Agent 执行关系 |
 | RunCoordinator | 负责持久化 Session Run 终态与 usage 的协调器 |
 | Steer | 用户在活动 Run 中追加、将在下一个安全边界生效的方向调整 |
 | Schema | 供机器验证对象字段、类型和约束的数据规则 |
@@ -1257,10 +1439,11 @@ RuntimeKernel
 | TUI | 运行在终端里的交互式用户界面 |
 | Turn | Run 内一次 ProviderRequest 及其响应处理 |
 | Verification | 使用 Tool 或独立检查验证一个说法 |
-| Workflow | 一个 Run 的持久执行图和状态机 |
+| Workflow | 默认作为一个 Run 的持久 execution container；显式 policy 下也可作为 DAG 和状态机 |
 | WorkflowOrchestrator | 把 Planner/Scheduler 意图转换为 Workflow authority 事务的协调器 |
 
 掌握本章后，可以用一句话描述当前 Praxis：**接口把一次 Prompt 交给 RuntimeKernel；SessionJournal 保存会话事实，
-唯一 Planner 生成根 Workflow，Scheduler 用 Lease 驱动 AgentTask；AgentLoop 装配 Prompt 并循环调用 Provider 与
-Tool；上下文窗口选择器和 CompactionService 控制模型窗口；Workflow authority、ArtifactStore、receipt 与 Trace
+唯一根 Planner 建立持久 execution container；默认 `auto` 让 Root 在 ReAct 中用 Child 句柄增量形成 Agent Run Tree，
+显式 `workflow` policy 才开放完整 DAG；Worker 用 Lease 驱动 AgentTask，AgentLoop 装配 Prompt 并循环调用 Provider
+与 Tool；上下文窗口选择器和 CompactionService 控制模型窗口；Workflow authority、ArtifactStore、receipt 与 Trace
 分别保存调度状态、完整对象、副作用证据和诊断信息。**

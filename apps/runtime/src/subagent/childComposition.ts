@@ -11,6 +11,10 @@ import {
   type TurnResourceSnapshot,
 } from '../extensions/index.js'
 import type { RuntimeKernelOptions } from '../framework/runtimeKernel.js'
+import {
+  type RuntimeMiddlewareRegistry,
+  resolveRegisteredRuntimeMiddleware,
+} from '../framework/runtimeMiddleware.js'
 import { MockProvider } from '../providers/mockProvider.js'
 import { OPENAI_RESPONSES_CAPABILITIES } from '../providers/openAIResponsesProvider.js'
 import { JsonlRepository } from '../session-db/index.js'
@@ -28,6 +32,7 @@ const CHILD_SESSION_METHODS = new Set<ChildBootstrapMethod>([
   'events.subscribe',
   'session.create',
   'session.prompt',
+  'session.steer',
   'permission.decide',
   'session.abort',
   'shutdown',
@@ -47,6 +52,7 @@ type ChildCompositionFailureCode =
   | 'CHILD_COMPOSITION_RESOURCE_DRIFT'
   | 'CHILD_COMPOSITION_ROOT_UNSAFE'
   | 'CHILD_COMPOSITION_ROOT_NOT_OWNED'
+  | 'CHILD_COMPOSITION_MIDDLEWARE_UNAVAILABLE'
 
 const CHILD_COMPOSITION_FAILURE_CODES = new Set<string>([
   'CHILD_COMPOSITION_PROVIDER_UNAVAILABLE',
@@ -56,12 +62,15 @@ const CHILD_COMPOSITION_FAILURE_CODES = new Set<string>([
   'CHILD_COMPOSITION_RESOURCE_DRIFT',
   'CHILD_COMPOSITION_ROOT_UNSAFE',
   'CHILD_COMPOSITION_ROOT_NOT_OWNED',
+  'CHILD_COMPOSITION_MIDDLEWARE_UNAVAILABLE',
 ] satisfies ChildCompositionFailureCode[])
 
 export function createChildRuntimeComposition(
   profile: ChildBootstrapProfileV3,
+  options: Readonly<{ middlewareRegistry?: RuntimeMiddlewareRegistry }> = {},
 ): RuntimeKernelOptions {
   const provider = realizeChildProvider(profile)
+  const middleware = realizeChildMiddleware(profile, options.middlewareRegistry)
   let mcpClient: ChildMcpBrokerIpcClient | undefined
   const workspace = canonicalWorkspace(profile.workspace.root)
   const ephemeralRoot = canonicalEphemeralRoot(profile.ephemeral.root)
@@ -130,6 +139,8 @@ export function createChildRuntimeComposition(
       providers: [provider],
       replaceProviders: true,
       tools,
+      middleware,
+      ...(profile.middleware === undefined ? {} : { middlewarePolicy: profile.middleware.policy }),
       exposeArtifactTool: false,
       extensionEnvironment: {},
       authority: {
@@ -174,6 +185,21 @@ export function createChildRuntimeComposition(
     mcpClient?.close()
     if (profile.ephemeral.retention === 'delete') removeOwnedRootSync(profile)
     throw error
+  }
+}
+
+function realizeChildMiddleware(
+  profile: ChildBootstrapProfileV3,
+  registry: RuntimeMiddlewareRegistry | undefined,
+): readonly import('../framework/runtimeMiddleware.js').RuntimeMiddleware[] {
+  if (profile.middleware === undefined) return []
+  try {
+    return resolveRegisteredRuntimeMiddleware(profile.middleware.ids, registry)
+  } catch {
+    throw childCompositionFailure(
+      'CHILD_COMPOSITION_MIDDLEWARE_UNAVAILABLE',
+      'Authenticated Child Runtime middleware could not be resolved from the process registry.',
+    )
   }
 }
 

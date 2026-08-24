@@ -178,6 +178,70 @@ test('AgentLoop applies the selected model output ceiling to every Provider requ
   assert.deepEqual(limits, [32_000, 1_000])
 })
 
+test('AgentLoop applies model and Tool middleware at policy-safe execution boundaries', async () => {
+  const lifecycle: string[] = []
+  const providerInputs: Array<string | undefined> = []
+  let turn = 0
+  const provider: ChatProvider = {
+    id: 'middleware',
+    defaultModel: 'test',
+    authState: () => ({ status: 'authenticated' }),
+    async *stream(request) {
+      providerInputs.push(request.instructions)
+      if (turn++ === 0) {
+        yield {
+          type: 'tool_calls' as const,
+          calls: [{ id: 'call-middleware', name: 'inspect', input: { path: 'original.txt' } }],
+        }
+        yield { type: 'completed' as const, stopReason: 'tool_calls' }
+        return
+      }
+      yield { type: 'completed' as const, stopReason: 'end_turn' }
+    },
+  }
+  const harness = createHarness(provider, {
+    beforeModel: (_session, _run, request) => {
+      lifecycle.push('beforeModel')
+      return { ...request, instructions: `${request.instructions}\nHost policy.` }
+    },
+    afterModel: () => {
+      lifecycle.push('afterModel')
+    },
+    beforeTool: (_session, _run, toolCall) => {
+      lifecycle.push('beforeTool')
+      return { ...toolCall, input: { path: 'rewritten.txt' } }
+    },
+    afterTool: (_session, _run, _toolCall, _prepared, result) => {
+      lifecycle.push('afterTool')
+      return { ...result, summary: `wrapped:${result.summary}` }
+    },
+  })
+
+  await harness.loop.execute(harness.session, harness.run)
+
+  assert.deepEqual(lifecycle, [
+    'beforeModel',
+    'afterModel',
+    'beforeTool',
+    'afterTool',
+    'beforeModel',
+    'afterModel',
+  ])
+  assert.deepEqual(providerInputs, [
+    'Test instructions.\nHost policy.',
+    'Test instructions.\nHost policy.',
+  ])
+  const toolMessage = harness.session.messages.find(
+    (message) => message.role === 'tool' && message.toolCallId === 'call-middleware',
+  )
+  assert.equal(toolMessage?.role, 'tool')
+  assert.match(toolMessage?.role === 'tool' ? String(toolMessage.content) : '', /rewritten\.txt/u)
+  assert.match(
+    toolMessage?.role === 'tool' ? String(toolMessage.content) : '',
+    /wrapped:inspected/u,
+  )
+})
+
 test('AgentLoop synchronously claims exactly one terminal outcome across a finish race', async () => {
   const harness = createHarness(scriptedProvider([[]]), { portClaimsTerminal: false })
 
@@ -437,13 +501,15 @@ test('AgentLoop preserves bounded partial text but fails a length-truncated fina
   })
 })
 
-test('AgentLoop maps malformed Provider streams to one content-free terminal failure', async () => {
+test('AgentLoop bounds visible malformed Provider stream recovery to one retry', async () => {
+  let attempts = 0
   const provider: ChatProvider = {
     id: 'malformed',
     defaultModel: 'test',
     contractVersion: 2,
     authState: () => ({ status: 'authenticated' }),
     async *stream() {
+      attempts += 1
       yield { type: 'text_start' as const, contentIndex: 0 }
       yield { type: 'text_delta' as const, contentIndex: 0, text: 'private partial output' }
       yield { type: 'completed' as const, stopReason: 'end_turn' }
@@ -453,6 +519,7 @@ test('AgentLoop maps malformed Provider streams to one content-free terminal fai
 
   await harness.loop.execute(harness.session, harness.run)
 
+  assert.equal(attempts, 2)
   assert.deepEqual(harness.events.at(-1), {
     type: 'prompt_failed',
     runId: harness.run.id,
@@ -461,6 +528,288 @@ test('AgentLoop maps malformed Provider streams to one content-free terminal fai
     error: 'The provider returned a malformed stream.',
   })
   assert.equal(JSON.stringify(harness.events.at(-1)).includes('private partial output'), false)
+  assert.equal(
+    harness.traces.some(
+      (record) =>
+        record.kind === 'provider.retry' &&
+        record.attributes?.errorCode === 'PROVIDER_STREAM_INVALID' &&
+        record.attributes?.discardedVisibleText === true,
+    ),
+    true,
+  )
+  assert.equal(harness.terminals, 1)
+})
+
+test('AgentLoop retries a malformed stream after partial text without committing it', async () => {
+  let attempts = 0
+  const provider: ChatProvider = {
+    id: 'recoverable-visible-malformed',
+    defaultModel: 'test',
+    contractVersion: 2,
+    authState: () => ({ status: 'authenticated' }),
+    async *stream() {
+      attempts += 1
+      if (attempts === 1) {
+        yield { type: 'text_start' as const, contentIndex: 0 }
+        yield {
+          type: 'text_delta' as const,
+          contentIndex: 0,
+          text: 'discarded malformed text',
+        }
+        yield { type: 'completed' as const, stopReason: 'other' }
+        return
+      }
+      yield { type: 'text_delta' as const, text: 'recovered durable text' }
+      yield { type: 'completed' as const, stopReason: 'end_turn' }
+    },
+  }
+  const harness = createHarness(provider)
+
+  await harness.loop.execute(harness.session, harness.run)
+
+  assert.equal(attempts, 2)
+  assert.equal(contentText(harness.session.messages.at(-1)!.content), 'recovered durable text')
+  assert.equal(
+    harness.traces.some(
+      (record) =>
+        record.kind === 'provider.retry' &&
+        record.attributes?.errorCode === 'PROVIDER_STREAM_INVALID' &&
+        record.attributes?.discardedVisibleText === true,
+    ),
+    true,
+  )
+  assert.equal(harness.events.at(-1)?.type, 'prompt_completed')
+})
+
+test('AgentLoop retries one malformed Tool-call stream before any visible output is published', async () => {
+  let attempts = 0
+  const provider: ChatProvider = {
+    id: 'recoverable-malformed',
+    defaultModel: 'test',
+    contractVersion: 2,
+    authState: () => ({ status: 'authenticated' }),
+    async *stream() {
+      attempts += 1
+      if (attempts === 1) {
+        yield {
+          type: 'tool_call_start' as const,
+          index: 0,
+          id: 'truncated-call',
+          name: 'inspect',
+        }
+        yield { type: 'completed' as const, stopReason: 'other' }
+        return
+      }
+      if (attempts === 2) {
+        yield {
+          type: 'tool_calls' as const,
+          calls: [{ id: 'recovered-call', name: 'inspect', input: { path: 'note.txt' } }],
+        }
+        yield { type: 'completed' as const, stopReason: 'tool_use' }
+        return
+      }
+      yield { type: 'text_delta' as const, text: 'recovered' }
+      yield { type: 'completed' as const, stopReason: 'end_turn' }
+    },
+  }
+  const harness = createHarness(provider)
+
+  await harness.loop.execute(harness.session, harness.run)
+
+  assert.equal(attempts, 3)
+  assert.equal(harness.toolExecutions, 1)
+  assert.equal(contentText(harness.session.messages.at(-1)!.content), 'recovered')
+  assert.equal(harness.events.filter((event) => event.type === 'text_delta').length, 1)
+  assert.equal(
+    harness.traces.filter(
+      (record) =>
+        record.kind === 'provider.retry' &&
+        record.attributes?.errorCode === 'PROVIDER_STREAM_INVALID',
+    ).length,
+    1,
+  )
+  assert.equal(harness.events.at(-1)?.type, 'prompt_completed')
+})
+
+test('AgentLoop retries a transport failure after an unpublished partial Tool call', async () => {
+  let attempts = 0
+  const provider: ChatProvider = {
+    id: 'recoverable-transport',
+    defaultModel: 'test',
+    contractVersion: 2,
+    authState: () => ({ status: 'authenticated' }),
+    async *stream() {
+      attempts += 1
+      if (attempts === 1) {
+        yield {
+          type: 'tool_call_start' as const,
+          index: 0,
+          id: 'interrupted-call',
+          name: 'inspect',
+        }
+        yield {
+          type: 'tool_call_delta' as const,
+          index: 0,
+          argumentsDelta: '{"path":"note',
+        }
+        throw runtimeError(
+          'PROVIDER_TRANSPORT_ERROR',
+          'provider',
+          'The Provider connection failed before the response completed.',
+          undefined,
+          true,
+        )
+      }
+      if (attempts === 2) {
+        yield {
+          type: 'tool_calls' as const,
+          calls: [{ id: 'recovered-transport-call', name: 'inspect', input: { path: 'note.txt' } }],
+        }
+        yield { type: 'completed' as const, stopReason: 'tool_use' }
+        return
+      }
+      yield { type: 'text_delta' as const, text: 'transport recovered' }
+      yield { type: 'completed' as const, stopReason: 'end_turn' }
+    },
+  }
+  const harness = createHarness(provider)
+
+  await harness.loop.execute(harness.session, harness.run)
+
+  assert.equal(attempts, 3)
+  assert.equal(harness.toolExecutions, 1)
+  assert.equal(contentText(harness.session.messages.at(-1)!.content), 'transport recovered')
+  assert.equal(
+    harness.traces.filter(
+      (record) =>
+        record.kind === 'provider.retry' &&
+        record.attributes?.errorCode === 'PROVIDER_TRANSPORT_ERROR',
+    ).length,
+    1,
+  )
+  assert.equal(harness.events.at(-1)?.type, 'prompt_completed')
+})
+
+test('AgentLoop retries a transport failure after partial text without committing the discarded turn', async () => {
+  let attempts = 0
+  const provider: ChatProvider = {
+    id: 'recoverable-visible-transport',
+    defaultModel: 'test',
+    contractVersion: 2,
+    authState: () => ({ status: 'authenticated' }),
+    async *stream() {
+      attempts += 1
+      if (attempts === 1) {
+        yield { type: 'text_delta' as const, text: 'discarded partial text' }
+        throw runtimeError(
+          'PROVIDER_TRANSPORT_ERROR',
+          'provider',
+          'The Provider connection failed before the response completed.',
+          undefined,
+          true,
+        )
+      }
+      yield { type: 'text_delta' as const, text: 'recovered durable text' }
+      yield { type: 'completed' as const, stopReason: 'end_turn' }
+    },
+  }
+  const harness = createHarness(provider)
+
+  await harness.loop.execute(harness.session, harness.run)
+
+  assert.equal(attempts, 2)
+  assert.equal(contentText(harness.session.messages.at(-1)!.content), 'recovered durable text')
+  assert.deepEqual(
+    harness.events
+      .filter((event) => event.type === 'text_delta')
+      .map((event) => (event.type === 'text_delta' ? event.text : '')),
+    ['discarded partial text', 'recovered durable text'],
+  )
+  assert.equal(
+    harness.traces.some(
+      (record) =>
+        record.kind === 'provider.retry' &&
+        record.attributes?.errorCode === 'PROVIDER_TRANSPORT_ERROR' &&
+        record.attributes?.discardedVisibleText === true,
+    ),
+    true,
+  )
+  assert.equal(harness.events.at(-1)?.type, 'prompt_completed')
+})
+
+test('AgentLoop retries after an incomplete reasoning block without duplicating durable text', async () => {
+  let attempts = 0
+  const provider: ChatProvider = {
+    id: 'recoverable-reasoning',
+    defaultModel: 'test',
+    contractVersion: 2,
+    authState: () => ({ status: 'authenticated' }),
+    async *stream() {
+      attempts += 1
+      if (attempts === 1) {
+        yield { type: 'reasoning_start' as const, contentIndex: 0 }
+        yield { type: 'reasoning_delta' as const, contentIndex: 0, text: 'partial thought' }
+        yield { type: 'completed' as const, stopReason: 'other' }
+        return
+      }
+      if (attempts === 2) {
+        yield {
+          type: 'tool_calls' as const,
+          calls: [{ id: 'reasoning-recovered-call', name: 'inspect', input: { path: 'note.txt' } }],
+        }
+        yield { type: 'completed' as const, stopReason: 'tool_use' }
+        return
+      }
+      yield { type: 'text_delta' as const, text: 'reasoning stream recovered' }
+      yield { type: 'completed' as const, stopReason: 'end_turn' }
+    },
+  }
+  const harness = createHarness(provider)
+
+  await harness.loop.execute(harness.session, harness.run)
+
+  assert.equal(attempts, 3)
+  assert.equal(harness.toolExecutions, 1)
+  assert.equal(contentText(harness.session.messages.at(-1)!.content), 'reasoning stream recovered')
+  assert.equal(harness.events.filter((event) => event.type === 'text_delta').length, 1)
+  assert.equal(harness.events.filter((event) => event.type === 'thinking_delta').length, 1)
+  assert.equal(
+    harness.traces.filter(
+      (record) =>
+        record.kind === 'provider.retry' &&
+        record.attributes?.errorCode === 'PROVIDER_STREAM_INVALID',
+    ).length,
+    1,
+  )
+  assert.equal(harness.events.at(-1)?.type, 'prompt_completed')
+})
+
+test('AgentLoop bounds invisible malformed-stream recovery to one retry', async () => {
+  let attempts = 0
+  const provider: ChatProvider = {
+    id: 'persistently-malformed',
+    defaultModel: 'test',
+    contractVersion: 2,
+    authState: () => ({ status: 'authenticated' }),
+    async *stream() {
+      attempts += 1
+      yield { type: 'tool_call_start' as const, index: 0, id: `bad-${attempts}`, name: 'inspect' }
+      yield { type: 'completed' as const, stopReason: 'other' }
+    },
+  }
+  const harness = createHarness(provider)
+
+  await harness.loop.execute(harness.session, harness.run)
+
+  assert.equal(attempts, 2)
+  assert.equal(harness.toolExecutions, 0)
+  assert.deepEqual(harness.events.at(-1), {
+    type: 'prompt_failed',
+    runId: harness.run.id,
+    code: 'PROVIDER_STREAM_INVALID',
+    category: 'provider',
+    error: 'The provider returned a malformed stream.',
+  })
   assert.equal(harness.terminals, 1)
 })
 
@@ -1482,6 +1831,10 @@ function createHarness(
     terminalTool?: Readonly<{ name: string }>
     acknowledgeSteer?: AgentLoopPorts['acknowledgeSteer']
     completionGuidance?: AgentLoopPorts['completionGuidance']
+    beforeModel?: AgentLoopPorts['beforeModel']
+    afterModel?: AgentLoopPorts['afterModel']
+    beforeTool?: AgentLoopPorts['beforeTool']
+    afterTool?: AgentLoopPorts['afterTool']
   } = {},
 ) {
   const events: SessionEvent[] = []
@@ -1612,6 +1965,10 @@ function createHarness(
             prepareRequest,
           )
         : target.stream(request),
+    ...(options.beforeModel === undefined ? {} : { beforeModel: options.beforeModel }),
+    ...(options.afterModel === undefined ? {} : { afterModel: options.afterModel }),
+    ...(options.beforeTool === undefined ? {} : { beforeTool: options.beforeTool }),
+    ...(options.afterTool === undefined ? {} : { afterTool: options.afterTool }),
     tools: () => toolPort,
     ...(options.terminalTool === undefined ? {} : { terminalTool: () => options.terminalTool }),
     commitMessage: async (target, _run, message) => {

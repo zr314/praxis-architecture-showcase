@@ -2,7 +2,7 @@
 
 状态：**Roadmap 已获用户确认；Phase 0–2 的实现切片与定向门禁已完成，逐 unit 机器账本仍未完备。`iron-law-lean-v1` 已于 2026-08-09 晋升为默认，2026-08-18 再次确认不采用模型可见可信度分级；`baseline-v1` 保留为显式回滚，命名式 production alias 机制尚未创建。**
 
-本 Roadmap 以 Praxis、Pi、Claude copy 的源码装配审计和开源项目官方资料为依据。它保留实施顺序，因此正文中的“候选”“保持 baseline 默认”描述首批历史阶段；当前 `iron-law-lean-v1` 已为默认。执行演进见[首批执行台账](./08-execution-ledger.md)，现行规则见[Prompt、Context 与 Compaction](../prompt-assembly.md)，最终运行证据见[最终测评总结](../evaluation-final-2026-08-09.md)。
+本 Roadmap 以 Praxis、Pi、Claude copy 的源码装配审计和开源项目官方资料为依据。它保留实施顺序，因此正文中的“候选”“保持 baseline 默认”描述首批历史阶段；当前 `iron-law-lean-v1` 已为默认。执行演进见[首批执行台账](./08-execution-ledger.md)，现行规则见[Prompt、Context 与 Compaction](../prompt-assembly.md)，最终运行证据见[持续维护的测评档案](../evaluations/README.md)。
 
 未控制变量的历史评测不作为本 Roadmap 的质量、成本或优先级证据。后续若需要评测，直接为当前版本建立新的 Prompt-only 基线，不修补或解释旧分数。
 

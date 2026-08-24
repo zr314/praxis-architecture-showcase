@@ -238,7 +238,7 @@ export function promptDigest(value: string): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`
 }
 
-export type PromptSource = 'builtin' | 'runtime' | 'project'
+export type PromptSource = 'builtin' | 'runtime' | 'application' | 'project'
 
 export type PromptCacheScope = 'request'
 
@@ -322,6 +322,11 @@ export type PromptBuildInput = {
   workspace: PromptWorkspace
   tools: ProviderToolDefinition[]
   variant?: PromptVariant
+  /** Trusted host instructions. Runtime policy always has higher priority. */
+  application?: {
+    name?: string
+    instructions: string
+  }
   provider?: { id: string; capabilities?: ProviderCapabilities }
   workflow?: {
     role: 'root' | 'child'

@@ -47,6 +47,13 @@ input.on('line', (line) => {
       runId,
       prompt: 'bounded child prompt',
     })
+    notify({
+      type: 'tool_start',
+      runId,
+      toolCallId: 'timeout-observation',
+      name: 'read',
+      input: { timeoutMs: request.params.timeoutMs },
+    })
     return
   }
   if (request.method === 'session.abort') {

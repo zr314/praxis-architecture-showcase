@@ -15,6 +15,7 @@ const CHILD_METHODS = new Set<ChildBootstrapMethod>([
   'events.subscribe',
   'session.create',
   'session.prompt',
+  'session.steer',
   'permission.decide',
   'session.abort',
   'shutdown',

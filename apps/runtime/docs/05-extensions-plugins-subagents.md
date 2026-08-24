@@ -83,6 +83,7 @@ LocalWorkflowAgentWorker 使用 ChildRuntimeHost 启动真实 Runtime。Child：
 - 后继节点只获得签名 bootstrap profile 列出的前驱 Artifact 闭包，能读取 result wrapper、完整 overflow output 和 manifest，但不能枚举或读取其他父 Artifact；
 - `retain_on_failure` 由父 Host 在观察到 prompt 终态后执行；child 进程的正常 shutdown 不会提前删除失败 Session/Trace；
 - 固定禁止 descendant。
+- 默认不继承父 Runtime 的进程内 middleware；只有签名 bootstrap 中列出的稳定 ID，且能由 Child 入口的可信 factory registry 解析时才重建。函数、闭包和父宿主权限从不序列化下发；缺失 registry/ID 时 Child fail-closed。
 
 Child 不是旧 Supervisor 固定 worker，也不要求用户切换模式。默认 `auto` 根模型可随时提出委派。
 
@@ -92,7 +93,7 @@ Child Prompt 与 Root 使用同一个 Prompt program 和 assembler；差异来�
 
 Root policy：auto/workflow 的 v4 默认不限制累计 AgentTask、turns、Tool calls、tokens、wall clock、depth 或 loop iterations；solo 的 Child 能力仍为零。Local Runtime 的 256 parallel 是 worker 资源并发度，而非累计任务配额。Child Profile v4 的 `defaultBudget` 为空，实际硬限制只来自父级、Proposal、部署策略或用户显式 deadline。Host 默认不启用 no-progress 熔断，长 deadline 使用可重挂 timer。历史 v1-v3 的预算和 digest 原样注册，仅用于旧 Workflow 恢复。
 
-这些是宽 ceiling。正常 Child 可以多轮读写、Shell、Skill 和 MCP，不再被旧的 4 turn/只读调查模板限制。任务寿命与 context 工作集分离：默认在 64K 未压缩 replay token 触发 durable checkpoint，以控制长工具循环每轮重复发送的成本；这不会终止 Child，也不会降低 Provider 的真实 context 安全上限。
+这些是宽 ceiling。正常 Child 可以多轮读写、Shell、Skill 和 MCP，不再被旧的 4 turn/只读调查模板限制。任务寿命与 context 工作集分离：默认在 64K 未压缩 replay token 触发最多 4K token 的 durable checkpoint，以控制长工具循环每轮重复发送的成本，同时保留长 objective、硬约束、最佳证据和活动计划；这不会终止 Child，也不会降低 Provider 的真实 context 安全上限。
 
 ## 9. 写 Child
 
@@ -127,4 +128,4 @@ ChildPermissionGate 将 child request 关联 parentRunId/childRunId/toolCallId�
 
 已用真实 Provider 运行 3 Child quorum、5 Child cross-review，以及只复用既有 reviewer Artifact 的 synthesis recovery；这证明 Child 是真实 subagent、结构化提交和受限 Artifact 传递可用。Child 仍不能创建 descendant。
 
-认证远程 Authority/Artifact Worker 边界、外部 effect receipt/Saga 账本和 HumanTask/Timer wake 已接线；尚未交付容器 Worker 作为独立隔离级别、PostgreSQL Authority、任意递归 subworkflow、租户级高可用调度和连接器声明驱动自动补偿。重启接管机制已观察，但完整长 DAG 的终态一致性仍是部分验证。准确状态见[统一 Workflow 与多 Agent](../../../docs/workflow-platform.md)和[最终测评总结](../../../docs/evaluation-final-2026-08-09.md)。
+认证远程 Authority/Artifact Worker 边界、外部 effect receipt/Saga 账本和 HumanTask/Timer wake 已接线；尚未交付容器 Worker 作为独立隔离级别、PostgreSQL Authority、任意递归 subworkflow、租户级高可用调度和连接器声明驱动自动补偿。重启接管机制已观察，但完整长 DAG 的终态一致性仍是部分验证。准确状态见[Agent Run Tree 与可选 Workflow](../../../docs/workflow-platform.md)和[最终测评总结](../../../docs/evaluation-final-2026-08-09.md)。

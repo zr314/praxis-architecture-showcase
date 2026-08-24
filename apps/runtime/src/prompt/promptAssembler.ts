@@ -115,6 +115,12 @@ export class PromptAssembler {
       budget,
       promptVariant: variant,
     })
+    // A pinned task contract may also be present in the selected journal history.
+    // Keep that copy in its chronological position. Only replay a pinned copy as
+    // non-compactable context when selection/compaction actually omitted it.
+    const replayedPinnedContextMessages = pinnedContextMessages.filter(
+      (pinned) => !selected.messages.some((message) => sameMessage(pinned, message)),
+    )
     const report: ContextSelectionReport = {
       ...selected.report,
       uncompactedTokens,
@@ -204,13 +210,11 @@ export class PromptAssembler {
         intent: 'context' as const,
       })),
       contextMessages: [
-        ...pinnedContextMessages,
+        ...replayedPinnedContextMessages,
         ...contextViewMessages,
         ...selected.contextMessages,
       ],
-      messages: selected.messages.filter(
-        (message) => !pinnedContextMessages.some((pinned) => sameMessage(pinned, message)),
-      ),
+      messages: selected.messages,
       ...(selected.nativeContext === undefined ? {} : { nativeContext: selected.nativeContext }),
       tools: input.tools.map((tool) => structuredClone(tool)),
       report,

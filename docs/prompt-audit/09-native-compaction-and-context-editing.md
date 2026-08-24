@@ -2,7 +2,7 @@
 
 状态：**Root/Child 的双层 compaction 路径已接通；OpenAI Responses 可生成、持久化和重放原生 opaque context，其他 Provider 确定性回退到 portable semantic checkpoint。Reasoning/Tool result 清理只作用于 Provider 视图。Tool Search 当前不启用。**
 
-本文记录 2026-08-08 对 Prompt 审计文档与当前实现的冲突检查、已落地架构、能力边界和后续门禁。2026-08-09 已补充真实 DeepSeek compaction、cache A/B 与 MiniMax 19-checkpoint fidelity 压力运行；2026-08-18 再次确认 checkpoint/summary 的内部 `trust` 只是来源与持久化元数据，不能作为事实可信度标签。后者仍不替代多类型、大样本保真率或长任务成功率统计。最终汇总见[最终测评总结](../evaluation-final-2026-08-09.md)，术语决策见[指令权威、来源与事实验证](./10-authority-provenance-and-verification.md)。
+本文记录 2026-08-08 对 Prompt 审计文档与当前实现的冲突检查、已落地架构、能力边界和后续门禁。2026-08-09 已补充真实 DeepSeek compaction、cache A/B 与 MiniMax 19-checkpoint fidelity 压力运行；2026-08-18 再次确认 checkpoint/summary 的内部 `trust` 只是来源与持久化元数据，不能作为事实可信度标签。后者仍不替代多类型、大样本保真率或长任务成功率统计。最终汇总见[持续维护的测评档案](../evaluations/README.md)，术语决策见[指令权威、来源与事实验证](./10-authority-provenance-and-verification.md)。
 
 ## 1. 冲突检查结论
 

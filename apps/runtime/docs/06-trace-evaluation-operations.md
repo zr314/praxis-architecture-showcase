@@ -50,6 +50,8 @@ trace 写入失败通常不应掩盖用户任务的真实结果；关键持久�
 
 `PerformanceProfiler` 针对声明的性能指标记录样本，计算 p50/p95 等快照，并与 budget 比较。它适合回答“Provider 首 token、工具执行或完整 run 是否变慢”，不替代详细 trace。
 
+`RuntimeMiddlewarePipeline` 另有固定词汇的进程内健康快照：按 middleware/hook 记录饱和的调用、成功、失败、超时、熔断拒绝和耗时，不接收 Prompt、Tool input/output 或异常正文。`RuntimeKernel.middlewareSnapshot()` 供嵌入式宿主读取，同一快照也进入 `runtime.doctor.middleware`；open/half-open circuit 生成 warning check。
+
 ## 3. Evaluation 的基本结构
 
 ```mermaid

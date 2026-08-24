@@ -1,6 +1,6 @@
 # ADR-007：统一 Auto Workflow 与多 Agent
 
-状态：已接受并接入本地产品路径。
+状态：底层 durable execution container 决策继续有效；默认模型可见 DAG 编排面已由 [ADR-008](ADR-008-agent-run-tree.md) 部分取代。
 
 日期：2026-08-06。
 

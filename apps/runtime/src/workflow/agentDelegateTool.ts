@@ -21,6 +21,8 @@ const MIN_DELEGATED_TOKEN_BUDGET = 1
 
 export type WorkflowAgentWorkerResultV1 = Readonly<{
   ok: boolean
+  /** Distinguishes an intentional abort from an execution failure. */
+  cancelled?: boolean
   summary: string
   output?: Readonly<Record<string, unknown>>
   artifacts?: readonly WorkflowArtifactRefV1[]
@@ -32,6 +34,7 @@ export type WorkflowAgentWorkerResultV1 = Readonly<{
 export interface WorkflowAgentWorkerPortV1 {
   execute(claim: WorkflowTaskClaimV1, signal: AbortSignal): Promise<WorkflowAgentWorkerResultV1>
   cancel?(claim: WorkflowTaskClaimV1, reason: string): Promise<void>
+  steer?(claim: WorkflowTaskClaimV1, instruction: string): Promise<boolean>
 }
 
 /** Model-facing delegation proposal. Admission and execution remain Runtime-owned. */
@@ -139,6 +142,7 @@ export class AgentDelegateToolV1 implements RuntimeTool {
       )
       const completed = await this.orchestrator.complete(claim, {
         ok: result.ok,
+        cancelled: result.cancelled,
         errorCode: result.errorCode,
         resultRef: result.artifacts?.[0],
         usage: result.usage,
@@ -192,6 +196,7 @@ export async function executeWorkflowAgentClaimV1(
     const code = signal.aborted ? 'WORKFLOW_AGENT_CANCELLED' : errorCode(error)
     return {
       ok: false,
+      cancelled: signal.aborted,
       summary: `Workflow agent failed (${code}).`,
       errorCode: code,
       retryable: !signal.aborted && retryable(error),

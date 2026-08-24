@@ -44,7 +44,11 @@ export const DEFAULT_CONTEXT_POLICY: ContextPolicy = Object.freeze({
 
 export const DEFAULT_COMPACTION_POLICY: CompactionPolicy = Object.freeze({
   minimumGain: 1,
-  maxSummaryTokens: 1_024,
+  // A 1K checkpoint can be consumed almost entirely by a long user objective,
+  // leaving too little room for hard constraints, best-so-far evidence and the
+  // active continuation plan. Keep the replay body cost ceiling independent,
+  // but give semantic working memory enough space for long-running agents.
+  maxSummaryTokens: 4 * 1_024,
   overflowRetryLimit: 1,
   generatorDeadlineMs: 120_000,
 })

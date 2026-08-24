@@ -8,10 +8,13 @@ import type { RuntimeTool, ToolRequest, ToolResult } from './types.js'
 
 const MAX_OUTPUT_BYTES = 100_000
 const MAX_STDIN_BYTES = 256_000
+const DEFAULT_TIMEOUT_MS = 10 * 60_000
 const LOCAL_SHELL = process.platform === 'win32' ? 'Windows PowerShell' : 'the POSIX shell'
 
 export type ShellToolOptions = Readonly<{
   commandPolicy?: (command: string) => ToolResult | undefined
+  /** Per-command safety lease. Long Runs remain unbounded and callers may request a longer lease. */
+  defaultTimeoutMs?: number
 }>
 
 export class ShellTool implements RuntimeTool {
@@ -19,7 +22,7 @@ export class ShellTool implements RuntimeTool {
 
   readonly definition = {
     name: 'shell',
-    description: `Run one ${LOCAL_SHELL} command in the workspace with bounded inline output. Commands have no implicit timeout; pass timeoutMs only when a hard deadline is required. Pass multiline process input directly with stdin.`,
+    description: `Run one ${LOCAL_SHELL} command in the workspace with bounded inline output and a 10-minute default safety deadline. Set timeoutMs to a shorter or longer positive duration for exploratory, external, or long-running commands. This per-command lease does not limit the lifetime of the Agent Run. Pass multiline process input directly with stdin.`,
     parameters: {
       type: 'object',
       properties: {
@@ -32,7 +35,8 @@ export class ShellTool implements RuntimeTool {
         timeoutMs: {
           type: 'integer',
           minimum: 1,
-          description: 'Optional explicit hard deadline. Omit for no command timeout.',
+          description:
+            'Optional explicit hard deadline in milliseconds. It overrides the 10-minute default and may be increased for a bounded long-running command.',
         },
         workingDirectory: {
           type: 'string',
@@ -70,7 +74,9 @@ export class ShellTool implements RuntimeTool {
     const denied = this.options.commandPolicy?.(command)
     if (denied !== undefined) return denied
     const stdin = parseStdin(request.input.stdin)
-    const timeoutMs = parseTimeout(request.input.timeoutMs)
+    const timeoutMs = parseTimeout(
+      request.input.timeoutMs ?? this.options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+    )!
     if (request.signal.aborted) return { ok: false, summary: 'Command cancelled.' }
     const workingDirectory = request.resolvedTarget ?? request.cwd
     const workingDirectoryStats = await stat(workingDirectory)
@@ -148,10 +154,7 @@ export class ShellTool implements RuntimeTool {
       else cancelled = true
       termination ??= terminateProcessTree(child.pid)
     }
-    const timeout =
-      timeoutMs === undefined
-        ? undefined
-        : scheduleLongDurationTimer(() => stop('timeout'), timeoutMs)
+    const timeout = scheduleLongDurationTimer(() => stop('timeout'), timeoutMs)
     const abort = () => stop('abort')
     request.signal.addEventListener('abort', abort, { once: true })
     const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
@@ -160,7 +163,7 @@ export class ShellTool implements RuntimeTool {
         child.once('close', (code, signal) => resolveExit({ code, signal }))
       },
     ).finally(() => {
-      timeout?.cancel()
+      timeout.cancel()
       request.signal.removeEventListener('abort', abort)
     })
     await termination

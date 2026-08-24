@@ -16,6 +16,7 @@ import type {
   WorkflowNodeKindV1,
   WorkflowNodeSpecV1,
   WorkflowProjectionV1,
+  WorkflowSchedulingPolicyV1,
   WorkflowSpecV1,
   WorkflowTaskClaimV1,
   WorkflowTaskV1,
@@ -49,6 +50,7 @@ export type StartAutoWorkflowInputV1 = Readonly<{
   parentWorkflowId?: string
   parentNodeId?: string
   executionTarget?: Readonly<{ providerId: string; model: string }>
+  scheduling?: WorkflowSchedulingPolicyV1
   rootAssemblyRequest?: AgentAssemblyRequestV1
   rootHarnessProfile?: import('@praxis/core-sdk').AgentHarnessProfileV1
 }>
@@ -131,6 +133,10 @@ export class WorkflowOrchestratorV1 {
     return this.authority.acknowledgeMessage(workflowId, messageId, recipientNodeId)
   }
 
+  postMessage(input: import('@praxis/core-sdk').WorkflowMessageInputV1) {
+    return this.authority.postMessage(input)
+  }
+
   async start(input: StartAutoWorkflowInputV1): Promise<WorkflowProjectionV1> {
     const at = input.createdAt ?? new Date().toISOString()
     const workflowId = `workflow-${randomUUID()}`
@@ -146,6 +152,7 @@ export class WorkflowOrchestratorV1 {
         ? {}
         : { parentWorkflowId: input.parentWorkflowId, parentNodeId: input.parentNodeId }),
       ...(input.executionTarget === undefined ? {} : { executionTarget: input.executionTarget }),
+      ...(input.scheduling === undefined ? {} : { scheduling: input.scheduling }),
       workspace: input.cwd,
       objective: input.objective,
       modePolicy: input.modePolicy,
@@ -275,7 +282,9 @@ export class WorkflowOrchestratorV1 {
     claim: WorkflowTaskClaimV1,
     outcome: Readonly<{
       ok: boolean
+      cancelled?: boolean
       errorCode?: string
+      retryable?: boolean
       resultRef?: import('@praxis/core-sdk').WorkflowArtifactRefV1
       receiptRef?: import('@praxis/core-sdk').WorkflowArtifactRefV1
       effectReserved?: boolean
@@ -298,7 +307,9 @@ export class WorkflowOrchestratorV1 {
     claim: WorkflowTaskClaimV1,
     outcome: Readonly<{
       ok: boolean
+      cancelled?: boolean
       errorCode?: string
+      retryable?: boolean
       resultRef?: import('@praxis/core-sdk').WorkflowArtifactRefV1
       receiptRef?: import('@praxis/core-sdk').WorkflowArtifactRefV1
       effectReserved?: boolean
@@ -327,10 +338,48 @@ export class WorkflowOrchestratorV1 {
     // apply the Workflow completion policy only after every required node has
     // actually settled.
     const nodeSucceeded = outcome.ok && !receiptMissing
+    // Root coordination messages represent independently executing Agent
+    // tasks, not every durable node in the Workflow. Tool Activities already
+    // have receipts/state in the authority and are returned synchronously to
+    // their caller; publishing them to Root's mailbox both duplicates that
+    // result and buries Child results in long-running tool-heavy workflows.
+    const reportsToRoot =
+      claim.task.nodeId !== 'root' &&
+      (claim.task.kind === 'agent' || claim.task.kind === 'subworkflow')
     const errorCode = nodeSucceeded
       ? undefined
       : (outcome.errorCode ?? (receiptMissing ? 'WORKFLOW_EFFECT_RECEIPT_REQUIRED' : undefined))
-    const terminal = nodeSucceeded ? 'succeeded' : 'failed'
+    const cancelled = !nodeSucceeded && outcome.cancelled === true
+    const terminal = nodeSucceeded ? 'succeeded' : cancelled ? 'cancelled' : 'failed'
+    const claimedAttempt = projection.attempts.find(
+      ({ attemptId }) => attemptId === claim.task.attemptId,
+    )
+    const retryCode = workflowRetryCode(errorCode)
+    const retryScheduled =
+      !nodeSucceeded &&
+      !cancelled &&
+      outcome.retryable === true &&
+      retryCode !== undefined &&
+      claim.task.retry.retryableCodes.includes(retryCode) &&
+      claimedAttempt !== undefined &&
+      claimedAttempt.ordinal < claim.task.retry.maxAttempts
+    const retryAttemptId = retryScheduled ? `attempt-${randomUUID()}` : undefined
+    const retryTask: WorkflowTaskV1 | undefined =
+      retryAttemptId === undefined || claimedAttempt === undefined
+        ? undefined
+        : Object.freeze({
+            ...claim.task,
+            taskId: `task-${randomUUID()}`,
+            attemptId: retryAttemptId,
+            state: 'ready' as const,
+            lease: undefined,
+            capabilityBundleRef: undefined,
+            readyAt: new Date(
+              Date.parse(at) + workflowRetryBackoffMs(claim.task, claimedAttempt.ordinal),
+            ).toISOString(),
+            createdAt: at,
+            updatedAt: at,
+          })
     const next = await this.authority.transact({
       transactionId: `terminal-${claim.task.taskId}-${claim.lease.token}`,
       workflowId: projection.workflowId,
@@ -375,16 +424,40 @@ export class WorkflowOrchestratorV1 {
           errorCode,
           resultRef: outcome.resultRef,
         },
-        ...(claim.task.nodeId === 'root' && !nodeSucceeded
+        ...(retryTask === undefined || claimedAttempt === undefined
+          ? []
+          : [
+              {
+                type: 'node.state_changed' as const,
+                nodeId: claim.task.nodeId,
+                state: 'retry_wait' as const,
+              },
+              {
+                type: 'attempt.created' as const,
+                attempt: {
+                  attemptId: retryTask.attemptId,
+                  nodeId: claim.task.nodeId,
+                  ordinal: claimedAttempt.ordinal + 1,
+                  state: 'scheduled' as const,
+                },
+              },
+              {
+                type: 'node.state_changed' as const,
+                nodeId: claim.task.nodeId,
+                state: 'scheduled' as const,
+              },
+            ]),
+        ...(claim.task.nodeId === 'root' && !nodeSucceeded && !retryScheduled
           ? [
               {
                 type: 'workflow.terminal' as const,
-                state: 'failed' as const,
+                state: cancelled ? ('cancelled' as const) : ('failed' as const),
                 code: errorCode,
               },
             ]
           : []),
       ],
+      ...(retryTask === undefined ? {} : { enqueueTasks: [retryTask] }),
       ...(externalEffect && outcome.receiptRef !== undefined && outcome.effectReplayed !== true
         ? {
             effectReceipts: [
@@ -425,9 +498,8 @@ export class WorkflowOrchestratorV1 {
             },
           }
         : {}),
-      ...(claim.task.nodeId === 'root'
-        ? {}
-        : {
+      ...(reportsToRoot && !retryScheduled
+        ? {
             messages: [
               {
                 schemaVersion: 1 as const,
@@ -453,7 +525,8 @@ export class WorkflowOrchestratorV1 {
                 createdAt: at,
               },
             ],
-          }),
+          }
+        : {}),
     })
     return nodeSucceeded ? this.reconcileWorkflow(next.workflowId, at) : next
   }
@@ -667,6 +740,8 @@ export class WorkflowOrchestratorV1 {
     proposal: DelegateProposalV1,
     at = new Date().toISOString(),
     kind: Extract<WorkflowNodeKindV1, 'agent_task' | 'synthesis' | 'subworkflow'> = 'agent_task',
+    coordinationMode: 'foreground' | 'background' = 'foreground',
+    required = true,
   ): Promise<AdmittedDelegateV1> {
     const current = await this.authority.get(workflowId)
     if (current.spec.modePolicy === 'solo') throw workflowFailure('MODE_OVERRIDE_INCOMPATIBLE')
@@ -693,7 +768,10 @@ export class WorkflowOrchestratorV1 {
     const nodeId = `delegate-${proposal.proposalId}`
     if (current.spec.nodes.some((node) => node.nodeId === nodeId))
       throw workflowFailure('WORKFLOW_PROPOSAL_DUPLICATE')
-    const node = delegateNode(nodeId, proposal, profile, grant, kind)
+    const node = {
+      ...delegateNode(nodeId, proposal, profile, grant, kind),
+      ...(required ? {} : { required: false }),
+    }
     const spec: WorkflowSpecV1 = {
       ...current.spec,
       revision: current.revision + 1,
@@ -702,7 +780,7 @@ export class WorkflowOrchestratorV1 {
     }
     const attemptId = `attempt-${randomUUID()}`
     const cwd = current.spec.workspace
-    const task = agentTask({
+    const admittedTask = agentTask({
       workflowId,
       runId: current.runId,
       nodeId,
@@ -717,6 +795,13 @@ export class WorkflowOrchestratorV1 {
       capabilityRequest: proposal.grantRequest,
       at,
     })
+    const task =
+      coordinationMode === 'foreground'
+        ? admittedTask
+        : Object.freeze({
+            ...admittedTask,
+            payload: { ...admittedTask.payload, coordinationMode: 'background' },
+          })
     const projection = await this.authority.transact({
       transactionId: `delegate-${proposal.proposalId}`,
       workflowId,
@@ -1500,6 +1585,14 @@ export class WorkflowOrchestratorV1 {
       (node) => target.has(node.nodeId) && cancellable.has(node.state),
     )
     if (nodes.length === 0) return current
+    const readyTasks = await this.authority.listTasks({
+      workflowId,
+      states: ['ready'],
+      limit: 10_000,
+    })
+    const cancelReadyTasks = readyTasks
+      .filter(({ nodeId }) => nodes.some((node) => node.nodeId === nodeId))
+      .map(({ taskId }) => taskId)
     return this.authority.transact({
       transactionId: `cancel-nodes-${workflowId}-${current.sequence}`,
       workflowId,
@@ -1511,6 +1604,7 @@ export class WorkflowOrchestratorV1 {
         state: 'cancelled' as const,
         errorCode: code,
       })),
+      ...(cancelReadyTasks.length === 0 ? {} : { cancelReadyTasks }),
     })
   }
 
@@ -1594,6 +1688,19 @@ export class WorkflowOrchestratorV1 {
       events: [{ type: 'workflow.terminal', state: 'terminated', code }],
     })
   }
+}
+
+function workflowRetryCode(code: string | undefined): string | undefined {
+  if (code === 'CHILD_CREDENTIAL_RATE_LIMITED') return 'PROVIDER_RATE_LIMITED'
+  if (code === 'CHILD_CREDENTIAL_PROVIDER_UNAVAILABLE') return 'PROVIDER_UNAVAILABLE'
+  return code
+}
+
+function workflowRetryBackoffMs(task: WorkflowTaskV1, ordinal: number): number {
+  return Math.min(
+    task.retry.maxBackoffMs,
+    task.retry.initialBackoffMs * 2 ** Math.max(0, ordinal - 1),
+  )
 }
 
 export async function registerBuiltinAgentProfilesV1(
@@ -1832,6 +1939,10 @@ function workflowSettlement(
 
   const specs = new Map(projection.spec.nodes.map((node) => [node.nodeId, node]))
   const failed = descendants.find((node) => {
+    // Run Tree children are structurally joined before the parent settles, but
+    // an optional exploration/review branch is evidence rather than an outer
+    // Workflow success requirement.
+    if (specs.get(node.nodeId)?.required === false) return false
     if (node.state === 'succeeded' || node.state === 'skipped') return false
     if (specs.get(node.nodeId)?.kind === 'tool_activity') {
       return ['unknown', 'manual_intervention'].includes(node.state)

@@ -2,7 +2,7 @@
 
 Praxis 是一个 TypeScript 编写的本地终端 Agent 平台。CLI/TUI 只是客户端，独立 Runtime 进程负责模型调用、工具执行、权限、Session、上下文压缩、Skills、MCP、插件以及可持久恢复的多 Agent Workflow。
 
-新 Session 默认使用 `auto`。每条 Prompt 从一开始就是一个持久化 Workflow 和根 `AgentTask`：模型可以直接回答、调用普通工具，也可以自主选择 delegate、handoff、多步骤 DAG、有界循环、HumanTask/Timer 等待或独立 subworkflow。Runtime 而不是模型拥有授权、预算、状态迁移、租约、恢复和最终合并权。
+新 Session 默认使用 `auto`。每条 Prompt 都有一个根 `AgentTask`；模型在自己的 ReAct 循环中滚动调整 Plan，并可按需调用 `agent.spawn/wait/result/cancel/steer` 形成自主 Agent Run Tree。Runtime 内部暂时继续用 Workflow Authority 作为持久执行容器，但模型不需要把认知路线写成 DAG。只有显式 `workflow` policy 才额外提供 DAG、loop、HumanTask/Timer 和 subworkflow 等粗粒度业务编排。
 
 第一次读源码时，不要从最大的文件开始。先看[新手快速入门](docs/quickstart.md)，再用[模块地图](docs/module-map.md)建立“CLI → Protocol → Runtime → Session/Workflow → AgentLoop → Provider/Tool/Child”的整体心智模型。
 
@@ -12,15 +12,17 @@ Praxis 是一个 TypeScript 编写的本地终端 Agent 平台。CLI/TUI 只是�
 | --- | --- |
 | 统一执行 | `auto`、`solo`、`workflow` 都进入同一个 Workflow Orchestrator；`solo/workflow` 只是策略约束 |
 | 普通 Agent | 根 Agent 在 `AgentLoop` 中进行流式 ReAct，可读写文件、运行 Shell、调用 Skill/MCP/插件工具 |
-| 多 Agent | 根模型按需调用 delegate、handoff、expand、loop、wait 或 subworkflow；图支持持久化 `all/any/quorum` join；Child 是真实、受认证的 Runtime 子进程 |
+| 多 Agent | 默认 `auto` 用 `agent.spawn/wait/result/cancel/steer` 操作持久 Child 句柄；显式 `workflow` 才增加 `agent.delegate/handoff` 与 DAG/loop/subworkflow；Child 是真实、受认证的 Runtime 子进程 |
 | 持久化 Workflow | SQLite 原子保存 Workflow、Node、Attempt、Task、Lease、Outbox、Timer、Signal、HumanTask 和 Profile |
 | 外部副作用 | MCP/process/API 调用进入 durable Activity；成功写 receipt，未知非幂等结果进入 `unknown`，补偿必须引用第二份 receipt |
 | 崩溃恢复 | 启动时回收过期 Lease；纯读取和幂等任务可按 RetryPolicy 创建新 Attempt，未知副作用进入 `unknown/manual_intervention` |
 | 写任务隔离 | 可写 Child 在受管 Git worktree 中工作；父 Runtime 校验候选提交、patch、scope 和基线后才 fast-forward |
 | Session 双后端 | V3 JSONL 或 V3 SQLite；两者实现同一 `SessionJournalV3` 合同，可导入、恢复、分支、压缩和查询 |
 | 快速启动 | JSONL 默认读取已校验 Catalog/Projection；完整重放只在 `doctor --deep` 或显式 scrub 中执行 |
-| 上下文 | 默认 `iron-law-lean-v1`：单一 Trusted Instructions、Run-stable ContextView、Provider-only editing、portable/native 双层 compaction |
+| 上下文 | 默认 `iron-law-lean-v1`：单一 Trusted Instructions、compaction 外逐字 Run task contract、Run-stable ContextView、Provider-only editing、portable/native 双层 compaction |
 | 扩展 | 内置工具、Skills、MCP stdio、Process Tool/Provider、插件清单与工作区授权 |
+| Agent SDK | `defineAgent` 提供 `run/stream/resume/abort`、并发 Run 事件多路复用、Run 级 application instructions、typed state/output 和应用 middleware |
+| Runtime middleware | 可信宿主可在 policy-safe 边界注册模型/Tool hooks；含 per-hook deadline、连续失败熔断、有界诊断和显式 Child registry 继承 |
 | 安全 | Capability Bundle 单向收窄、短期 credential handle、路径边界、权限审批、预算和取消树 |
 | 可观测性 | 流式事件、Trace、Usage、Workflow projection、CLI 面板、诊断和 Evaluation |
 | TUI 性能 | Composer 与 Transcript 分离、可见窗口渲染、独立 Spinner；历史可滚动，流式输出不会重画全部记录 |
@@ -79,7 +81,7 @@ cd D:\your-project
 praxis
 ```
 
-默认 `auto` 不会先额外调用一次“路由模型”。根模型像普通 Coding Agent 一样工作；只有它认为委派或图化有价值并主动调用相应工具时，Runtime 才增加 AgentTask。
+默认 `auto` 不会先额外调用一次“路由模型”。根模型像普通 Agent 一样工作；只有它认为独立上下文、并行、隔离或独立验证的收益大于协调成本时，才调用 `agent.spawn` 增加 Child。完整图工具不会出现在默认 `auto` 的模型工具面。
 
 ### 3. 非交互调用
 
@@ -90,9 +92,9 @@ praxis --print "修复测试并验证；需要时自行委派 Agent" --output-fo
 
 不传 `--planner` 就是 `auto`。`--planner` 只用于覆盖默认策略，实际接受：
 
-- `auto`：默认。模型自主选择单 Agent、委派或 Workflow。
+- `auto`：默认。模型自主选择单 Agent或按需 spawn Child；不向模型暴露完整 DAG 工具。
 - `solo`：硬性禁止创建 Child；仍走相同 Workflow/AgentLoop。
-- `workflow`：要求非平凡副作用前先形成图；不强制简单问题创建 Child。
+- `workflow`：Run Tree 工具之外再提供粗粒度 DAG、loop、等待和 subworkflow；不强制简单问题构图。
 - `direct`、`supervisor`：旧别名，分别映射为 `solo`、`workflow`。
 
 TUI 右侧 `PLANNER` 会常驻显示当前策略。`/planner` 只用于查询，`/planner auto|solo|workflow`
@@ -106,8 +108,8 @@ flowchart TD
     W --> L["根 AgentLoop / ReAct"]
     L --> D{"模型选择"}
     D -->|"回答或普通 Tool"| L
-    D -->|"agent.delegate"| A["Admission + durable AgentTask"]
-    D -->|"workflow.expand"| G["Graph admission + durable Tasks"]
+    D -->|"agent.spawn"| A["Admission + durable Child handle"]
+    D -->|"explicit workflow policy"| G["Optional business DAG"]
     A --> C["受认证 Child Runtime"]
     G --> C
     C --> R["Result / Artifact / Receipt"]
@@ -121,7 +123,7 @@ flowchart TD
 
 Child 拥有接近父 Agent 的能力：可使用被授予的内置工具、Skills、MCP/process/API、Provider、读写工作区和 Shell。授权始终是父能力、Profile allowlist 和节点请求的交集。外部能力并非把原始 Tool 对象交给 Child，而是调用父 `ToolRuntime` 的 brokered view，因此 schema、权限、冲突控制、Workflow Activity 和 receipt 都不会被绕过。当前产品硬边界只有 Child 不能继续创建 Child；其 Session 固定使用 `solo`。
 
-根 LLM 可以为每个 Child 自主申请：`default | worker | explorer` Harness、自定义角色指令、Tool/Skill/MCP 子集、是否写工作区、模型或 `fast | balanced | powerful` 档位、`none | low | medium | high` 推理强度、时间/token/turn/tool 预算、返回格式与 JSON Schema、成功标准，以及 DAG 中的串行、并行和交叉审查关系。申请不是授权：Runtime 会把请求与父权限、沙箱、当前 Provider 模型目录、Profile、可用资源和剩余预算求交，并把 requested/effective/denied 配置写入 Task 与不可变 execution snapshot。
+默认 `agent.spawn` 允许根 LLM 申请 `default | worker | explorer` Harness、自定义角色指令、Tool/Skill/MCP 子集、工作区与网络、模型档位、推理强度和结果合同；数值型 token/turn/tool/墙钟预算继承父 Run 与组织策略，不让模型猜测累计 Provider 成本。显式 `workflow` 节点仍可声明业务预算、依赖、Join 和交叉审查关系。任何申请都不是授权：Runtime 会把请求与父权限、沙箱、Profile、模型目录和剩余预算求交，并把 requested/effective/denied 配置写入 Task 与不可变 execution snapshot。
 
 三个内置配置使用同一个 Agent Harness，不是三套 Runtime：`default` 是通用 Child，`worker` 偏执行、修复和验证，`explorer` 偏只读调查。每个 Child 都有独立 Runtime 进程、Session/上下文、Provider Tool Loop、Trace 与 Artifact；精简结果和原始模型输出 Artifact 返回父线程。
 
@@ -213,13 +215,13 @@ TUI 通过 NDJSON JSON-RPC 连接独立 Runtime：
 
 Provider Router 支持模型目录、能力匹配、认证状态、fallback、限流/5xx 分类和 usage。429 与暂时性 5xx 映射为可重试错误，但重试仍受 Run/Workflow Budget 控制。
 
-默认 Prompt 程序是 `iron-law-lean-v1`。最终请求只有一个 Trusted Instructions block；runtime facts、Skill catalog、project guidance、Child ContextPacket、Session ContextView、checkpoint 和最近消息按固定顺序装配，Tool schemas 作为独立 Provider 字段发送。一次 Run 内 ContextView 保持稳定，成功 compact 后才换代；reasoning/Tool-result 编辑只改变 Provider 视图。接近 context limit 或未压缩正文达到软阈值时，CompactionService 生成 portable semantic checkpoint，支持的 Provider 可叠加精确绑定的 native context。Workflow 状态不从自然语言摘要恢复，唯一依据始终是 Workflow Journal。完整规则见 [Prompt 与上下文](docs/prompt-assembly.md)。
+默认 Prompt 程序是 `iron-law-lean-v1`。最终请求只有一个 Trusted Instructions block；runtime facts、Skill catalog、project guidance、本次 Root/Child Run 的逐字 pinned task contract、Child 可选签名 ContextPacket、Session ContextView、checkpoint 和最近消息按固定顺序装配，Tool schemas 作为独立 Provider 字段发送。逐字任务与 canonical live message 去重且不能被 compact 删除；一次 Run 内 ContextView 保持稳定，成功 compact 后才换代；reasoning/Tool-result 编辑只改变 Provider 视图。接近 context limit 或未压缩正文达到软阈值时，CompactionService 生成 portable semantic checkpoint，支持的 Provider 可叠加精确绑定的 native context。Workflow 状态不从自然语言摘要恢复，唯一依据始终是 Workflow Journal。完整规则见 [Prompt 与上下文](docs/prompt-assembly.md)。
 
 ## Trace、诊断与 Evaluation
 
 Runtime 为 Run、Provider、Policy、Tool、Child 和持久化操作写关联 Trace。`doctor` 检查 Provider、存储、插件和工作区；`eval` 使用固定 scenario 验证 Planner、工具、恢复和协议行为。
 
-2026-08-09 的最终小样本覆盖 Harness-Bench、Harbor / Terminal-Bench、AgentDojo、真实 Child quorum/cross-review、长任务局部恢复、DeepSeek compaction/cache 和 MiniMax smoke。它证明了主要控制面可以运行，但不把单次小样本或一次不一致的 restart projection 宣称为工业级统计保证。详见[最终小样本测评与优化总结](docs/evaluation-final-2026-08-09.md)。
+当前小样本覆盖 Harness-Bench、Harbor / Terminal-Bench、AgentDojo、真实 Child quorum/cross-review、持久恢复、Provider-aware capacity、DeepSeek/MiniMax compaction、cache A/B 和 Provider smoke。它证明了主要控制面可以运行，但不把小样本宣称为工业级统计保证。实际题目、逐题结果、问题修复和证据边界见[持续维护的测评档案](docs/evaluations/README.md)。
 
 ```powershell
 praxis doctor
@@ -262,11 +264,11 @@ npm run install:local
 - [文档索引](docs/README.md)
 - [模块地图](docs/module-map.md)
 - [当前架构](docs/architecture.md)
-- [统一 Workflow 与多 Agent](docs/workflow-platform.md)
+- [Agent Run Tree 与可选 Workflow](docs/workflow-platform.md)
 - [CLI 参考](docs/cli-reference.md)
 - [协议](docs/protocol.md)
 - [Session 恢复](docs/session-recovery.md)
-- [最终小样本测评与优化总结](docs/evaluation-final-2026-08-09.md)
+- [持续维护的测评档案](docs/evaluations/README.md)
 - [故障排查](docs/troubleshooting.md)
 - [安全威胁模型](docs/security-threat-model.md)
 - [目标平台 RFC](docs/planner-platform-rfc.md)

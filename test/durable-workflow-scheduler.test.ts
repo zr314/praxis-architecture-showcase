@@ -136,6 +136,71 @@ test('durable scheduler cancels dependent nodes after a collected failure', asyn
   }
 })
 
+test('retryable child failure and replacement attempt commit atomically before quorum observes it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-durable-retry-quorum-'))
+  const authority = new SqliteWorkflowAuthorityV1(root)
+  try {
+    await authority.initialize()
+    await registerBuiltinAgentProfilesV1(authority)
+    const orchestrator = new WorkflowOrchestratorV1(authority)
+    const workflow = await orchestrator.start({
+      sessionId: 'session-retry-quorum',
+      parentRunId: 'run-retry-quorum',
+      objective: 'Do not let a transient child failure settle quorum.',
+      modePolicy: 'workflow',
+      cwd: 'D:/praxis',
+      rootGrant: grant,
+    })
+    const rootClaim = await orchestrator.claimRoot(workflow.workflowId, 'root-retry-quorum')
+    await orchestrator.markRunning(rootClaim)
+    const graph = await orchestrator.admitAgentGraph(
+      workflow.workflowId,
+      'root',
+      'proposal-retry-quorum',
+      [graphNode('first', []), graphNode('second', [])],
+      { kind: 'quorum', minimum: 2 },
+    )
+    const first = graph.nodes[0]!
+    const firstClaim = await orchestrator.claimNode(
+      workflow.workflowId,
+      first.nodeId,
+      'child-retry-quorum',
+    )
+    await orchestrator.markRunning(firstClaim)
+
+    const retried = await orchestrator.complete(firstClaim, {
+      ok: false,
+      errorCode: 'CHILD_CREDENTIAL_RATE_LIMITED',
+      retryable: true,
+    })
+
+    assert.equal(retried.nodes.find(({ nodeId }) => nodeId === first.nodeId)?.state, 'scheduled')
+    assert.deepEqual(
+      retried.attempts
+        .filter(({ nodeId }) => nodeId === first.nodeId)
+        .map(({ ordinal, state }) => ({ ordinal, state })),
+      [
+        { ordinal: 1, state: 'failed' },
+        { ordinal: 2, state: 'scheduled' },
+      ],
+    )
+    const afterJoinPoll = await orchestrator.resolveJoinNode(workflow.workflowId, graph.joinNodeId!)
+    assert.equal(
+      afterJoinPoll.nodes.find(({ nodeId }) => nodeId === graph.joinNodeId)?.state,
+      'admitted',
+    )
+    assert.equal(
+      (await authority.listMessages({ workflowId: workflow.workflowId })).some(
+        ({ payload }) => Reflect.get(payload, 'nodeId') === first.nodeId,
+      ),
+      false,
+    )
+  } finally {
+    authority.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('a recreated scheduler continues after persisted success without rerunning it', async () => {
   const root = await mkdtemp(join(tmpdir(), 'praxis-durable-scheduler-restart-'))
   const firstAuthority = new SqliteWorkflowAuthorityV1(root)

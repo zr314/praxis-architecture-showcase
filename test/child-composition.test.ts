@@ -44,6 +44,36 @@ test('child shell policy denies recursive Praxis sessions without blocking ordin
   assert.equal(childShellCommandPolicyV1("Write-Output 'praxis documentation'"), undefined)
 })
 
+test('child composition resolves only authenticated middleware IDs from its process registry', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-child-middleware-'))
+  const input: ChildBootstrapProfileInputV3 = {
+    ...profileInput(root),
+    middleware: {
+      ids: ['audit.v1'],
+      policy: {
+        hookTimeoutMs: 321,
+        consecutiveFailureThreshold: 2,
+        circuitCooldownMs: 654,
+      },
+    },
+  }
+  const launch = liveLaunch(input)
+  assert.throws(
+    () => createChildRuntimeComposition(launch.profile),
+    (error: unknown) => hasCode(error, 'CHILD_COMPOSITION_MIDDLEWARE_UNAVAILABLE'),
+  )
+
+  const composition = createChildRuntimeComposition(launch.profile, {
+    middlewareRegistry: {
+      'audit.v1': () => ({ name: 'child-audit', beforeModel: () => undefined }),
+    },
+  })
+  assert.equal(composition.middleware?.[0]?.name, 'child-audit')
+  assert.equal(composition.middlewarePolicy?.hookTimeoutMs, 321)
+  await composition.onShutdown?.({ failed: false })
+  await rm(root, { recursive: true, force: true })
+})
+
 test('authenticated child composition serves formal RPC with bounded authority and no main-store pollution', async () => {
   const root = await mkdtemp(join(tmpdir(), 'praxis-child-composition-'))
   const mainHome = join(root, 'main-home')
@@ -75,7 +105,7 @@ test('authenticated child composition serves formal RPC with bounded authority a
       'ls',
       'read',
     ])
-    assert.equal(capabilities.steer, false)
+    assert.equal(capabilities.steer, true)
     assert.equal(capabilities.traceExport, false)
 
     assert.equal(
@@ -140,7 +170,18 @@ test('authenticated child composition serves formal RPC with bounded authority a
       model: 'mock-v1',
     })
     assert.equal(created.error, undefined)
-    assert.equal(typeof (created.result as { sessionId?: unknown }).sessionId, 'string')
+    const childSessionId = (created.result as { sessionId?: unknown }).sessionId
+    assert.equal(typeof childSessionId, 'string')
+    assert.equal(
+      (
+        await runtime.request('session.steer', {
+          sessionId: childSessionId,
+          runId: 'inactive-child-run',
+          text: 'Apply this at the next safe boundary.',
+        })
+      ).error?.code,
+      'RUN_NOT_ACTIVE',
+    )
 
     assert.equal((await runtime.request('shutdown', {})).error, undefined)
     assert.equal(await runtime.exit, 0)
@@ -452,6 +493,7 @@ function profileInput(
     'events.subscribe',
     'session.create',
     'session.prompt',
+    'session.steer',
     'shutdown',
   ] as const
   const provider = options.provider ?? { providerId: 'mock', model: 'mock-v1' }

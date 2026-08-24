@@ -649,6 +649,9 @@ test('daily-driver session APIs complete, resume, inspect, fork, export, and tra
       assert.equal((await first.listModels('minimax')).length, 3)
       const diagnosis = await first.doctor(process.cwd())
       assert.equal(diagnosis.storeVersion, 3)
+      assert.equal(diagnosis.middleware.schemaVersion, 1)
+      assert.equal(diagnosis.middleware.active, false)
+      assert.equal(diagnosis.checks.find(({ id }) => id === 'runtime_middleware')?.status, 'ok')
       assert.match(
         diagnosis.checks.find(({ id }) => id === 'session_store')?.message ?? '',
         /SessionJournal V3 JSONL authority is ready/,

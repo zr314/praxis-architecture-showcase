@@ -1,6 +1,6 @@
 # Praxis / Pi / Claude Code Prompt 审计与优化
 
-本文档集回答四个问题：三个系统到底向模型注入了什么；每段内容何时、以什么角色注入；各段如何装配成最终请求；Praxis 为什么分阶段优化。它是审计与演进记录；当前 Praxis 的规范入口是[Prompt、Context 与 Compaction](../prompt-assembly.md)，可信度标签的现行决策见[指令权威、来源与事实验证](./10-authority-provenance-and-verification.md)，最终运行结论见[最终小样本测评与优化总结](../evaluation-final-2026-08-09.md)。
+本文档集回答四个问题：三个系统到底向模型注入了什么；每段内容何时、以什么角色注入；各段如何装配成最终请求；Praxis 为什么分阶段优化。它是审计与演进记录；当前 Praxis 的规范入口是[Prompt、Context 与 Compaction](../prompt-assembly.md)，可信度标签的现行决策见[指令权威、来源与事实验证](./10-authority-provenance-and-verification.md)，最终运行结论见[持续维护的测评档案](../evaluations/README.md)。
 
 审计基线日期为 **2026-08-08**：
 
@@ -26,7 +26,7 @@ Praxis 与 Pi 在审计时都不是 clean worktree；本文翻译和装配分析
 10. [首批执行台账、最终验证与后续扩展门禁](./08-execution-ledger.md)
 11. [原生 Compaction、Reasoning 清理与 Tool Search 决策](./09-native-compaction-and-context-editing.md)
 12. [现行 Prompt 装配规范](../prompt-assembly.md)
-13. [最终小样本测评与优化总结](../evaluation-final-2026-08-09.md)
+13. [持续维护的测评档案](../evaluations/README.md)
 
 ## “所有 Prompt”的边界
 

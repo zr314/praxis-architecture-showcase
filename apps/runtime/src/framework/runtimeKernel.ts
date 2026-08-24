@@ -113,6 +113,7 @@ import {
   ContextBuilder,
   compatibilityContextView,
   DEFAULT_PROMPT_VARIANT,
+  DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET,
   durablePromptMessage,
   durableSensitiveMessage,
   journalContextView,
@@ -124,6 +125,12 @@ import {
 import type { ProviderRouterOptions } from '../provider-router/index.js'
 import { effectiveProviderCapabilities, ProviderRouter } from '../provider-router/index.js'
 import { ModelCatalog } from '../providers/modelCatalog.js'
+import {
+  DEFAULT_WORKFLOW_WORKER_CONCURRENCY,
+  type ProviderWorkflowConcurrencyPolicyV1,
+  providerWorkflowConcurrencyPolicyV1,
+  workflowSchedulingForProviderV1,
+} from '../providers/providerExecutionPolicy.js'
 import { platformIsolationBackend } from '../security/index.js'
 import {
   type ManagedSession,
@@ -150,6 +157,14 @@ import {
   WorkflowEffectBrokerV1,
   WorkflowOrchestratorV1,
 } from '../workflow/index.js'
+import {
+  type ChildRuntimeMiddlewareProfile,
+  type RuntimeMiddleware,
+  type RuntimeMiddlewareHealthSnapshot,
+  type RuntimeMiddlewarePolicyOptions,
+  type RuntimeMiddlewareRegistry,
+  RuntimeMiddlewarePipeline,
+} from './runtimeMiddleware.js'
 
 type Subscription = {
   id: string
@@ -165,6 +180,8 @@ type RuntimeRun = AgentRun & {
   tools: ReadyExtensions['tools']
   envelope: PromptEnvelope
   promptCapabilitySnapshot: PromptCapabilitySnapshotManifest
+  /** Exact user task contract replayed outside compactable Session history. */
+  pinnedContextMessages: readonly ProviderMessage[]
   /**
    * Model-visible ContextView is a Run snapshot, not a live journal cursor.
    * Keeping it byte-stable lets appended assistant/Tool turns reuse Provider
@@ -173,6 +190,10 @@ type RuntimeRun = AgentRun & {
    */
   promptContextView?: PromptContextView
   sensitivePromptValues: readonly string[]
+  application?: Readonly<{
+    name?: string
+    instructions: string
+  }>
   workflowId?: string
   terminalOutcome?: 'completed' | 'failed' | 'aborted'
   terminalCode?: string
@@ -239,6 +260,16 @@ export type RuntimeKernelOptions = {
   commandAuditStore?: CommandAuditStoreV1
   workflowAuthority?: WorkflowAuthorityPortV1
   promptVariant?: PromptVariant
+  workflowProviderConcurrency?: ProviderWorkflowConcurrencyPolicyV1
+  /** Trusted in-process model and Tool interception owned by the Runtime host. */
+  middleware?: readonly RuntimeMiddleware[]
+  /** Per-hook deadline and consecutive-failure circuit-breaker policy. */
+  middlewarePolicy?: RuntimeMiddlewarePolicyOptions
+  /** Child inheritance is opt-in and limited to stable IDs resolved by this process registry. */
+  childMiddleware?: Readonly<{
+    inheritance: 'none' | 'registered'
+    registry?: RuntimeMiddlewareRegistry
+  }>
 }
 
 export type RuntimeSettings = Pick<UserSettingsStore, 'defaultModel' | 'setDefaultModel'>
@@ -255,7 +286,6 @@ export type RuntimeAuthority = Readonly<{
   terminalTool?: Readonly<{ name: string }>
 }>
 
-const SYSTEM_PROMPT_TOKEN_BUDGET = 1_536
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 8_192
 const DEFAULT_RUN_BUDGET = {
   maxTurns: LONG_LIVED_EXECUTION_POLICY_V1.maxTurns,
@@ -306,6 +336,8 @@ export class RuntimeKernel {
   private readonly compactionFallbackGenerator?: CompactionSummaryGenerator
   private readonly plannerRouter: PlannerRouter
   private readonly promptVariant: PromptVariant
+  private readonly middleware: RuntimeMiddlewarePipeline
+  private readonly childMiddlewareProfile?: ChildRuntimeMiddlewareProfile
   private readyExtensions?: ReadyExtensions
   private readonly loop: AgentLoop
   private readonly workflowAuthority: WorkflowAuthorityPortV1
@@ -318,6 +350,15 @@ export class RuntimeKernel {
   private readonly externalCommandShutdown = new AbortController()
   private readonly pendingPersistence = new Set<Promise<void>>()
   private readonly warnedUnavailablePreferences = new Set<string>()
+  private readonly emittedWorkflowProjections = new Map<
+    string,
+    Readonly<{ sequence: number; runId: string }>
+  >()
+  private readonly runsAwaitingPromptStarted = new Set<string>()
+  private readonly workflowProjectionsAwaitingPromptStarted = new Map<
+    string,
+    Readonly<{ projection: WorkflowProjectionV1; runId?: string }>
+  >()
   private initialized = false
   private shuttingDown = false
   private shutdownPromise?: Promise<void>
@@ -337,6 +378,11 @@ export class RuntimeKernel {
     const authorityToken = process.env.PRAXIS_WORKFLOW_AUTHORITY_TOKEN
     this.promptVariant =
       options.promptVariant ?? parsePromptVariant(process.env.PRAXIS_PROMPT_VARIANT)
+    this.middleware = new RuntimeMiddlewarePipeline(options.middleware, options.middlewarePolicy)
+    this.childMiddlewareProfile = selectedChildMiddlewareProfile(
+      this.middleware,
+      options.childMiddleware,
+    )
     if (
       remoteAuthorityUrl !== undefined &&
       process.env.PRAXIS_WORKFLOW_AUTHORITY_LISTEN !== undefined
@@ -468,6 +514,67 @@ export class RuntimeKernel {
             prepareRequest,
             (id) => (run as RuntimeRun).capabilities.provider(id),
           ),
+        beforeModel: (session, run, request, context) =>
+          this.middleware.beforeModel(
+            {
+              sessionId: session.sessionId,
+              runId: run.id,
+              turnId: context.turnId!,
+              workspace: session.cwd,
+              provider: session.provider,
+              model: request.model,
+              trace: Object.freeze({ ...context }),
+              signal: run.controller.signal,
+            },
+            request,
+          ),
+        afterModel: (session, run, _request, result, context) =>
+          this.middleware.afterModel(
+            {
+              sessionId: session.sessionId,
+              runId: run.id,
+              turnId: context.turnId!,
+              workspace: session.cwd,
+              provider: session.provider,
+              model: session.model,
+              trace: Object.freeze({ ...context }),
+              signal: run.controller.signal,
+            },
+            result,
+          ),
+        beforeTool: (session, run, toolCall, context) =>
+          this.middleware.beforeTool(
+            {
+              sessionId: session.sessionId,
+              runId: run.id,
+              turnId: context.turnId!,
+              workspace: session.cwd,
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              input: structuredClone(toolCall.input),
+              trace: Object.freeze({ ...context, toolCallId: toolCall.id }),
+              signal: run.controller.signal,
+            },
+            toolCall,
+          ),
+        afterTool: (session, run, toolCall, prepared, result, context) =>
+          this.middleware.afterTool(
+            {
+              sessionId: session.sessionId,
+              runId: run.id,
+              turnId: context.turnId!,
+              workspace: session.cwd,
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              input: structuredClone(toolCall.input),
+              ...(prepared === undefined
+                ? {}
+                : { descriptor: Object.freeze({ ...prepared.descriptor }) }),
+              trace: Object.freeze({ ...context, toolCallId: toolCall.id }),
+              signal: run.controller.signal,
+            },
+            result,
+          ),
         tools: (_session, run) => (run as RuntimeRun).tools,
         terminalTool: () => this.authority?.terminalTool,
         commitMessage: (session, run, message) => {
@@ -513,7 +620,7 @@ export class RuntimeKernel {
             )
             .map(({ nodeId }) => nodeId)
           if (pendingNodeIds.length > 0) {
-            return `Background Workflow nodes are still pending: ${pendingNodeIds.join(', ')}. Continue only genuinely independent work, then call workflow.join before the final user response.`
+            return `Child Runs are still pending: ${pendingNodeIds.join(', ')}. Continue only genuinely independent work, then call agent.wait before the final user response.`
           }
           const unread = await this.workflowAuthority.listMessages({
             workflowId,
@@ -527,7 +634,7 @@ export class RuntimeKernel {
           })
           return unreadBackground.length === 0
             ? undefined
-            : 'Background Workflow results are ready but not consumed. Call workflow.inbox with acknowledge=true, or workflow.join for the required node IDs, before the final user response.'
+            : 'Child results are ready but not consumed. Call agent.result or agent.wait before the final user response.'
         },
         emit: (event, sessionId, runId) => this.emit(toSessionEvent(event), sessionId, runId),
         requestPermission: (session, run, toolCall, input, requirement) =>
@@ -562,8 +669,11 @@ export class RuntimeKernel {
                 id: provider.id,
                 ...(capabilities ? { capabilities } : {}),
               },
+              ...((run as RuntimeRun).application === undefined
+                ? {}
+                : { application: (run as RuntimeRun).application }),
               skills: (run as RuntimeRun).skillInvocations.disclosures(),
-              maxSystemPromptTokens: SYSTEM_PROMPT_TOKEN_BUDGET,
+              maxSystemPromptTokens: DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET,
             }),
           )
         },
@@ -615,9 +725,10 @@ export class RuntimeKernel {
             target: selectedTarget,
             systemPrompt: promptBuild,
             messages: session.messages,
-            ...(this.authority?.pinnedContextMessages === undefined
-              ? {}
-              : { pinnedContextMessages: this.authority.pinnedContextMessages }),
+            pinnedContextMessages: [
+              ...(this.authority?.pinnedContextMessages ?? []),
+              ...(runtimeRun.pinnedContextMessages ?? []),
+            ],
             ...(runtimeSession.memory.checkpoint === undefined
               ? {}
               : { checkpoint: runtimeSession.memory.checkpoint }),
@@ -679,6 +790,8 @@ export class RuntimeKernel {
         compactionPolicy: this.compactionPolicy,
       },
     )
+    const workflowProviderConcurrency =
+      options.workflowProviderConcurrency ?? providerWorkflowConcurrencyPolicyV1(process.env)
     this.autoPlanner = new AutoWorkflowPlannerV1({
       authority: this.workflowAuthority,
       artifacts: this.artifactStore,
@@ -699,19 +812,19 @@ export class RuntimeKernel {
         }
       },
       worker: (input) => this.createWorkflowAgentWorker(input),
-      emitProjection: (projection, input) =>
-        this.emit(
-          {
-            type: 'workflow_update',
-            update: workflowUpdate(projection),
-          },
-          input.session.sessionId,
-          input.run.id,
-        ),
+      scheduling: (providerId) =>
+        workflowSchedulingForProviderV1(providerId, workflowProviderConcurrency),
+      runTreeControl: {
+        cancel: (workflowId, childIds, reason) =>
+          this.workflowWorkerService.cancelNodes(workflowId, childIds, reason),
+        steer: (workflowId, childId, instruction) =>
+          this.workflowWorkerService.steerNode(workflowId, childId, instruction),
+      },
+      emitProjection: (projection, input) => this.emitWorkflowProjection(projection, input.run.id),
     })
     this.workflowWorkerService = new DurableWorkflowWorkerServiceV1({
       authority: this.workflowAuthority,
-      concurrency: 4,
+      concurrency: DEFAULT_WORKFLOW_WORKER_CONCURRENCY,
       worker: (projection, claim) => this.createRecoveryWorkflowAgentWorker(projection, claim),
       canRun: (projection, task) => {
         const active = [...this.sessionService.activeSessions()].some(
@@ -720,12 +833,12 @@ export class RuntimeKernel {
         if (!active) return true
         return task.nodeId !== 'root' && task.payload.coordinationMode === 'background'
       },
-      onProjection: (projection) =>
-        this.emit(
-          { type: 'workflow_update', update: workflowUpdate(projection) },
-          projection.sessionId,
-          projection.runId,
-        ),
+      onProjection: (projection) => {
+        const activeRunId = [...this.sessionService.activeSessions()].find(
+          (session) => session.activeRun?.workflowId === projection.workflowId,
+        )?.activeRun?.id
+        this.emitWorkflowProjection(projection, activeRunId)
+      },
       onResult: async (claim, result, projection) => {
         if (claim.task.nodeId !== 'root') return
         const session = await this.sessionService
@@ -748,6 +861,11 @@ export class RuntimeKernel {
         )
       },
     })
+  }
+
+  /** Bounded diagnostics only; no prompts, Tool input, or Tool output are retained. */
+  middlewareSnapshot(): RuntimeMiddlewareHealthSnapshot {
+    return this.middleware.snapshot()
   }
 
   start(): void {
@@ -804,11 +922,7 @@ export class RuntimeKernel {
       ])
       for (const workflowId of workflowIds) {
         const projection = await this.workflowAuthority.get(workflowId)
-        this.emit(
-          { type: 'workflow_update', update: workflowUpdate(projection) },
-          projection.sessionId,
-          projection.runId,
-        )
+        this.emitWorkflowProjection(projection)
       }
     } catch {
       // A later idempotent pump retries; protocol stdout remains clean.
@@ -1453,6 +1567,16 @@ export class RuntimeKernel {
       status: pluginHealth.every((result) => result.ok) ? 'ok' : 'error',
       message: `${pluginHealth.length} installed plugin version(s) checked.`,
     })
+    const middleware = this.middleware.snapshot()
+    const openMiddleware = middleware.middleware.filter(({ state }) => state !== 'closed')
+    checks.push({
+      id: 'runtime_middleware',
+      status: openMiddleware.length === 0 ? 'ok' : 'warning',
+      message:
+        openMiddleware.length === 0
+          ? `${middleware.middleware.length} Runtime middleware circuit(s) are closed.`
+          : `${openMiddleware.length} of ${middleware.middleware.length} Runtime middleware circuit(s) are open or probing.`,
+    })
     return {
       ok: checks.every((check) => check.status !== 'error'),
       runtimeId: this.runtimeId,
@@ -1460,6 +1584,7 @@ export class RuntimeKernel {
       ...(workspace ? { workspace } : {}),
       providers,
       checks,
+      middleware,
     }
   }
 
@@ -1720,7 +1845,7 @@ export class RuntimeKernel {
           source: 'cli',
         })
         const projection = await this.workflowAuthority.get(task.workflowId)
-        this.emit({ type: 'workflow_update', update: workflowUpdate(projection) })
+        this.emitWorkflowProjection(projection)
         return commandUiAction('show_message', {
           message: `HumanTask ${humanTaskId}: ${task.state}.`,
         })
@@ -1993,6 +2118,7 @@ export class RuntimeKernel {
     const clientRequestId = requireString(value.clientRequestId, 'clientRequestId')
     const duplicateRunId = session.clientRequests.get(clientRequestId)
     if (duplicateRunId) return { runId: duplicateRunId, accepted: true }
+    const application = optionalRunApplication(value.agent)
     const requestedBudget = isRecord(value.budget) ? value.budget : {}
     const timeoutMs = optionalPositiveInteger(value.timeoutMs)
     const promptCommandId = optionalString(value.commandInvocationId)
@@ -2086,11 +2212,13 @@ export class RuntimeKernel {
       tools: runTools,
       envelope,
       promptCapabilitySnapshot: capabilitySnapshot,
+      pinnedContextMessages: [taskContractMessage(envelope, promptKind)],
       sensitivePromptValues:
         pendingPrompt?.produced.sensitiveValues ??
         (explicitSkill?.arguments === undefined || explicitSkill.arguments.length === 0
           ? []
           : [explicitSkill.arguments]),
+      ...(application === undefined ? {} : { application }),
       budget: {
         maxTurns: optionalPositiveInteger(requestedBudget.maxTurns) ?? DEFAULT_RUN_BUDGET.maxTurns,
         maxToolCalls:
@@ -2105,12 +2233,7 @@ export class RuntimeKernel {
           : { deadlineAt: canonicalDeadlineAfter(Date.now(), timeoutMs) }),
       },
     }
-    const liveMessage: ProviderMessage = {
-      role: 'user',
-      content: envelope.effectiveText,
-      intent: promptKind,
-      trust: 'user',
-    }
+    const liveMessage = taskContractMessage(envelope, promptKind)
     const started = await this.sessionService.beginRun(session, clientRequestId, run, liveMessage, {
       durableMessage: durablePromptMessage(envelope, promptKind),
     })
@@ -2154,6 +2277,7 @@ export class RuntimeKernel {
           : { checkpoint: session.memory.checkpoint }),
       })
     }
+    this.runsAwaitingPromptStarted.add(run.id)
     const execution = planner.execute({ session, run }).catch(async (error: unknown) => {
       if (run.terminal) return
       run.terminal = true
@@ -2562,7 +2686,21 @@ export class RuntimeKernel {
         metrics: { durationMs: Math.max(0, Date.now() - startedAt) },
       })
       .catch(() => undefined)
-    this.emit(toSessionEvent(finalized, run.usage), session.sessionId, run.id)
+    let terminalUsage: BudgetUsage | undefined = run.usage
+    if (run.workflowId !== undefined) {
+      const projection = await this.workflowAuthority.get(run.workflowId).catch(() => undefined)
+      if (projection !== undefined) {
+        terminalUsage = {
+          ...run.usage,
+          turns: projection.usage.turns,
+          toolCalls: projection.usage.toolCalls,
+          inputTokens: projection.usage.inputTokens,
+          outputTokens: projection.usage.outputTokens,
+          subagents: projection.usage.agentTasks,
+        }
+      }
+    }
+    this.emit(toSessionEvent(finalized, terminalUsage), session.sessionId, run.id)
     return finalized
   }
 
@@ -2636,11 +2774,7 @@ export class RuntimeKernel {
         })
       }
     }
-    this.emit(
-      { type: 'workflow_update', update: workflowUpdate(projection) },
-      projection.sessionId,
-      projection.runId,
-    )
+    this.emitWorkflowProjection(projection)
     return workflowUpdate(projection)
   }
 
@@ -2985,12 +3119,7 @@ export class RuntimeKernel {
       orchestrator,
       this.artifactStore,
       projection.workflowId,
-      (next) =>
-        this.emit(
-          { type: 'workflow_update', update: workflowUpdate(next) },
-          next.sessionId,
-          next.runId,
-        ),
+      (next) => this.emitWorkflowProjection(next),
       undefined,
       projection.spec.modePolicy,
     )
@@ -3096,6 +3225,7 @@ export class RuntimeKernel {
       launch: childRuntimeLaunch(),
       artifactStore: this.artifactStore,
       permissionDecisions: this.childPermissionDecisions,
+      childMiddleware: this.childMiddlewareProfile,
       resolveInputRefs: async (claim) => {
         const projection = await this.workflowAuthority.get(claim.task.workflowId)
         if (claim.task.nodeId !== 'root') {
@@ -3109,6 +3239,22 @@ export class RuntimeKernel {
           node.nodeId !== 'root' && node.resultRef !== undefined ? [node.resultRef] : [],
         )
       },
+      resolveInstructions: async (claim) => {
+        const messages = await this.workflowAuthority.listMessages({
+          workflowId: claim.task.workflowId,
+          recipientNodeId: claim.task.nodeId,
+          types: ['instruction'],
+          limit: 100,
+        })
+        return messages.flatMap(({ messageId, payload }) => {
+          const text = Reflect.get(payload, 'text')
+          return typeof text === 'string' ? [{ messageId, text }] : []
+        })
+      },
+      acknowledgeInstruction: (claim, messageId) =>
+        this.workflowAuthority
+          .acknowledgeMessage(claim.task.workflowId, messageId, claim.task.nodeId)
+          .then(() => undefined),
       recordExecutionSnapshot: async (claim, ref) => {
         if (claim.task.profileRef !== undefined) {
           const profile = await this.workflowAuthority.getProfile(
@@ -3178,6 +3324,63 @@ export class RuntimeKernel {
       }
       this.write(notification)
     }
+    if (event.type === 'prompt_started') {
+      this.runsAwaitingPromptStarted.delete(event.runId)
+      const pending = this.workflowProjectionsAwaitingPromptStarted.get(event.runId)
+      this.workflowProjectionsAwaitingPromptStarted.delete(event.runId)
+      if (pending !== undefined) {
+        this.emitWorkflowProjectionNow(pending.projection, pending.runId)
+      }
+    } else if (
+      event.type === 'prompt_completed' ||
+      event.type === 'prompt_failed' ||
+      event.type === 'prompt_aborted'
+    ) {
+      this.runsAwaitingPromptStarted.delete(event.runId)
+      this.workflowProjectionsAwaitingPromptStarted.delete(event.runId)
+    }
+  }
+
+  /** Suppress polling snapshots that carry no new durable Workflow fact. */
+  private emitWorkflowProjection(projection: WorkflowProjectionV1, runId?: string): void {
+    const effectiveRunId = runId ?? projection.runId
+    const previous = this.emittedWorkflowProjections.get(projection.workflowId)
+    if (
+      previous !== undefined &&
+      (previous.sequence > projection.sequence ||
+        (previous.sequence === projection.sequence && previous.runId === effectiveRunId))
+    )
+      return
+    this.emittedWorkflowProjections.delete(projection.workflowId)
+    this.emittedWorkflowProjections.set(
+      projection.workflowId,
+      Object.freeze({ sequence: projection.sequence, runId: effectiveRunId }),
+    )
+    if (this.emittedWorkflowProjections.size > 2_048) {
+      const oldest = this.emittedWorkflowProjections.keys().next().value
+      if (oldest !== undefined) this.emittedWorkflowProjections.delete(oldest)
+    }
+    if (this.runsAwaitingPromptStarted.has(effectiveRunId)) {
+      this.workflowProjectionsAwaitingPromptStarted.set(
+        effectiveRunId,
+        Object.freeze({ projection, ...(runId === undefined ? {} : { runId }) }),
+      )
+      return
+    }
+    this.emitWorkflowProjectionNow(projection, runId)
+  }
+
+  private emitWorkflowProjectionNow(projection: WorkflowProjectionV1, runId?: string): void {
+    const effectiveRunId = runId ?? projection.runId
+    this.emit(
+      {
+        type: 'workflow_update',
+        ...(runId === undefined ? {} : { runId }),
+        update: workflowUpdate(projection),
+      },
+      projection.sessionId,
+      effectiveRunId,
+    )
   }
 
   private write(message: unknown): void {
@@ -3430,6 +3633,18 @@ function parseExplicitSkillInvocation(
   }
 }
 
+function taskContractMessage(
+  envelope: PromptEnvelope,
+  promptKind: 'prompt' | 'follow_up',
+): ProviderMessage {
+  return {
+    role: 'user',
+    content: envelope.effectiveText,
+    intent: promptKind,
+    trust: 'user',
+  }
+}
+
 function sameResolvedPath(left: string, right: string): boolean {
   const resolvedLeft = resolve(left)
   const resolvedRight = resolve(right)
@@ -3641,6 +3856,29 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
+function optionalRunApplication(
+  value: unknown,
+): Readonly<{ name?: string; instructions: string }> | undefined {
+  if (value === undefined) return undefined
+  const agent = requireRecord(value, 'agent')
+  const keys = Object.keys(agent)
+  if (keys.some((key) => key !== 'name' && key !== 'instructions')) {
+    throw rpcError('INVALID_PARAMS', 'agent contains unsupported properties.')
+  }
+  const instructions = requireString(agent.instructions, 'agent.instructions').trim()
+  if (instructions.length === 0 || Buffer.byteLength(instructions, 'utf8') > 16_384) {
+    throw rpcError(
+      'INVALID_PARAMS',
+      'agent.instructions must contain between 1 and 16384 UTF-8 bytes.',
+    )
+  }
+  const name = optionalString(agent.name)?.trim()
+  if (name !== undefined && (name.length === 0 || Buffer.byteLength(name, 'utf8') > 128)) {
+    throw rpcError('INVALID_PARAMS', 'agent.name must contain between 1 and 128 UTF-8 bytes.')
+  }
+  return Object.freeze({ ...(name === undefined ? {} : { name }), instructions })
+}
+
 function optionalPlannerMode(value: unknown): PlannerModeV1 | undefined {
   if (value === undefined) return undefined
   if (
@@ -3738,6 +3976,27 @@ function sessionJournal(
     )
   }
   return repository.journal()
+}
+
+function selectedChildMiddlewareProfile(
+  pipeline: RuntimeMiddlewarePipeline,
+  options: RuntimeKernelOptions['childMiddleware'],
+): ChildRuntimeMiddlewareProfile | undefined {
+  if (options === undefined || options.inheritance === 'none') return undefined
+  if (options.inheritance !== 'registered') {
+    throw new TypeError('Runtime child middleware inheritance policy is invalid.')
+  }
+  const profile = pipeline.portableProfile()
+  if (profile === undefined) return undefined
+  if (options.registry === undefined) {
+    throw new TypeError('Registered Child Runtime middleware requires a registry.')
+  }
+  for (const id of profile.ids) {
+    if (!Object.hasOwn(options.registry, id) || typeof options.registry[id] !== 'function') {
+      throw new TypeError(`Child Runtime middleware is not registered: ${id}.`)
+    }
+  }
+  return profile
 }
 
 function childRuntimeLaunch(): { command: string; args: string[]; cwd: string } {

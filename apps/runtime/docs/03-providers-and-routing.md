@@ -43,7 +43,7 @@ Provider 实现 `ChatProvider`，核心行为是接收统一 `ProviderRequest`�
 | `OpenAICompatibleProvider` | 面向 Chat Completions 兼容协议；也提供本地服务工厂。 |
 | `KimiProvider` | 在兼容适配器上固定 Moonshot base URL 与能力。 |
 | `DeepSeekProvider` | 适配 DeepSeek V4，并在思考模式 Tool-call 后回传 `reasoning_content`。 |
-| Qwen/MiniMax factories | 按不同 token plan/端点创建多个 Provider；MiniMax 的区域 ID、endpoint、环境变量和默认模型统一来自 `minimaxConfig.ts`。 |
+| Qwen/MiniMax factories | 按不同 token plan/端点创建多个 Provider；MiniMax 的区域 ID、endpoint、环境变量、默认模型和 Workflow 并发提示统一来自 `minimaxConfig.ts`。 |
 | `MockProvider` | 本地确定性响应和简单工具调用，适合开发测试。 |
 
 Anthropic-compatible 流的 usage 不能只读取 `message_start`：MiniMax 会在开始事件返回零占位，并在 `message_delta` 返回最终 `input_tokens`/`output_tokens`。adapter 会合并两个位置并取合法最大值，避免把真实输入记成 0，缓存读写计数也采用同样规则。
@@ -70,6 +70,8 @@ Router 主要处理：
 4. 流式转发 chunk，不缓存完整回答才交给上层。
 5. 规范化错误，按错误类别决定退避重试或 fallback。
 6. 更新健康状态并记录 trace。
+
+Provider Router 处理单次模型请求的能力、健康、重试和 fallback；Workflow Authority 处理跨 Root/Child/Worker 的瞬时并发 admission，两者不能混为一个重试器。`providerExecutionPolicy.ts` 将 Provider 默认值与 `PRAXIS_WORKFLOW_PROVIDER_CONCURRENCY` 覆盖解析成容量组，AutoWorkflowPlanner 把结果快照进 Workflow Spec，SQLite Authority 再在 claim 事务内执行。当前默认 lane 为 4，`minimax`/`minimax-cn` 为总容量 2，以允许 Root 与一个 Child 同时推进并避免多个 Child 突发打满 Coding Plan。环境变量格式是 JSON，例如 `{"*":4,"minimax":2,"custom-provider":8}`；`*` 表示未单列 Provider 的默认值。
 
 ```mermaid
 flowchart TD
@@ -133,6 +135,7 @@ flowchart TD
 | [`src/providers/qwenTokenPlanProvider.ts`](../src/providers/qwenTokenPlanProvider.ts) | 创建 Qwen 不同 token plan Provider。 |
 | [`src/providers/minimaxProvider.ts`](../src/providers/minimaxProvider.ts) | 创建 MiniMax Provider 集合。 |
 | [`src/providers/minimaxConfig.ts`](../src/providers/minimaxConfig.ts) | MiniMax 区域 ID、endpoint、凭据环境变量和默认模型的唯一配置源。 |
+| [`src/providers/providerExecutionPolicy.ts`](../src/providers/providerExecutionPolicy.ts) | Provider Workflow 容量默认值、集中环境覆盖与持久容量组装配。 |
 | [`src/providers/mockProvider.ts`](../src/providers/mockProvider.ts) | 确定性 mock Provider，支持简单工具调用测试。 |
 | [`src/credentials/index.ts`](../src/credentials/index.ts) | Credential 模块统一导出。 |
 | [`src/credentials/credentialService.ts`](../src/credentials/credentialService.ts) | 认证状态、登录/登出、刷新及环境变量解析。 |
@@ -147,4 +150,5 @@ flowchart TD
 - 把所有厂商事件转换为统一 chunk，并响应 `AbortSignal`。
 - 返回准确 usage，规范化限流、认证、超时和服务错误。
 - 加入内置 registry 或扩展注册路径，并补充 ModelCatalog。
+- 按真实账号/endpoint 承载能力声明 Workflow 并发提示；未知 Provider 使用平台默认值。
 - 用 mock/replay 覆盖纯文本、工具调用、取消、限流和半途失败。

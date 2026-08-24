@@ -6,7 +6,7 @@
 
 ## 一句话架构
 
-每条 Prompt 都由 `AutoWorkflowPlannerV1` 创建 durable Workflow 和根 `AgentTask`，再进入 `AgentLoop`；模型可在同一个循环中调用普通 Tool、`agent.delegate`、`agent.handoff`、`workflow.expand`、`workflow.loop`、`workflow.wait` 或 `workflow.subworkflow`。`PlannerRouter` 只解析 `auto|solo|workflow` policy，不选择不同 Planner。
+每条 Prompt 都由 `AutoWorkflowPlannerV1` 创建内部 durable execution container 和根 `AgentTask`，再进入 `AgentLoop`。默认 `auto` 的模型面只有普通 Tool 与 `agent.spawn/wait/result/cancel/steer`；完整 delegate、DAG、loop、durable wait 和 subworkflow 只在显式 `workflow` policy 注册。`PlannerRouter` 只解析 policy，不选择不同 Planner。
 
 `workflow.expand` 只负责提交模型 Proposal；图、Task、Attempt 和依赖状态由 `DurableWorkflowSchedulerV1` 推进。SQLite claim 必须看到 Node 已持久化为 `scheduled`，不能依赖调用 Tool 的进程内 completed 集合。Agent 结果先存 Artifact，再写 projection，scheduler 重建后会跳过已经成功的节点。
 
@@ -49,20 +49,20 @@ sequenceDiagram
     K->>W: create Workflow + root Task
     K->>W: claim root Lease / mark running
     K->>A: execute root AgentTask
-    opt model delegates
-        A->>O: agent.delegate proposal
+    opt model spawns a Child
+        A->>O: agent.spawn proposal
         O->>W: graph patch + Attempt + ready Task
         O->>W: claim / mark running
         O->>H: authenticated Child Runtime
         H-->>O: result / artifacts / changed files
         O->>W: complete Attempt and Node
-        O-->>A: structured Tool result
+        O-->>A: childId; later wait/result
     end
     A-->>K: terminal outcome
     K->>W: complete root and Workflow
 ```
 
-`solo` 不添加 topology tools；`auto` 和 `workflow` 添加相同的 delegate、handoff、DAG、loop 与 subworkflow 工具。`workflow` 的额外图化约束属于 admission policy，不会实例化旧 Supervisor。
+`solo` 不添加协作工具；`auto` 添加 Run Tree 句柄工具；`workflow` 在同一实现上再添加 delegate、handoff、DAG、loop 与 subworkflow。切换 policy 不会实例化旧 Supervisor。
 
 ## Workflow SQLite
 
@@ -120,7 +120,7 @@ Child 唯一强制能力差异是不能创建 descendant。它的 `maxChildRuns/
 
 ## AgentLoop
 
-`AgentLoop` 负责一个 AgentTask 内部的模型回合：Prompt assembly、Provider stream、Tool schema/policy、并行安全 Tool batch、usage、steer、abort、compaction 和唯一 terminal claim。它不拥有跨 Agent 调度或 Workflow state。
+`AgentLoop` 负责一个 AgentTask 内部的模型回合：Prompt assembly、Provider stream、Tool schema/policy、并行安全 Tool batch、usage、steer、abort、compaction 和唯一 terminal claim。可信宿主可通过 `RuntimeKernelOptions.middleware` 在逻辑模型回合与 Tool 边界注册 middleware；Tool name/input 改写发生在 schema 和权限之前。每 Hook 有 deadline，连续失败触发冷却/half-open 熔断，健康快照不记录原始内容。Child 默认不继承；只有认证 bootstrap 中的稳定 ID 能由 Child 入口 registry 重建。Middleware 不拥有跨 Agent 调度或 Workflow state。
 
 内部 `AgentTaskPlanner` 仅把一个已准入 execution 交给 AgentLoop，是 ExtensionService 的 Planner capability adapter，不是用户可选 Direct 模式。
 
@@ -135,7 +135,7 @@ Child 唯一强制能力差异是不能创建 descendant。它的 `maxChildRuns/
 
 ## Prompt 与 Compaction
 
-父 Runtime 使用 `journalContextView`。默认 `iron-law-lean-v1` 的装配顺序是：唯一 Trusted Instructions；`runtime_facts/skill_catalog/project_guidance`；Child pinned ContextPacket；Run-stable Session ContextView；native/semantic checkpoint；最近完整消息；独立 Tool definitions。reasoning/Tool-result editing 只生成 Provider 发送视图，成功 compact 后才更换 ContextView。旧 `SessionMemory.plan` 只在读取旧数据时被清理，不再进入 compaction 或模型 Prompt。完整规范见 [`docs/prompt-assembly.md`](../../docs/prompt-assembly.md)。
+父 Runtime 使用 `journalContextView`。默认 `iron-law-lean-v1` 的装配顺序是：唯一 Trusted Instructions；`runtime_facts/skill_catalog/project_guidance`；本次 Root/Child Run 的逐字 pinned task contract；Child 可选签名 ContextPacket；Run-stable Session ContextView；native/semantic checkpoint；最近完整消息；独立 Tool definitions。task contract 与 canonical live message 会去重，不能被 compact 删除；reasoning/Tool-result editing 只生成 Provider 发送视图，成功 compact 后才更换 ContextView。旧 `SessionMemory.plan` 只在读取旧数据时被清理，不再进入 compaction 或模型 Prompt。完整规范见 [`docs/prompt-assembly.md`](../../docs/prompt-assembly.md)。
 
 本轮真实 Provider 小样本已覆盖 Harness-Bench、Harbor、AgentDojo、quorum、cross-review、局部 synthesis recovery、DeepSeek compaction/cache 和 MiniMax CN smoke。Restart recovery 的持久接管机制已观察，但一次最终 projection 不一致，因此仍是部分验证。见[最终测评总结](../../docs/evaluation-final-2026-08-09.md)。
 
@@ -211,4 +211,4 @@ node --import tsx --test test/workflow-contract.test.ts test/workflow-sqlite-aut
 
 ## 当前边界
 
-本目录已交付统一 auto、模型驱动的 `default/worker/explorer` Child 装配、逐 Child Prompt/Tool/Skill/MCP/模型/推理/预算/结果合同、条件与 `all/any/quorum` join、有界循环、handoff、durable wait、所有可变 Tool 的统一 effect broker、调用前幂等预留、双 receipt Saga、不可变执行快照、重启恢复 Worker pump、认证远程 Authority/Artifact 协议和非递归独立 subworkflow。PostgreSQL、高可用外部通知、任意递归 subworkflow、跨 Provider 凭证授权、租户级分布式熔断和连接器驱动自动补偿仍是部署/扩展边界。准确状态见 [项目状态](../../docs/project-status.md)。
+本目录已交付默认 auto Agent Run Tree、模型驱动的 `default/worker/explorer` Child 装配、逐 Child Prompt/Tool/Skill/MCP/模型/推理/结果合同、显式 Workflow 的条件与 `all/any/quorum` join、loop、handoff、durable wait、统一 effect broker、双 receipt Saga、不可变执行快照、重启恢复 Worker pump 和认证远程 Authority/Artifact 协议。默认 `agent.spawn` 的数值预算继承父 Run/组织策略；显式 Workflow 节点仍可申请预算。PostgreSQL、高可用外部通知、任意递归 Child、跨 Provider 凭证授权、租户级分布式熔断和连接器驱动自动补偿仍是部署/扩展边界。准确状态见 [项目状态](../../docs/project-status.md)。

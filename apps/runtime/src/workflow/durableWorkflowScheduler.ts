@@ -180,6 +180,7 @@ export class DurableWorkflowSchedulerV1 {
         results.set(claim.task.nodeId, outcome)
         projection = await this.orchestrator.complete(claim, {
           ok: outcome.ok,
+          cancelled: outcome.cancelled,
           errorCode: outcome.errorCode,
           resultRef: outcome.artifacts?.[0],
           usage: outcome.usage,

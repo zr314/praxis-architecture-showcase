@@ -6,6 +6,7 @@ export type MiniMaxProviderConfiguration = Readonly<{
   baseURL: string
   defaultModel: 'MiniMax-M2.7'
   catalogOrigin: string
+  maxConcurrentWorkflowAgents: 2
 }>
 
 /** Single source of truth for every regional MiniMax registration surface. */
@@ -17,6 +18,7 @@ export const MINIMAX_PROVIDER_CONFIGURATIONS: readonly MiniMaxProviderConfigurat
       baseURL: 'https://api.minimax.io/anthropic',
       defaultModel: 'MiniMax-M2.7',
       catalogOrigin: 'models.dev via Pi MiniMax generated catalog',
+      maxConcurrentWorkflowAgents: 2,
     }),
     Object.freeze({
       id: 'minimax-cn',
@@ -24,5 +26,6 @@ export const MINIMAX_PROVIDER_CONFIGURATIONS: readonly MiniMaxProviderConfigurat
       baseURL: 'https://api.minimaxi.com/anthropic',
       defaultModel: 'MiniMax-M2.7',
       catalogOrigin: 'models.dev via Pi MiniMax China generated catalog',
+      maxConcurrentWorkflowAgents: 2,
     }),
   ])

@@ -352,7 +352,12 @@ export class SqliteWorkflowAuthorityV1 implements WorkflowAuthorityPortV1 {
            WHERE state = 'leased' AND lease_expires_at > ?`,
           )
           .all(now) as TaskRow[]
-        const occupied = new Set(active.flatMap((row) => parseTask(row.task_json).conflictKeys))
+        const leasedTasks = active.map((row) => parseTask(row.task_json))
+        const activeTasks = leasedTasks.filter(
+          ({ kind }) => kind === 'agent' || kind === 'subworkflow',
+        )
+        const occupied = new Set(leasedTasks.flatMap((task) => task.conflictKeys))
+        const activeCapacity = activeCapacityGroups(database, activeTasks)
         const task = candidates
           .map((row) => parseTask(row.task_json))
           .find((candidate) => {
@@ -366,7 +371,9 @@ export class SqliteWorkflowAuthorityV1 implements WorkflowAuthorityPortV1 {
             const projection = loadProjection(database, candidate.workflowId)
             return (
               projection.nodes.find(({ nodeId }) => nodeId === candidate.nodeId)?.state ===
-              'scheduled'
+                'scheduled' &&
+              (!['agent', 'subworkflow'].includes(candidate.kind) ||
+                capacityAvailable(projection, activeCapacity))
             )
           })
         if (task === undefined) {
@@ -1333,6 +1340,7 @@ export class SqliteWorkflowAuthorityV1 implements WorkflowAuthorityPortV1 {
         if (attempt.ordinal >= prior.retry.maxAttempts)
           throw authorityError('WORKFLOW_RETRY_EXHAUSTED')
         const attemptId = `attempt-${randomUUID()}`
+        const retryAt = new Date(Date.parse(at) + backoffMs(prior, attempt.ordinal)).toISOString()
         const task: WorkflowTaskV1 = Object.freeze({
           ...prior,
           taskId: `task-${randomUUID()}`,
@@ -1340,7 +1348,7 @@ export class SqliteWorkflowAuthorityV1 implements WorkflowAuthorityPortV1 {
           state: 'ready',
           lease: undefined,
           capabilityBundleRef: undefined,
-          readyAt: at,
+          readyAt: retryAt,
           createdAt: at,
           updatedAt: at,
         })
@@ -2141,6 +2149,44 @@ function parseTask(value: string): WorkflowTaskV1 {
   if (parsed.schemaVersion !== 1 || !safeId(parsed.taskId) || !safeId(parsed.workflowId))
     throw authorityError('WORKFLOW_TASK_CORRUPT')
   return Object.freeze(parsed)
+}
+
+type ActiveCapacityGroup = Readonly<{ count: number; limit: number }>
+
+function activeCapacityGroups(
+  database: DatabaseSync,
+  tasks: readonly WorkflowTaskV1[],
+): ReadonlyMap<string, ActiveCapacityGroup> {
+  const projections = new Map<string, WorkflowProjectionV1>()
+  const groups = new Map<string, ActiveCapacityGroup>()
+  for (const task of tasks) {
+    let projection = projections.get(task.workflowId)
+    if (projection === undefined) {
+      projection = loadProjection(database, task.workflowId)
+      projections.set(task.workflowId, projection)
+    }
+    for (const group of projection.spec.scheduling?.capacityGroups ?? []) {
+      const current = groups.get(group.key)
+      groups.set(group.key, {
+        count: (current?.count ?? 0) + 1,
+        // A stricter persisted Workflow wins while policies overlap. This
+        // prevents a rolling configuration change from temporarily widening
+        // the shared Provider lane.
+        limit: Math.min(current?.limit ?? group.limit, group.limit),
+      })
+    }
+  }
+  return groups
+}
+
+function capacityAvailable(
+  projection: WorkflowProjectionV1,
+  active: ReadonlyMap<string, ActiveCapacityGroup>,
+): boolean {
+  return (projection.spec.scheduling?.capacityGroups ?? []).every((group) => {
+    const occupied = active.get(group.key)
+    return occupied === undefined || occupied.count < Math.min(occupied.limit, group.limit)
+  })
 }
 
 function parseJson<T>(value: string, code: string): T {

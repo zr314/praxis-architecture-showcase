@@ -17,7 +17,7 @@ Planner、Workflow、ContextView、Checkpoint、Authority、Journal 和 Lease �
    执行、装配、压缩、落盘和恢复；
 4. [当前架构](architecture.md)：知道已经接入的运行链路；
 5. [项目状态](project-status.md)：区分已交付、条件可用和未提供；
-6. [最终小样本测评](evaluation-final-2026-08-09.md)：区分架构能力与工业级证据。
+6. [持续维护的测评档案](evaluations/README.md)：查看实际题目、逐题结果、问题修复和证据边界。
 
 ## 我第一次使用 Praxis
 
@@ -44,6 +44,8 @@ Planner、Workflow、ContextView、Checkpoint、Authority、Journal 和 Lease �
 
 ## 我想编写自己的客户端
 
+- [Agent SDK 教程](agent-sdk.md)：用 `defineAgent` 构建、流式运行、恢复和取消可嵌入 Agent，并配置 typed middleware；
+- [Runtime Middleware](runtime-middleware.md)：在可信 Runtime 宿主中拦截模型回合和 Tool 执行；
 - [Runtime 协议 v1](protocol.md)：initialize、订阅、会话、Prompt、事件和安全规则；
 - [协议客户端教程](protocol-client.md)：如何使用 `@praxis/client`；
 - [`@praxis/protocol`](../packages/protocol)：类型、JSON Schema 和协议版本；
@@ -54,10 +56,11 @@ Planner、Workflow、ContextView、Checkpoint、Authority、Journal 和 Lease �
 - [模块地图](module-map.md)：七个 Workspace、Runtime/CLI 全部源码域和常见改动路径；
 - [当前架构](architecture.md)：进程、权威、组合根、存储和能力边界；
 - [Praxis 当前分层架构](planner-prompt-context-storage-guide.md)：面向新手的 Runtime 分层与完整主链路导读；
-- [统一 Workflow 与多 Agent](workflow-platform.md)：当前已经接入的 `auto`、Root wait/continue、持久 mailbox、Child 和写隔离；
-- [Planner Platform RFC](planner-platform-rfc.md)：长期 HumanTask、远程 Worker、PostgreSQL 与分布式目标（已交付与部署提案会显式区分）；
+- [Agent Run Tree 与可选 Workflow](workflow-platform.md)：默认 `auto` 的 spawn/wait/result/cancel/steer、显式 DAG、持久 mailbox、Child 和写隔离；
+- [Planner Platform 历史 RFC](planner-platform-rfc.md)：旧目标设计背景；默认模型可见编排面已由 ADR-008 取代；
 - [Runtime 源码总览](../apps/runtime/readme.md)：新手代码阅读地图；
 - [内核与 AgentLoop](../apps/runtime/docs/01-kernel-and-loop.md)；
+- [Runtime Middleware](runtime-middleware.md)：`beforeModel/afterModel` 与 `beforeTool/afterTool`；
 - [会话、Prompt 与上下文](../apps/runtime/docs/02-session-memory-prompt.md)；
 - [Provider 与路由](../apps/runtime/docs/03-providers-and-routing.md)；
 - [Tool、Policy 与安全](../apps/runtime/docs/04-tools-policy-security.md)；
@@ -78,8 +81,9 @@ Planner、Workflow、ContextView、Checkpoint、Authority、Journal 和 Lease �
 ## 当前状态与长期决策
 
 - [项目状态](project-status.md)：唯一的“现在可用 / 条件可用 / 内部组件 / 未提供”功能表；
-- [最终小样本测评与优化总结](evaluation-final-2026-08-09.md)：三 benchmark、长任务、compaction/cache、MiniMax、永久修复和证据边界；
-- [统一 Workflow 与多 Agent](workflow-platform.md)：当前执行入口、Child/Subagent、Task/Lease、隔离写入与恢复；
+- [持续维护的测评档案](evaluations/README.md)：当前权威入口，包含实际题目、逐题结果、完整运行总账、问题修复、术语和维护规则；
+- [2026-08 阶段测评快照](evaluation-final-2026-08-09.md)：保留当时的统一结论，后续结果以持续档案为准；
+- [Agent Run Tree 与可选 Workflow](workflow-platform.md)：当前执行入口、Child/Subagent、Task/Lease、隔离写入与恢复；
 - [安全威胁模型](security-threat-model.md)：信任边界、隔离声明和非目标；
 - [架构决策记录](adr/README.md)：已经接受、长期有效的决策；
 - [Supervisor 名称迁移](supervisor.md)：旧 `direct/supervisor` 名称怎样映射到当前 `solo/workflow`；
@@ -88,7 +92,8 @@ Planner、Workflow、ContextView、Checkpoint、Authority、Journal 和 Lease �
 ## 审计材料与历史执行证据
 
 - [Prompt 审计索引](prompt-audit/README.md)：Praxis、Pi 与 Claude copy 的 Prompt/装配对照、优化台账和后续上下文研究；
-- [最终小样本测评](evaluation-final-2026-08-09.md)：当前统一结论和证据索引；
+- [持续维护的测评档案](evaluations/README.md)：当前统一结论、实际题目和证据索引；
+- [2026-08 阶段测评快照](evaluation-final-2026-08-09.md)：历史阶段结论；
 - [架构决策记录](adr/README.md)：仍然有效的长期设计决策。
 
 审计台账记录当时的输入、版本和结论，不是当前产品功能表。遇到表述冲突时，以 `project-status.md`、current architecture 和现行合同/测试为准。
@@ -104,7 +109,7 @@ Planner、Workflow、ContextView、Checkpoint、Authority、Journal 和 Lease �
 | Reference | “精确命令/字段是什么？” | CLI、protocol、tool policy |
 | Current architecture | “现在代码怎样工作？” | architecture、plugin system、源码导读 |
 | Module map | “目录、包和源码域分别负责什么？” | module-map、monorepo、源码导读 |
-| Design RFC | “目标架构准备怎样演进？” | planner platform RFC；必须显式标注为提案 |
+| Historical RFC | “过去为什么这样设计、哪些部分已被替代？” | planner platform RFC；不能覆盖 current architecture 与 ADR |
 | ADR | “为什么长期选择这个方向？” | `docs/adr/` |
 | Status | “已交付还是内部组件？” | project status、workflow platform |
 

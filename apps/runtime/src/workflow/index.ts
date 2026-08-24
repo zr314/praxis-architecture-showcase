@@ -1,6 +1,7 @@
 export * from './agentAssembly.js'
 export * from './agentDelegateTool.js'
 export * from './agentHandoffTool.js'
+export * from './agentRunTreeTools.js'
 export * from './autoWorkflowPlanner.js'
 export * from './durableWorkflowScheduler.js'
 export * from './durableWorkflowWorkerService.js'

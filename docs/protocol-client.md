@@ -1,8 +1,9 @@
 # 协议客户端教程 / Protocol Client Tutorial
 
-`@praxis/client` 是 Praxis Runtime v1 的类型化状态机，不是一个远程 HTTP SDK。它负责协议协商、
+`PraxisClient` 是 Praxis Runtime v1 的低层类型化状态机，不是一个远程 HTTP SDK。它负责协议协商、
 Schema 校验、事件 Sequence、同 Runtime 有界重连和常用 Session API；调用方仍需提供一个
-`ProtocolConnection`，决定怎样启动/连接本地 Runtime。
+`ProtocolConnection`，决定怎样启动/连接本地 Runtime。要在应用中直接定义和运行 Agent，请在它上面
+使用 [`defineAgent`](agent-sdk.md)。
 
 如果你只是使用终端 Agent，不需要阅读本页。只有在编写 GUI、IDE 插件或另一个本地前端时才需要它。
 
@@ -147,8 +148,9 @@ try {
 }
 ```
 
-`prompt()` 会先取得接受结果中的 `runId`，再过滤全局事件流，直到唯一终态。不要用“连接关闭”或“暂时
-没有 Delta”推断成功。三个终态都可能包含 Runtime 生成的累计 `usage`；直接转发实际字段，不要按事件
+`prompt()` 会先取得接受结果中的 `runId`，再从 Client 的单一通知泵订阅该 Run 的独立有界队列，直到唯一终态。
+多个 `prompt/followUp` 可以共享连接并并发消费；请求返回前到达的早期事件由短期 backlog 衔接。不要用“连接关闭”
+或“暂时没有 Delta”推断成功。三个终态都可能包含 Runtime 生成的累计 `usage`；直接转发实际字段，不要按事件
 数量补造 token、Tool 或 Subagent 用量。
 
 ## 第四步：恢复持久化 Transcript / Restore durable transcript
@@ -204,6 +206,7 @@ parent/child 关联 ID，但仍复用普通 `permission.decide`；这些字段�
 | 新 Runtime 继续消费旧活动 Run | 终止 Consumer，从持久化 Transcript 重建 |
 | 自动批准所有权限 | 默认拒绝，做完明确的权限 UI 后再允许 |
 | 无限重试 mutation | 保留 `clientRequestId`，遵循 Runtime 幂等合同 |
+| 为每个并发 Run 直接消费 `connection.notifications()` | 只使用同一个 `PraxisClient.prompt/followUp`；Client 负责多路复用 |
 | 把本地 Server 当公网 API | 当前仅 Loopback、Token、单用户、每连接一个 Runtime child |
 
 ## 权威资料 / Sources of truth

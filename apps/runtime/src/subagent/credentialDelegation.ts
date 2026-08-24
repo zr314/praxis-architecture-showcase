@@ -8,6 +8,7 @@ import {
   type RuntimeError,
   runtimeError,
 } from '@praxis/core-sdk'
+import { scheduleLongDurationTimer } from '../longDurationTimer.js'
 import { LONG_LIVED_EXECUTION_POLICY_V1 } from '../longLivedExecutionPolicy.js'
 import type { ChildCredentialGrant, ChildProviderTarget } from './childCapabilityBundle.js'
 
@@ -667,12 +668,17 @@ function linkedInvocationSignal(
   handle.addEventListener('abort', abortHandle, { once: true })
   if (caller.aborted) abortCaller()
   else if (handle.aborted) abortHandle()
-  const timeout = setTimeout(() => abort('deadline'), Math.max(1, deadline - now()))
+  // Delegated v4 runs may carry a deadline far beyond Node's native
+  // setTimeout range (~24.8 days). Passing that delay directly makes Node
+  // overflow it to roughly 1ms and falsely reports an immediately expired
+  // credential. Re-arm in safe segments just like the rest of the long-lived
+  // Runtime.
+  const timeout = scheduleLongDurationTimer(() => abort('deadline'), Math.max(1, deadline - now()))
   return Object.freeze({
     signal: controller.signal,
     reason: () => reason,
     dispose() {
-      clearTimeout(timeout)
+      timeout.cancel()
       caller.removeEventListener('abort', abortCaller)
       handle.removeEventListener('abort', abortHandle)
     },

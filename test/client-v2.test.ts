@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { EventNotification, JsonRpcRequest, SessionEvent } from '@praxis/protocol'
-import { PraxisClient, type ProtocolConnection } from '../packages/client/src/index.js'
+import type { EventNotification, JsonRpcRequest, PromptInput, SessionEvent } from '@praxis/protocol'
+import { MockRuntimeBridge } from '../apps/cli/src/bridge/mockBridge.js'
 import { policyDecision } from '../apps/cli/src/policyFile.js'
 import { renderNonInteractive } from '../apps/cli/src/render/nonInteractive.js'
-import { isBackwardDeleteSequence, TerminalEditorModel } from '../apps/cli/src/ui/terminalEditor.js'
 import { executeSlashCommand } from '../apps/cli/src/ui/slashCommands.js'
-import { MockRuntimeBridge } from '../apps/cli/src/bridge/mockBridge.js'
+import { isBackwardDeleteSequence, TerminalEditorModel } from '../apps/cli/src/ui/terminalEditor.js'
+import { PraxisClient, type ProtocolConnection } from '../packages/client/src/index.js'
 
 test('multiline editor handles paste, history, Unicode backspace, and slash completion', () => {
   const editor = new TerminalEditorModel(['/compact'])
@@ -241,6 +241,24 @@ test('typed client negotiates v1 and rejects event sequence gaps', async () => {
   await client.close()
 })
 
+test('typed client fails only a slow consumer that exceeds its bounded event queue', async () => {
+  const connection = scriptedConnection('runtime-buffer', [], async function* () {
+    yield notification(1, { type: 'runtime_ready', runtimeId: 'runtime-buffer' })
+    yield notification(2, { type: 'runtime_warning', code: 'ONE', message: 'one' })
+    yield notification(3, { type: 'runtime_warning', code: 'TWO', message: 'two' })
+  })
+  const client = new PraxisClient(async () => connection, {
+    reconnectAttempts: 0,
+    eventBufferCapacity: 1,
+  })
+  const iterator = client.events()[Symbol.asyncIterator]()
+
+  assert.equal((await iterator.next()).value?.type, 'runtime_ready')
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  await assert.rejects(() => iterator.next(), { name: 'EventBufferOverflowError' })
+  await client.close()
+})
+
 test('typed client rejects schema-invalid connection results', async () => {
   const connection: ProtocolConnection = {
     async request<T>(): Promise<T> {
@@ -254,6 +272,158 @@ test('typed client rejects schema-invalid connection results', async () => {
   const client = new PraxisClient(async () => connection, { reconnectAttempts: 0 })
 
   await assert.rejects(() => client.connect(), /Protocol schema validation failed/)
+  await client.close()
+})
+
+test('typed client exposes resume, follow-up, steer, and abort Runtime controls', async () => {
+  const requests: JsonRpcRequest[] = []
+  const connection: ProtocolConnection = {
+    async request<T>(request: JsonRpcRequest): Promise<T> {
+      requests.push(request)
+      switch (request.method) {
+        case 'initialize':
+          return {
+            protocolVersion: 1,
+            supportedProtocolVersions: [1],
+            runtime: { name: 'runtime', version: '1', runtimeId: 'runtime-controls' },
+            capabilities: {},
+          } as T
+        case 'events.subscribe':
+          return {
+            subscriptionId: 'subscription-1',
+            nextSequence: 1,
+            replaySupported: false,
+          } as T
+        case 'session.resume':
+          return {
+            sessionId: 'session-controls',
+            state: 'idle',
+            cwd: 'D:/workspace',
+            provider: 'mock',
+            model: 'mock-v1',
+          } as T
+        case 'session.follow_up':
+          return { runId: 'run-controls', accepted: true } as T
+        case 'session.steer':
+          return { accepted: true, applyAt: 'next_safe_boundary' } as T
+        default:
+          return { accepted: true } as T
+      }
+    },
+    async *notifications() {
+      yield notification(1, {
+        type: 'prompt_started',
+        sessionId: 'session-controls',
+        runId: 'run-controls',
+        prompt: 'Continue.',
+      })
+      yield notification(2, { type: 'prompt_completed', runId: 'run-controls' })
+    },
+    async close() {},
+  }
+  const client = new PraxisClient(async () => connection, { reconnectAttempts: 0 })
+
+  await client.resumeSession('session-controls')
+  const events: SessionEvent[] = []
+  for await (const event of client.followUp({
+    sessionId: 'session-controls',
+    text: 'Continue.',
+    agent: { name: 'reviewer', instructions: 'Review the current changes.' },
+  })) {
+    events.push(event)
+  }
+  await client.steer('session-controls', 'run-controls', 'Check one more edge case.')
+  await client.abort('run-controls')
+
+  assert.deepEqual(
+    requests.map(({ method }) => method),
+    [
+      'initialize',
+      'events.subscribe',
+      'session.resume',
+      'session.follow_up',
+      'session.steer',
+      'session.abort',
+    ],
+  )
+  const followUpRequest = requests.find(({ method }) => method === 'session.follow_up')
+  assert.ok(followUpRequest)
+  assert.deepEqual((followUpRequest.params as PromptInput).agent, {
+    name: 'reviewer',
+    instructions: 'Review the current changes.',
+  })
+  assert.deepEqual(
+    events.map(({ type }) => type),
+    ['prompt_started', 'prompt_completed'],
+  )
+  await client.close()
+})
+
+test('typed client multiplexes interleaved concurrent Run streams without losing early events', async () => {
+  const queue = new NotificationQueue()
+  let sequence = 1
+  let promptRequests = 0
+  const connection: ProtocolConnection = {
+    async request<T>(request: JsonRpcRequest): Promise<T> {
+      if (request.method === 'initialize') {
+        return {
+          protocolVersion: 1,
+          supportedProtocolVersions: [1],
+          runtime: { name: 'runtime', version: '1', runtimeId: 'runtime-multiplex' },
+          capabilities: {},
+        } as T
+      }
+      if (request.method === 'events.subscribe') {
+        return {
+          subscriptionId: 'subscription-1',
+          nextSequence: 1,
+          replaySupported: false,
+        } as T
+      }
+      if (request.method === 'session.prompt') {
+        promptRequests += 1
+        const runId = `run-${promptRequests}`
+        const params = request.params as PromptInput
+        queue.push(
+          notification(sequence++, {
+            type: 'prompt_started',
+            sessionId: params.sessionId,
+            runId,
+            prompt: params.text,
+          }),
+        )
+        if (promptRequests === 2) {
+          queue.push(notification(sequence++, { type: 'text_delta', runId: 'run-2', text: 'B' }))
+          queue.push(notification(sequence++, { type: 'text_delta', runId: 'run-1', text: 'A' }))
+          queue.push(notification(sequence++, { type: 'prompt_completed', runId: 'run-2' }))
+          queue.push(notification(sequence++, { type: 'prompt_completed', runId: 'run-1' }))
+        }
+        return { runId, accepted: true } as T
+      }
+      throw new Error(`Unexpected method: ${request.method}`)
+    },
+    notifications: () => queue,
+    async close() {
+      queue.close()
+    },
+  }
+  const client = new PraxisClient(async () => connection, { reconnectAttempts: 0 })
+
+  const [first, second] = await Promise.all([
+    collectEvents(client.prompt({ sessionId: 'session-1', text: 'First.' })),
+    collectEvents(client.prompt({ sessionId: 'session-2', text: 'Second.' })),
+  ])
+
+  assert.deepEqual(
+    first.map(({ type }) => type),
+    ['prompt_started', 'text_delta', 'prompt_completed'],
+  )
+  assert.deepEqual(
+    second.map(({ type }) => type),
+    ['prompt_started', 'text_delta', 'prompt_completed'],
+  )
+  assert.equal(first.find(isTextDelta)?.runId, 'run-1')
+  assert.equal(second.find(isTextDelta)?.runId, 'run-2')
   await client.close()
 })
 
@@ -428,6 +598,45 @@ async function* events(): AsyncIterable<SessionEvent> {
   }
 }
 
+async function collectEvents(events: AsyncIterable<SessionEvent>): Promise<SessionEvent[]> {
+  const collected: SessionEvent[] = []
+  for await (const event of events) collected.push(event)
+  return collected
+}
+
+class NotificationQueue implements AsyncIterable<EventNotification> {
+  readonly #values: EventNotification[] = []
+  readonly #waiters: Array<(result: IteratorResult<EventNotification>) => void> = []
+  #closed = false
+
+  push(value: EventNotification): void {
+    const waiter = this.#waiters.shift()
+    if (waiter) waiter({ done: false, value })
+    else this.#values.push(value)
+  }
+
+  close(): void {
+    this.#closed = true
+    for (const waiter of this.#waiters.splice(0)) waiter({ done: true, value: undefined })
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<EventNotification> {
+    while (true) {
+      const value = this.#values.shift()
+      if (value !== undefined) {
+        yield value
+        continue
+      }
+      if (this.#closed) return
+      const result = await new Promise<IteratorResult<EventNotification>>((resolve) => {
+        this.#waiters.push(resolve)
+      })
+      if (result.done) return
+      yield result.value
+    }
+  }
+}
+
 function scriptedConnection(
   runtimeId: string,
   requests: JsonRpcRequest[],
@@ -472,4 +681,8 @@ function notification(sequence: number, event: SessionEvent): EventNotification 
       event,
     },
   }
+}
+
+function isTextDelta(event: SessionEvent): event is Extract<SessionEvent, { type: 'text_delta' }> {
+  return event.type === 'text_delta'
 }

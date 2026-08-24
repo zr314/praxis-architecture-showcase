@@ -9,7 +9,7 @@ state which record it replaces and why.
 
 ADR 解释“为什么长期采用某个方向”，不负责声明某项功能是否已经向普通用户开放。判断当前能力时，
 以[项目状态](../project-status.md)为准；理解当前代码组合时，再阅读[架构](../architecture.md)。特别是
-ADR-006 已被 ADR-007 取代。当前产品统一使用默认 `auto` Workflow；旧 `direct/supervisor` 只作迁移别名。
+ADR-006 已被 ADR-007 取代；ADR-008 又调整了 ADR-007 的模型可见编排面：默认 `auto` 使用 Agent Run Tree，完整 Workflow 降为显式可选上层。旧 `direct/supervisor` 只作迁移别名。
 
 ADRs explain durable decisions, not product availability. Use
 [Project Status](../project-status.md) for the shipping boundary.
@@ -21,3 +21,4 @@ ADRs explain durable decisions, not product availability. Use
 - [ADR-005：Kimi API 与 API Key 认证 / Kimi API with API-Key Authentication](ADR-005-kimi-api-key-auth.md)
 - [ADR-006：Supervisor 与 Subagent 执行边界 / Supervisor and Subagent Execution Boundaries](ADR-006-supervisor-subagent-boundaries.md)
 - [ADR-007：统一 Auto Workflow 与多 Agent](ADR-007-unified-auto-workflow.md)
+- [ADR-008：默认 Agent Run Tree，显式 Workflow 降为可选上层](ADR-008-agent-run-tree.md)

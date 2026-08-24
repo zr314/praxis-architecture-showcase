@@ -15,6 +15,7 @@ import type {
 } from '@praxis/core-sdk'
 import { CancellationTree } from '@praxis/core-sdk'
 import type { ArtifactStore } from '../artifacts/artifactStore.js'
+import type { ChildRuntimeMiddlewareProfile } from '../framework/runtimeMiddleware.js'
 import { earliestCanonicalDeadline } from '../longDurationTimer.js'
 import { LONG_LIVED_EXECUTION_POLICY_V1 } from '../longLivedExecutionPolicy.js'
 import {
@@ -70,6 +71,7 @@ type LocalWorkflowAgentWorkerOptionsV1 = Readonly<{
   launch: ChildRuntimeLaunch
   artifactStore: ArtifactStore
   permissionDecisions: ChildPermissionDecisionLifecyclePort
+  childMiddleware?: ChildRuntimeMiddlewareProfile
   home?: string
   progress?: (input: Readonly<{ nodeId: string; event: unknown }>) => void
   recordExecutionSnapshot?: (
@@ -77,6 +79,10 @@ type LocalWorkflowAgentWorkerOptionsV1 = Readonly<{
     ref: Readonly<{ id: string; version: 1; digest: `sha256:${string}` }>,
   ) => Promise<void>
   resolveInputRefs?: (claim: WorkflowTaskClaimV1) => Promise<readonly WorkflowArtifactRefV1[]>
+  resolveInstructions?: (
+    claim: WorkflowTaskClaimV1,
+  ) => Promise<readonly Readonly<{ messageId: string; text: string }>[]>
+  acknowledgeInstruction?: (claim: WorkflowTaskClaimV1, messageId: string) => Promise<void>
 }>
 
 type PreparedWorkspaceIsolationV1 =
@@ -331,7 +337,14 @@ export class LocalWorkflowAgentWorkerV1 implements WorkflowAgentWorkerPortV1 {
     const childParentRoot = join(this.#home, 'children', this.options.parentRunId)
     await mkdir(childParentRoot, { recursive: true })
     const childRoot = join(childParentRoot, childRunId)
+    const queuedInstructions = (await this.options.resolveInstructions?.(claim)) ?? []
     const objective = String(task.payload.objective)
+    const instructionSuffix =
+      queuedInstructions.length === 0
+        ? ''
+        : `\n\nDurable parent instructions received before launch:\n${queuedInstructions
+            .map(({ text }) => `- ${text}`)
+            .join('\n')}`
     const result = await this.#host.run({
       packet: {
         schemaVersion: 1,
@@ -342,7 +355,7 @@ export class LocalWorkflowAgentWorkerV1 implements WorkflowAgentWorkerPortV1 {
         step: {
           stepId: task.nodeId,
           title: workflowStepTitle(objective),
-          instructions: `${assembly.instructions}\n\nComplete the delegated objective using only the effective capabilities. Return ${assembly.result.format} content inside the required result envelope.`,
+          instructions: `${assembly.instructions}\n\nComplete the delegated objective using only the effective capabilities. Return ${assembly.result.format} content inside the required result envelope.${instructionSuffix}`,
         },
         constraints: [
           'Stay inside the declared workspace and capability grant.',
@@ -388,6 +401,9 @@ export class LocalWorkflowAgentWorkerV1 implements WorkflowAgentWorkerPortV1 {
           retention: 'retain_on_failure',
         },
         provider: bundle.provider.target,
+        ...(this.options.childMiddleware === undefined
+          ? {}
+          : { middleware: this.options.childMiddleware }),
         ...(artifactAccess === undefined ? {} : { artifactAccess }),
         reasoningEffort: assembly.reasoningEffort,
         capabilityBundleDigest: bundle.digest,
@@ -399,6 +415,11 @@ export class LocalWorkflowAgentWorkerV1 implements WorkflowAgentWorkerPortV1 {
         },
       },
     })
+    await Promise.all(
+      queuedInstructions.map(({ messageId }) =>
+        this.options.acknowledgeInstruction?.(claim, messageId),
+      ),
+    )
     const storedResult = await this.options.artifactStore.put(
       result,
       'application/vnd.praxis.workflow-agent-result+json',
@@ -406,6 +427,7 @@ export class LocalWorkflowAgentWorkerV1 implements WorkflowAgentWorkerPortV1 {
     const criterionFailed = result.checks.some(({ status }) => status !== 'passed')
     const workerResult: WorkflowAgentWorkerResultV1 = {
       ok: result.status === 'succeeded' && !criterionFailed,
+      cancelled: result.status === 'cancelled',
       summary: result.summary,
       output: {
         ...(JSON.parse(JSON.stringify(result)) as Record<string, unknown>),
@@ -440,6 +462,10 @@ export class LocalWorkflowAgentWorkerV1 implements WorkflowAgentWorkerPortV1 {
 
   async cancel(claim: WorkflowTaskClaimV1): Promise<void> {
     this.#host.cancel(claim.task.attemptId, 'parent_cancelled')
+  }
+
+  async steer(claim: WorkflowTaskClaimV1, instruction: string): Promise<boolean> {
+    return this.#host.steer(claim.task.attemptId, instruction)
   }
 
   private async prepareIsolation(

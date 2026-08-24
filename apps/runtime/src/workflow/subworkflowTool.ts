@@ -124,6 +124,7 @@ export class SubworkflowToolV1 implements RuntimeTool {
       const resultRef = outcome.artifacts?.[0]
       const childCompleted = await this.orchestrator.complete(childClaim, {
         ok: outcome.ok,
+        cancelled: outcome.cancelled,
         errorCode: outcome.errorCode,
         resultRef,
         usage: outcome.usage,
@@ -131,6 +132,7 @@ export class SubworkflowToolV1 implements RuntimeTool {
       this.onProjection?.(childCompleted)
       const parentCompleted = await this.orchestrator.complete(parentClaim, {
         ok: outcome.ok,
+        cancelled: outcome.cancelled,
         errorCode: outcome.errorCode,
         resultRef,
       })

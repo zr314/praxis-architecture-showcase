@@ -59,8 +59,32 @@ test('ReadTool returns explicit half-open pagination ranges', async () => {
       assert.equal(output.rangeStart, fixture.rangeStart)
       assert.equal(output.rangeEnd, fixture.rangeEnd)
       assert.equal(output.nextOffset, fixture.nextOffset)
+      assert.equal(output.hasBom, false)
       assert.match(result.summary, new RegExp(`\\[${fixture.rangeStart}, ${fixture.rangeEnd}\\)`))
     }
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test('ReadTool exposes a UTF-8 BOM that decoded text would otherwise hide', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'praxis-read-bom-'))
+  try {
+    await writeFile(join(workspace, 'bom.json'), Buffer.from('\ufeff{"ok":true}', 'utf8'))
+    const result = await new ReadTool().execute({
+      name: 'read',
+      input: { path: 'bom.json' },
+      cwd: workspace,
+      signal: new AbortController().signal,
+    })
+
+    assert.equal(result.ok, true)
+    assert.ok(result.output && typeof result.output === 'object')
+    const output = result.output as Record<string, unknown>
+    assert.equal(output.content, '{"ok":true}')
+    assert.equal(output.encoding, 'utf-8')
+    assert.equal(output.hasBom, true)
+    assert.match(result.summary, /UTF-8 BOM detected/u)
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }

@@ -1,7 +1,7 @@
 {
   "name": "@praxis/client",
   "version": "0.2.0",
-  "description": "Typed reconnectable client for the Praxis NDJSON protocol.",
+  "description": "High-level Agent SDK and typed reconnectable client for the Praxis Runtime.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

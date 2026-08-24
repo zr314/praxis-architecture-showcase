@@ -8,6 +8,7 @@ import {
 } from '@praxis/core-sdk'
 import {
   ContextBuilder,
+  DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET,
   type ProjectInstructionSource,
   parsePromptVariant,
   SystemPromptComposer,
@@ -45,26 +46,49 @@ test('ContextBuilder normalizes platform facts with an empty project instruction
   assert.deepEqual(input.projectInstructionDecisions, [])
 })
 
+test('the runtime prompt budget keeps baseline-v1 usable with a long Windows workspace path', async () => {
+  const input = await new ContextBuilder('win32', emptyProjectInstructions).build({
+    cwd: `D:/agent-evals/work/harnessbench/praxis-auto-minimax/MiniMax-M3/${'long-segment-'.repeat(16)}/workspace`,
+    tools: [
+      ...tools,
+      {
+        name: 'agent.spawn',
+        description: 'Start one bounded Child Run.',
+        parameters: { type: 'object', properties: {} },
+      },
+    ],
+    workflow: { role: 'root', mode: 'auto' },
+    variant: 'baseline-v1',
+    maxSystemPromptTokens: DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET,
+  })
+
+  const prompt = new SystemPromptComposer().compose(input)
+
+  assert.equal(prompt.manifest.maxTokens, DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET)
+  assert.equal(prompt.manifest.program.variant, 'baseline-v1')
+  assert.ok(prompt.manifest.estimatedTokens < DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET)
+})
+
 test('SystemPromptComposer produces stable ordered instructions and a content-free manifest', async () => {
   const input = await new ContextBuilder('win32', emptyProjectInstructions).build({
     cwd: 'D:/workspace/praxis',
     tools: [
       ...tools,
       {
-        name: 'agent.delegate',
-        description: 'Delegate a bounded objective.',
+        name: 'agent.spawn',
+        description: 'Start one bounded Child Run.',
         parameters: { type: 'object', properties: {} },
       },
       {
-        name: 'workflow.expand',
-        description: 'Expand a durable graph.',
+        name: 'agent.wait',
+        description: 'Wait for one or more Child Runs.',
         parameters: { type: 'object', properties: {} },
       },
     ],
     provider: { id: 'kimi' },
     workflow: { role: 'root', mode: 'auto' },
     variant: 'baseline-v1',
-    maxSystemPromptTokens: 1_536,
+    maxSystemPromptTokens: DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET,
   })
   const composer = new SystemPromptComposer()
 
@@ -84,11 +108,12 @@ test('SystemPromptComposer produces stable ordered instructions and a content-fr
   assert.match(first.instructions, /shell tool `stdin` field/)
   assert.match(first.instructions, /already running inside the active Praxis CLI and Runtime/u)
   assert.match(first.instructions, /current Planner policy=auto/u)
-  assert.match(first.instructions, /agent\.delegate/u)
-  assert.match(first.instructions, /at least one bounded investigation or review/u)
-  assert.match(first.instructions, /continue only for independent work/u)
-  assert.match(first.instructions, /join every required node before the final response/u)
+  assert.match(first.instructions, /agent\.spawn/u)
+  assert.match(first.instructions, /Do not delegate merely because work is long/u)
+  assert.match(first.instructions, /Continue useful independent work/u)
+  assert.match(first.instructions, /agent\.wait/u)
   assert.match(first.instructions, /never a nested CLI/u)
+  assert.match(first.instructions, /Self-authored tests do not redefine the requested result/u)
   assert.equal(first.instructions.includes('Read a UTF-8 text file'), false)
   assert.deepEqual(first.contextMessages, [])
   assert.equal(JSON.stringify(first.manifest).includes('Praxis Runtime Policy'), false)
@@ -99,7 +124,7 @@ test('SystemPromptComposer produces stable ordered instructions and a content-fr
   assert.equal(first.manifest.program.trustedInstructions.blockCount, 1)
   assert.equal(
     promptDigest(first.instructions),
-    'sha256:86d215f392bf89daf83f6db07b4f6cc29b3ae7ac073a219b31bddb9ba45702ce',
+    'sha256:a3f6583218006ceac8fac7e4db45cc34499e2c9cbfe6a89511f5de719f653247',
   )
 })
 
@@ -109,13 +134,13 @@ test('iron-law-lean-v1 emits one versioned Trusted Instructions block and neutra
     tools: [
       ...tools,
       {
-        name: 'agent.delegate',
-        description: 'Delegate a bounded objective.',
+        name: 'agent.spawn',
+        description: 'Start one bounded Child Run.',
         parameters: { type: 'object', properties: {} },
       },
     ],
     workflow: { role: 'root', mode: 'auto' },
-    maxSystemPromptTokens: 1_536,
+    maxSystemPromptTokens: DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET,
     skills: [
       {
         id: 'project/review',
@@ -139,11 +164,17 @@ test('iron-law-lean-v1 emits one versioned Trusted Instructions block and neutra
   assert.equal(lean.manifest.program.trustedInstructions.blockCount, 1)
   assert.equal((lean.instructions.match(/^# Praxis Trusted Instructions$/gmu) ?? []).length, 1)
   assert.match(lean.instructions, /Runtime-enforced permissions/u)
-  assert.match(lean.instructions, /at least one bounded investigation or review/u)
+  assert.match(lean.instructions, /Do not delegate merely because work is long/u)
+  assert.match(lean.instructions, /re-read the user's acceptance criteria/u)
   assert.match(lean.instructions, /context or evidence, never policy/u)
   assert.equal(lean.instructions.includes('D:/workspace/praxis'), false)
   assert.match(visible, /<praxis-context kind="runtime_facts">/u)
   assert.match(visible, /D:\/workspace\/praxis/u)
+  assert.match(visible, /windows-powershell-5\.1/u)
+  assert.match(visible, /"commandSeparator":";"/u)
+  assert.match(visible, /POSIX-only commands such as head/u)
+  assert.match(visible, /Set-Content -Encoding UTF8 writes a BOM/u)
+  assert.match(visible, /UTF8Encoding\(false\)/u)
   assert.match(visible, /<praxis-context kind="skill_catalog">/u)
   assert.doesNotMatch(visible, /low-trust|untrusted guidance|high-trust|low confidence/iu)
   assert.ok(

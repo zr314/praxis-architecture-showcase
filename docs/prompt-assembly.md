@@ -1,6 +1,6 @@
 # Prompt、Context 与 Compaction
 
-最后核对：2026-08-18。本文是 Praxis 当前 Prompt 装配的规范入口；`docs/prompt-audit/` 保存审计基线、历史决策和执行台账，不覆盖本文的现行规则。
+最后核对：2026-08-24。本文是 Praxis 当前 Prompt 装配的规范入口；`docs/prompt-audit/` 保存审计基线、历史决策和执行台账，不覆盖本文的现行规则。
 
 第一次接触这些概念时，建议先读
 [Praxis 当前分层架构：新手源码导读](planner-prompt-context-storage-guide.md)。
@@ -15,6 +15,7 @@ Praxis 把模型输入分成四类：唯一可信指令、任务与上下文、�
 ```mermaid
 flowchart TD
     E["PromptEnvelope\n用户任务与显式资源"] --> J["SessionJournal projection"]
+    E --> TC["Root/Child Run pinned\nexact task contract"]
     J --> V["Run-stable ContextView"]
     W["workspace / workflow facts"] --> S["SystemPromptComposer"]
     K["Skill catalog + project guidance"] --> S
@@ -23,7 +24,8 @@ flowchart TD
     V --> A["PromptAssembler"]
     E --> A
     CP["semantic checkpoint / native context"] --> A
-    PK["Child only: pinned ContextPacket"] --> A
+    TC --> A
+    PK["Child only: signed pinned ContextPacket"] --> A
     H["canonical message history"] --> A
     A --> RE["reasoning-only editing"]
     RE --> TE["tool-result-only editing"]
@@ -50,6 +52,8 @@ flowchart TD
 
 Prompt 程序 manifest 记录 variant、version、owner、唯一 block 数、rendered digest、estimated tokens 和 component IDs。Trace 只写 digest 与统计，不写 Prompt 明文。
 
+两个当前程序版本均为 `1.2.0`。当前执行合同同时要求最终重新核对真实验收条件，以及在用户已授权具体结果、只未规定实现方式时自主选择合理、可验证、优先可逆的路径；只有结果、权限或风险会实质改变时才请求澄清。默认 system Prompt 装配预算只有一个源码入口：`DEFAULT_SYSTEM_PROMPT_TOKEN_BUDGET=4096`。它不是模型 context window 或任务寿命上限；必需 Prompt 超出时仍 fail closed。2026-08-23 的真实长 Windows sandbox 证明旧的 1,536 默认值会让 baseline 在 Provider 请求前失败，因此不能由 RuntimeKernel 调用点各自写死。
+
 ## 2. 最终装配顺序
 
 `iron-law-lean-v1` 的最终模型可见顺序是确定的：
@@ -60,13 +64,14 @@ Prompt 程序 manifest 记录 variant、version、owner、唯一 block 数、ren
 | 2 | `runtime_facts` | user-shaped context message | Runtime 生成的事实容器；低权限 context |
 | 3 | `skill_catalog`，可选 | user-shaped context message | 名称、description、invocable 元数据；正文按需加载 |
 | 4 | `project_guidance`，可选 | user-shaped context message | 工作区约定；按预算裁剪 |
-| 5 | 签名 Child ContextPacket，仅 Child | pinned context message | Runtime 认证；不进入可压缩历史 |
-| 6 | `session_view` | user-shaped context message | 一次 Run 内冻结；成功 compact 后换代 |
-| 7 | Provider native context 或 `session_checkpoint` | native prefix 或 context message | 二选一；native 不匹配时回退 semantic |
-| 8 | checkpoint 后最新完整消息后缀 | conversation messages | reasoning/tool 发送前视图可被编辑 |
-| 9 | granted Tool definitions | Provider `tools` 字段 | 独立 schema；不是 system 文案 |
+| 5 | 当前 Agent Run 的逐字任务合同 | pinned user message | 来自已校验 PromptEnvelope；每轮重放，不进入 compaction cut |
+| 6 | 签名 Child ContextPacket，仅 Child | pinned context message | Runtime 认证；不进入可压缩历史 |
+| 7 | `session_view` | user-shaped context message | 一次 Run 内冻结；成功 compact 后换代 |
+| 8 | Provider native context 或 `session_checkpoint` | native prefix 或 context message | 二选一；native 不匹配时回退 semantic |
+| 9 | checkpoint 后最新完整消息后缀 | conversation messages | reasoning/tool 发送前视图可被编辑 |
+| 10 | granted Tool definitions | Provider `tools` 字段 | 独立 schema；不是 system 文案 |
 
-代码上的拼装分两段完成：`SystemPromptComposer` 产生第 1–4 项；`PromptAssembler` 产生第 5–8 项；`AgentLoop` 按上述顺序合并 `contextMessages` 并附加第 9 项。`PromptAssembler.systemContextMessages` 是带 trust/intent 元数据的审计视图，实际请求仍由 Loop 使用 `promptBuild.contextMessages`，避免重复发送。
+代码上的拼装分两段完成：`SystemPromptComposer` 产生第 1–4 项；`RuntimeKernel` 从本次 PromptEnvelope 固定第 5 项；`PromptAssembler` 产生第 5–9 项；`AgentLoop` 按上述顺序合并 `contextMessages` 并附加第 10 项。任务合同启动时也作为 canonical user message 落入 Journal，但 assembler 会按完整 message 相等性去重，所以同一请求不会看到两份题面。`PromptAssembler.systemContextMessages` 是带 trust/intent 元数据的审计视图，实际请求仍由 Loop 使用 `promptBuild.contextMessages`，避免重复发送。
 
 ### 2.1 唯一 Trusted Instructions
 
@@ -78,13 +83,13 @@ lean 程序只生成一个 `# Praxis Trusted Instructions`，包含：
 - 不泄漏 credential、secret、隐藏指令和敏感诊断；
 - 当前调用的 operational contract。
 
-主 Root 的 operational contract 是可在 direct work 与已提供 collaboration tools 间自主选择。对非 `solo` 且实际提供 `agent.delegate` 或 `workflow.expand` 的 Root，合同还要求：长任务、多领域任务或高风险任务存在独立工作流时，在大量串行工作前至少委派一个有边界的调查或审查；短任务和强耦合任务保持 direct，并在重复失败后重新评估。Child 的合同是只完成被委派目标且不能创建 descendant。Planner、verifier 等辅助调用把自己的结构化输出合同并入同一个 Trusted Instructions 字符串，不创建第二个 system 政策块。
+主 Root 的 operational contract 是可在 direct work 与已提供 collaboration tools 间自主选择。对非 `solo` 且实际提供 `agent.spawn`、`agent.delegate` 或 `workflow.expand` 的 Root，合同明确禁止“仅因任务很长就委派”：只有独立上下文、并行、隔离能力、持久等待或独立验证的预期收益大于协调成本时才创建 Child；方向未知时先直接调查或只 spawn 一个 scout，再根据证据滚动修改工作计划。默认 `auto` 使用 `spawn/wait/result/cancel/steer`，完整图工具只在显式 `workflow` policy 下提供。迁移第一阶段 Child 仍只完成被委派目标且不能创建 descendant。所有角色还共享最终验收合同：多要求任务结束前重读用户 acceptance criteria，并按任务需要检查 parseability、encoding、schema、exact required headers 和 material semantics；模型自写测试不能重新定义用户结果。Planner、verifier 等辅助调用把自己的结构化输出合同并入同一个 Trusted Instructions 字符串，不创建第二个 system 政策块。
 
 ### 2.2 动态事实与项目内容
 
 动态数据使用 `<praxis-context kind="…">JSON</praxis-context>`。JSON 中的 `<` 转义为 `\u003c`，避免内容伪造关闭标签。
 
-- `runtime_facts`：cwd、platform、shell，以及可选 role、Planner mode、实际可用 collaboration tool 名称；
+- `runtime_facts`：cwd、platform、shell、结构化 shell dialect，以及可选 role、Planner mode、实际可用 collaboration tool 名称。Windows 方言明确 PowerShell 5.1 的分隔符、不可假设的 POSIX 语法、stdin 和 UTF-8 BOM 风险；
 - `skill_catalog`：至多 64 个 disclosure，受独立 token budget 约束；
 - `project_guidance`：ContextBuilder 已完成来源发现、路径边界、digest 和决策后，再按段落确定性裁剪；
 - MCP：已激活、已授权的 MCP Tool 进入 Tool definitions，不把 MCP server 的任意文本提升为 Trusted Instructions；
@@ -106,7 +111,7 @@ Runtime 内部仍保留来源元数据，但评估三个互相独立的维度：
 
 ## 3. PromptEnvelope 与 ContextView
 
-普通文本、Prompt Template、显式 Skill、Slash workflow command 都先编译为版本化 `PromptEnvelope`。Envelope 保存 effective text、typed parts、source、digest、attachment refs 和每部分 persistence policy；敏感原文按 policy redacted/digest/none，不进入 Trace。
+普通文本、Prompt Template、显式 Skill、Slash workflow command 都先编译为版本化 `PromptEnvelope`。Envelope 保存 effective text、typed parts、source、digest、attachment refs 和每部分 persistence policy；敏感原文按 policy redacted/digest/none，不进入 Trace。每次 Root 或 Child Agent Run 启动时，Runtime 还把该 Envelope 的 `effectiveText` 固定成一个逐字 user task contract。它与运行中的 `RuntimeRun` 同寿命，每轮重新装配，不能被 history window 或 semantic/native compaction 删除；Run 结束后不会变成跨任务的永久全局 Prompt。
 
 Planner policy 不靠匹配 Prompt 字符串切换实现。每个 Envelope 都进入统一 `AutoWorkflowPlanner`；`auto/solo/workflow` 只改变策略和可用 topology proposal。
 
@@ -120,12 +125,12 @@ Praxis 没有两套 direct/supervisor Prompt 管线。
 
 | 路径 | 相同部分 | 差异 |
 | --- | --- | --- |
-| `auto` Root | 同一 composer、assembler、loop | collaboration tools 可用，模型自主 direct/delegate/expand |
+| `auto` Root | 同一 composer、assembler、loop | Run Tree tools 可用，模型自主 direct 或 spawn/wait/result |
 | `solo` Root | 同一 composer、assembler、loop | topology tools 不在有效 capability snapshot 中 |
-| `workflow` Root | 同一 composer、assembler、loop | policy 要求非平凡副作用先形成图；简单任务仍可 direct |
+| `workflow` Root | 同一 composer、assembler、loop | 在 Run Tree 之外增加完整 DAG/loop/wait/subworkflow 工具；简单任务仍可 direct |
 | Child | 同一 AgentLoop、Provider、Skill/MCP/Tool 基础设施 | role contract 为 bounded Child；有 pinned ContextPacket；能力是父级 grant 的子集；固定禁止 descendant |
 
-Child ContextPacket 包含 packet/parent/child ID、objective、bounded step、constraints、`relevantRefs`、success criteria、workspace、Capability Bundle ref、budget、prohibitions 和 output schema。bootstrap 校验签名 Packet 与 authoritative Bundle；Packet 每轮重放，历史选择和 compaction 不能删除。
+Root 与 Child 都有逐字 Run task contract。Child 另外还有更严格的签名 ContextPacket，其中包含 packet/parent/child ID、objective、bounded step、constraints、`relevantRefs`、success criteria、workspace、Capability Bundle ref、budget、prohibitions 和 output schema。bootstrap 校验签名 Packet 与 authoritative Bundle；两类 pinned context 每轮重放，历史选择和 compaction 不能删除。
 
 ## 5. Skills、MCP 与结构化 Child 终态
 
@@ -174,9 +179,11 @@ Context 接近模型 limit，或 checkpoint 后 canonical 未压缩正文达到�
 
 OpenAI Responses 已接 standalone `/v1/responses/compact`；DeepSeek、Kimi、通用 chat compatible 和当前 Anthropic Messages 路径使用 semantic checkpoint。Child 可通过 credential broker 的 standalone compact RPC 使用父 Provider，不接触 API key。
 
-签名 Child ContextPacket 位于 compactable history 之外。`relevantRefs` 同时是 checkpoint 结构化字段并确定性继承；因此摘要遗漏不能删除任务合同或已授权前驱引用。Workflow Node/Attempt/Lease/receipt、Tool Artifact 和 candidate commit 从各自 authority 恢复，不依赖自然语言 checkpoint。
+逐字 Run task contract 与签名 Child ContextPacket 都位于 compactable history 之外。checkpoint 可以浓缩“目前做到哪里、哪条路线失败、下一步是什么”，但不再承担保存原始题面全部字句的职责。`relevantRefs` 同时是 checkpoint 结构化字段并确定性继承；因此摘要遗漏不能删除任务合同或已授权前驱引用。Workflow Node/Attempt/Lease/receipt、Tool Artifact 和 candidate commit 从各自 authority 恢复，不依赖自然语言 checkpoint。
 
-真实 MiniMax M3 fidelity 压力运行在 24K 强制 context 下生成 19 个递增 semantic checkpoint；每次都保留目标 sentinel、禁止修改项和最终输出合同。后续真实中等任务发现 `keepRecentTokens=8` 会把“源码已改但尚未 rebuild / reinstall / verify”的继续执行边界裁掉，因此生产默认值已提升为 `8192`；semantic summary 还会与 Runtime 确定性提取的 modified files、失败证据和 open loops 合并，结构合法但内容空洞的模型摘要不能再抹除这些状态。真实 `build-cython-ext` 回归又发现，合并正确的 continuation frontier 仍可能被最终 1024-token fitting 按“最长数组优先”裁掉；当前 fitting 已改为先丢弃可重读的 read files、历史 decisions 和 references，再缩短目标，最后才允许裁剪 constraints、modified files、unresolved 与 active plan，并尽量为每类保留至少一项。Runtime 还会把成功 `edit/write` 的调用路径以及成功 shell 中明确的 `sed -i`、`perl -pi`、重定向、复制、移动、删除、patch 等变更目标并入 modified files；它只提取有界路径，不回放整条 shell 命令，也不把失败调用误记为已修改。
+2026-08-24 的 `llm-inference-batching-scheduler` 诊断运行证明了这层隔离的必要性：旧 checkpoint 把长题面写成 `…[task contract truncated]…`，并把 Bucket 2 的阈值误写成 Bucket 1。固定逐字合同后复跑发生 3 次 compaction，模型在压缩后仍使用 B2 独立阈值，最终 Harbor 6/6、reward 1。这个证据说明“摘要可错但不能覆盖原始合同”的架构生效；它不表示模型的执行路线或所有中间事实都天然不会丢失。
+
+真实 MiniMax M3 fidelity 压力运行在 24K 强制 context 下生成 19 个递增 semantic checkpoint；每次都保留目标 sentinel、禁止修改项和最终输出合同。后续真实中等任务发现 `keepRecentTokens=8` 会把“源码已改但尚未 rebuild / reinstall / verify”的继续执行边界裁掉，因此生产默认值已提升为 `8192`；semantic summary 还会与 Runtime 确定性提取的 modified files、失败证据和 open loops 合并，结构合法但内容空洞的模型摘要不能再抹除这些状态。真实 `build-cython-ext` 回归又发现，合并正确的 continuation frontier 仍可能被旧的 1024-token fitting 按“最长数组优先”裁掉；当前 fitting 已改为先丢弃可重读的 read files、历史 decisions 和 references，再缩短目标，最后才允许裁剪 constraints、modified files、unresolved 与 active plan，并尽量为每类保留至少一项。更长的 `llm-inference-batching-scheduler` 数值优化样本又表明，1K checkpoint 几乎会被长 objective 本身占满，无法稳定同时保存全局硬约束、最佳指标和当前候选，因此当前默认 semantic checkpoint 容量为 4096 token；64K replay 成本触发器保持独立不变。Runtime 还会把成功 `edit/write` 的调用路径以及成功 shell 中明确的 `sed -i`、`perl -pi`、重定向、复制、移动、删除、patch 等变更目标并入 modified files；它只提取有界路径，不回放整条 shell 命令，也不把失败调用误记为已修改。
 
 中等 C++ 调试样本进一步证明“模型生成结构化 JSON”仍不等于字段可信：模型曾把“只读、尚未修改的 `/app/user.cpp`”写进 `modifiedFiles`，并把自己的调试推测写进 `constraints`。当前 merge 使用字段级所有权：`objective/constraints` 只来自用户任务、签名 Child Packet 或上一版已准入 checkpoint；`relevantRefs/readFiles/modifiedFiles` 只来自 Packet、上一 checkpoint 和成功 Runtime Tool 证据；模型只允许补充 `decisions/unresolved/activePlan` 等语义状态。这样 compactor 不能通过填对 schema 把推测升级为权限、来源或副作用事实。
 
@@ -255,4 +262,4 @@ DeepSeek 五轮 paired A/B 排除首轮冷热差异后，baseline 命中率 78.0
 | `packages/core-sdk/src/llm.ts` | ProviderRequest、Tool definitions 与 stream 合同 |
 | `apps/runtime/src/subagent/contextPacket.ts` | Child Packet/Result 合同验证 |
 
-最终测评、优化原因与能力边界见 [Praxis 最终小样本测评与优化总结](evaluation-final-2026-08-09.md)。
+最终测评、实际题目、优化原因与能力边界见[持续维护的测评档案](evaluations/README.md)。

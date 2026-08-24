@@ -88,12 +88,14 @@ praxis
 
 ## 5. 默认 auto 到底做什么
 
-无需输入 `/planner auto`，也无需先切换“Supervisor”。新 Session 默认就是 `auto`，TUI 右侧会显示 `PLANNER AUTO`。每条 Prompt 都创建一个持久 Workflow 和根 AgentTask。可信系统提示会明确告诉根模型：它已经位于 Praxis Runtime 内、当前策略是 `auto`，并可自主选择：
+无需输入 `/planner auto`，也无需先切换“Supervisor”。新 Session 默认就是 `auto`，TUI 右侧会显示 `PLANNER AUTO`。每条 Prompt 当前会创建一个内部持久 execution container 和根 AgentTask，用来承载 Lease、恢复和 Artifact；模型不需要维护外层 DAG。可信系统提示会明确告诉根模型：它已经位于 Praxis Runtime 内、当前策略是 `auto`，并可自主选择：
 
 - 简单问题：直接回答；
 - 普通代码任务：自己调用 read/edit/shell；
-- 需要独立调查或审查：调用 `agent.delegate`；
-- 多步骤、并行或有依赖：调用 `workflow.expand`。
+- 需要独立调查、并行工作或审查：调用 `agent.spawn`，继续自己的工作；
+- 读取或等待 Child：调用 `agent.result` / `agent.wait`；
+- 路线改变：调用 `agent.steer` / `agent.cancel`；
+- 只有显式切换 `workflow` policy，才使用完整 DAG、loop 和 subworkflow 工具。
 
 模型只有提案权。Runtime 会检查权限、Profile、预算、路径、依赖和副作用，然后才启动 Child。
 
@@ -267,7 +269,7 @@ npm run install:local
 ## 下一步阅读
 
 - [README：全部功能](../README.md)
-- [统一 Workflow 与多 Agent](workflow-platform.md)
+- [Agent Run Tree 与可选 Workflow](workflow-platform.md)
 - [CLI 完整参考](cli-reference.md)
 - [Provider 配置](provider-setup.md)
 - [Session 恢复](session-recovery.md)
