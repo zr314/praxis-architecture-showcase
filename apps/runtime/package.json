@@ -55,7 +55,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/core": "2.0.0-beta.5",
+    "@modelcontextprotocol/core": "2.0.0",
     "@praxis/client": "^0.2.0",
     "@praxis/core-sdk": "^0.2.0",
     "@praxis/plugin-protocol": "^0.2.0",
