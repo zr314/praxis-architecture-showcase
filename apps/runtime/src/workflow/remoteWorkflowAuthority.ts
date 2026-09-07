@@ -3,10 +3,13 @@ import { createServer, type Server } from 'node:http'
 import type {
   AgentProfileV1,
   ArtifactReference,
+  ReviewPlanExecutionRequestV1,
+  ReserveWorkflowEffectRequestV1,
   VersionedWorkflowRefV1,
   WorkflowAuthorityPortV1,
   WorkflowEffectAdmissionV1,
   WorkflowEffectReceiptV1,
+  WorkflowEffectRequestV1,
   WorkflowEventV1,
   WorkflowHumanTaskV1,
   WorkflowMessageInputV1,
@@ -19,6 +22,7 @@ import type {
   WorkflowTaskClaimV1,
   WorkflowTaskKindV1,
   WorkflowTaskLeaseV1,
+  WorkflowTaskSpecV1,
   WorkflowTaskStateV1,
   WorkflowTaskV1,
   WorkflowTimerV1,
@@ -156,6 +160,15 @@ export class RemoteWorkflowAuthorityClientV1 implements WorkflowAuthorityPortV1 
   ) {
     return this.call<readonly WorkflowTaskV1[]>('listTasks', options)
   }
+  admitTaskForRequest(input: {
+    request: ReviewPlanExecutionRequestV1
+    taskSpec: WorkflowTaskSpecV1
+  }) {
+    return this.call<{ task: WorkflowTaskV1; replayed: boolean }>('admitTaskForRequest', input)
+  }
+  getTaskByRequestId(workflowId: string, requestId: string) {
+    return this.call<WorkflowTaskV1 | undefined>('getTaskByRequestId', workflowId, requestId)
+  }
   bindTaskCapabilityBundle(
     taskId: string,
     leaseToken: string,
@@ -223,6 +236,26 @@ export class RemoteWorkflowAuthorityClientV1 implements WorkflowAuthorityPortV1 
   }
   listEffectReceipts(workflowId: string) {
     return this.call<readonly WorkflowEffectReceiptV1[]>('listEffectReceipts', workflowId)
+  }
+  reserveEffectRequest(input: ReserveWorkflowEffectRequestV1) {
+    return this.call<{ request: WorkflowEffectRequestV1; replayed: boolean }>(
+      'reserveEffectRequest',
+      input,
+    )
+  }
+  getEffectRequestByRequestId(workflowId: string, requestId: string) {
+    return this.call<WorkflowEffectRequestV1 | undefined>(
+      'getEffectRequestByRequestId',
+      workflowId,
+      requestId,
+    )
+  }
+  getEffectReceiptByRequestId(workflowId: string, requestId: string) {
+    return this.call<WorkflowEffectReceiptV1 | undefined>(
+      'getEffectReceiptByRequestId',
+      workflowId,
+      requestId,
+    )
   }
   reserveEffect(
     workflowId: string,
@@ -349,6 +382,8 @@ const REMOTE_METHODS = new Set([
   'events',
   'list',
   'listTasks',
+  'admitTaskForRequest',
+  'getTaskByRequestId',
   'bindTaskCapabilityBundle',
   'claim',
   'heartbeat',
@@ -362,6 +397,9 @@ const REMOTE_METHODS = new Set([
   'expireDueHumanTasks',
   'getEffectReceipt',
   'listEffectReceipts',
+  'reserveEffectRequest',
+  'getEffectRequestByRequestId',
+  'getEffectReceiptByRequestId',
   'reserveEffect',
   'markEffectCompensated',
   'listHumanTasks',

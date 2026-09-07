@@ -51,6 +51,15 @@ export class DeterministicSummaryGenerator implements CompactionSummaryGenerator
 
   async generate(input: CompactionGeneratorInput): Promise<CompactionSummary> {
     const summary = cloneSummary(input.previous)
+    const latestAssistant = [...input.messages]
+      .reverse()
+      .find(
+        (message) => message.role === 'assistant' && contentText(message.content).trim().length > 0,
+      )
+    if (latestAssistant !== undefined) {
+      summary.activePlan = summary.activePlan.filter((entry) => !entry.startsWith('intent: '))
+      summary.unresolved = summary.unresolved.filter((entry) => !entry.startsWith('intent: '))
+    }
     if (input.plan) {
       summary.objective ??= bounded(input.plan.objective)
       addMany(
@@ -77,7 +86,11 @@ export class DeterministicSummaryGenerator implements CompactionSummaryGenerator
       }
       if (message.role === 'assistant') {
         collectSuccessfulToolCallState(summary, message, successfulCalls)
-        collectAssistantContinuationState(summary, contentText(message.content))
+        collectAssistantContinuationState(
+          summary,
+          contentText(message.content),
+          message === latestAssistant,
+        )
         continue
       }
       if (message.role === 'user' && message.intent !== 'context' && message.trust !== 'low') {
@@ -112,6 +125,7 @@ export type CompactionAttemptResult =
     }>
   | Readonly<{
       status: 'low_gain'
+      usage?: ProviderUsage
       checkpoint?: SummaryCheckpoint
       previousEnd: number
       candidateEnd: number
@@ -247,6 +261,7 @@ export class CompactionService {
     if (estimatedGainTokens < this.#compactionPolicy.minimumGain) {
       return {
         status: 'low_gain',
+        ...(generated.usage === undefined ? {} : { usage: generated.usage }),
         ...(input.previous === undefined ? {} : { checkpoint: input.previous }),
         previousEnd,
         candidateEnd: messageEnd,
@@ -292,6 +307,7 @@ export class CompactionService {
       await new DeterministicSummaryGenerator().generate(input),
     )
     const generatorInput = { ...input, baseline: runtimeBaseline }
+    const generatorStartedAt = Date.now()
     try {
       const generated = await this.generateBounded(this.#generator, generatorInput)
       return {
@@ -305,14 +321,18 @@ export class CompactionService {
     } catch (error) {
       if (errorCode(error) === 'COMPACTION_CANCELLED') throw error
       if (!this.#fallbackGenerator) throw error
+      const failedGeneratorDurationMs = Math.max(0, Date.now() - generatorStartedAt)
       const generated = await this.generateBounded(this.#fallbackGenerator, generatorInput)
       return {
         ...generated,
+        ...mergeKnownCompactionUsage(error, generated.usage),
         summary: mergeSummaryWithRuntimeBaseline(generated.summary, runtimeBaseline),
         provenance: {
           schemaVersion: 1,
           generator: cloneGeneratorIdentity(this.#fallbackGenerator.identity),
           fallbackFrom: cloneGeneratorIdentity(this.#generator.identity),
+          failureCode: safeCompactionFailureCode(error),
+          failedGeneratorDurationMs,
         },
       }
     }
@@ -330,6 +350,7 @@ export class CompactionService {
       () => controller.abort('compaction_generator_deadline'),
       this.#compactionPolicy.generatorDeadlineMs,
     )
+    let measuredUsage: ProviderUsage | undefined
     try {
       const output = await Promise.race([
         generator.generate({ ...input, signal: controller.signal }),
@@ -351,6 +372,7 @@ export class CompactionService {
         }),
       ])
       const unpacked = unpackGeneratorOutput(output)
+      measuredUsage = unpacked.usage
       if (
         this.#compactionPolicy.generatorMaxCostUsd !== undefined &&
         (unpacked.usage?.costUsd ?? 0) > this.#compactionPolicy.generatorMaxCostUsd
@@ -375,6 +397,10 @@ export class CompactionService {
         ),
         ...(unpacked.usage === undefined ? {} : { usage: unpacked.usage }),
       }
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && measuredUsage !== undefined)
+        Object.assign(error, { compactionUsage: measuredUsage })
+      throw error
     } finally {
       clearTimeout(timer)
       input.signal?.removeEventListener('abort', cancel)
@@ -668,11 +694,36 @@ function collectToolState(
         artifact?: unknown
         stdout?: unknown
         stderr?: unknown
+        command?: unknown
+        exitCode?: unknown
+        repositoryChanges?: { source?: unknown; modifiedFiles?: unknown }
       }
       error?: { code?: unknown }
     }
     const path = typeof result.output?.path === 'string' ? result.output.path : undefined
-    if (path) {
+    if (message.name === 'repo_shell') {
+      const receipt = result.output?.repositoryChanges
+      if (receipt?.source === 'host-file-digests-v1' && Array.isArray(receipt.modifiedFiles)) {
+        for (const file of receipt.modifiedFiles)
+          if (
+            typeof file === 'string' &&
+            /^(src|tests)\//u.test(file) &&
+            !file.split('/').includes('..')
+          )
+            add(summary.modifiedFiles, file)
+      }
+      if (
+        typeof result.output?.command === 'string' &&
+        Number.isInteger(result.output?.exitCode) &&
+        /\bpytest\b|reproduce_[\w.-]+\.py/u.test(result.output.command)
+      ) {
+        add(
+          summary.decisions,
+          `Observed repository command exit ${result.output.exitCode} (not proof of overall completion): ${result.output.command.slice(0, 600)}\nOutput tail: ${String(result.output.stdout ?? '').slice(-900)}`,
+        )
+      }
+    }
+    if (path && result.ok === true) {
       if (message.name === 'write' || message.name === 'edit') add(summary.modifiedFiles, path)
       else add(summary.readFiles, path)
     }
@@ -720,8 +771,14 @@ function collectSuccessfulToolCallState(
       continue
     }
     if (call.name !== 'shell' || typeof call.input.command !== 'string') continue
-    for (const candidate of shellMutationPaths(call.input.command)) {
-      add(summary.modifiedFiles, candidate)
+    const candidates = shellMutationPaths(call.input.command)
+    if (candidates.length > 0) {
+      // A successful script is not proof that every mentioned path was written:
+      // it may contain source arguments, heredoc text, or untaken branches.
+      add(
+        summary.unresolved,
+        `Unverified shell mutation candidates (not confirmed writes; inspect Tool evidence): ${candidates.join(', ')}`,
+      )
     }
   }
 }
@@ -732,7 +789,7 @@ const SHELL_PATH_CANDIDATE =
   /(?:[A-Za-z]:[\\/]|\.{0,2}[\\/])?[\p{L}\p{N}_@+.,=~%()-]+(?:[\\/][\p{L}\p{N}_@+.,=~%()-]+)*\.(?:pyx?|pxd|tsx?|jsx?|mjs|cjs|c|cc|cpp|cxx|h|hh|hpp|rs|go|java|kt|kts|cs|fs|fsx|rb|php|swift|scala|sh|bash|zsh|fish|ps1|sql|toml|json|ya?ml|xml|html?|css|scss|less|md|txt|csv|ini|cfg|conf)\b/giu
 
 function shellMutationPaths(command: string): string[] {
-  if (!SHELL_MUTATION_SIGNAL.test(command)) return []
+  if (!SHELL_MUTATION_SIGNAL.test(command) && !/(?:^|[^>])>{1,2}(?![>&])/u.test(command)) return []
   SHELL_PATH_CANDIDATE.lastIndex = 0
   const paths: string[] = []
   for (const match of command.matchAll(SHELL_PATH_CANDIDATE)) {
@@ -759,9 +816,46 @@ function mergeSummaryWithRuntimeBaseline(
   merged.readFiles = [...baseline.readFiles]
   merged.modifiedFiles = [...baseline.modifiedFiles]
   addMany(merged.decisions, baseline.decisions)
-  addMany(merged.unresolved, baseline.unresolved)
-  addMany(merged.activePlan, baseline.activePlan)
+  // Non-empty semantic continuation state supersedes historical intentions.
+  // An empty/omitted model summary must still retain a conservative frontier.
+  if (merged.unresolved.length === 0 && merged.activePlan.length === 0) {
+    addMany(merged.unresolved, baseline.unresolved)
+    addMany(merged.activePlan, baseline.activePlan)
+  }
   return merged
+}
+
+function safeCompactionFailureCode(error: unknown): string {
+  const code = errorCode(error)
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/u.test(code)
+    ? code
+    : 'COMPACTION_GENERATOR_FAILED'
+}
+
+function mergeKnownCompactionUsage(
+  error: unknown,
+  fallback: ProviderUsage | undefined,
+): { usage?: ProviderUsage } {
+  const failed =
+    typeof error === 'object' && error !== null
+      ? (error as { compactionUsage?: ProviderUsage }).compactionUsage
+      : undefined
+  if (failed === undefined && fallback === undefined) return {}
+  const usage: ProviderUsage = {}
+  for (const value of [failed, fallback]) {
+    for (const key of [
+      'inputTokens',
+      'outputTokens',
+      'cacheReadTokens',
+      'cacheWriteTokens',
+      'costUsd',
+    ] as const) {
+      const amount = value?.[key]
+      if (amount !== undefined && Number.isFinite(amount) && amount >= 0)
+        usage[key] = (usage[key] ?? 0) + amount
+    }
+  }
+  return { usage }
 }
 
 function collectUserContractState(summary: CompactionSummary, content: string): void {
@@ -779,13 +873,19 @@ function collectUserContractState(summary: CompactionSummary, content: string): 
   }
 }
 
-function collectAssistantContinuationState(summary: CompactionSummary, content: string): void {
+function collectAssistantContinuationState(
+  summary: CompactionSummary,
+  content: string,
+  latest: boolean,
+): void {
   for (const line of content.split(/\r?\n/u)) {
     const fact = bounded(line.trim())
     if (!fact) continue
     if (/\b(decision|decided|accepted|agreed)\b/iu.test(fact)) add(summary.decisions, fact)
-    if (describesOpenLoop(fact)) add(summary.unresolved, fact)
-    if (describesNextAction(fact)) add(summary.activePlan, `pending: ${fact}`)
+    // Explicit tracked TODOs are not disposable merely because later prose exists.
+    if (/^TODO\s*:/iu.test(fact)) add(summary.unresolved, fact)
+    else if (latest && describesOpenLoop(fact)) add(summary.unresolved, `intent: ${fact}`)
+    if (latest && describesNextAction(fact)) add(summary.activePlan, `intent: ${fact}`)
   }
 }
 
@@ -818,7 +918,12 @@ function toolFailureEvidence(stdout: unknown, stderr: unknown): string | undefin
   if (!text) return undefined
   for (const rawLine of text.split(/\r?\n/u)) {
     const line = bounded(rawLine.trim())
-    if (!line || /\b0 failed\b/iu.test(line)) continue
+    if (
+      !line ||
+      /\b0 failed\b/iu.test(line) ||
+      /^(?:==\d+==\s*)?ERROR SUMMARY:\s*0 errors\b/iu.test(line)
+    )
+      continue
     if (
       /(?:^|\b)(?:FAILED|FAILURES?|ERROR|Exception|Traceback|NameError|AssertionError|[1-9][0-9]* failed)(?:\b|:)/u.test(
         line,
@@ -962,7 +1067,10 @@ function add(target: string[], value: string): void {
 }
 
 function bounded(value: string): string {
-  return value.trim().slice(0, 240)
+  // Admission is bounded by the tokenizer-aware whole-summary budget. Cutting
+  // individual facts at an arbitrary character offset can erase their caveats,
+  // commands, or negative conclusions and turn them into misleading assertions.
+  return value.trim()
 }
 
 const TASK_OBJECTIVE_MAX_CHARACTERS = 2_048

@@ -12,12 +12,12 @@ export type PromptProgramDefinition = Readonly<{
 const PROMPT_PROGRAMS: Readonly<Record<PromptVariant, PromptProgramDefinition>> = Object.freeze({
   'baseline-v1': Object.freeze({
     variant: 'baseline-v1',
-    version: '1.2.0',
+    version: '1.3.0',
     trustedInstructionsId: 'praxis.trusted-instructions',
   }),
   'iron-law-lean-v1': Object.freeze({
     variant: 'iron-law-lean-v1',
-    version: '1.2.0',
+    version: '1.3.0',
     trustedInstructionsId: 'praxis.trusted-instructions',
   }),
 })

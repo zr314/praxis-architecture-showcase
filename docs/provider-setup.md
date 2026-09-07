@@ -110,9 +110,9 @@ printf '%s\n' "$QWEN_TOKEN_PLAN_CN_API_KEY" | praxis auth login qwen-token-plan-
 printf '%s\n' "$MINIMAX_CN_API_KEY" | praxis auth login minimax-cn --stdin
 ```
 
-DeepSeek 的当前静态目录只包含仍在服务的 `deepseek-v4-flash` 和
-`deepseek-v4-pro`。旧名 `deepseek-chat`、`deepseek-reasoner` 已于
-2026-07-24 退役，不会作为可选模型暴露。V4 思考模式的 Tool-call 历史要求回传
+Praxis 当前静态目录配置 `deepseek-v4-flash` 和 `deepseek-v4-pro`，不暴露
+`deepseek-chat`、`deepseek-reasoner`；这描述本仓库配置，不保证供应商实时可用性。
+专用适配器对 V4 思考模式的 Tool-call 历史回传
 `reasoning_content`；Praxis 的专用适配器会保留该字段，结构化 planner/verifier
 需要强制 Tool choice 时则自动切到非思考模式。
 

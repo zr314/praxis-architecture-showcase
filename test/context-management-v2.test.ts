@@ -16,6 +16,41 @@ import {
   tokenizerForProvider,
 } from '../apps/runtime/src/memory/index.js'
 
+test('invalid compaction tool JSON remains invalid while terminal usage is retained', async () => {
+  let drained = false
+  const provider: ChatProvider = {
+    id: 'compaction-audit',
+    defaultModel: 'fixture',
+    authState: () => ({ status: 'authenticated' }),
+    async *stream() {
+      yield { type: 'message_start' }
+      yield { type: 'tool_call_start', index: 0, id: 'bad', name: 'submit_compaction_summary' }
+      yield { type: 'tool_call_delta', index: 0, argumentsDelta: '{"objective":' }
+      yield { type: 'tool_call_end', index: 0 }
+      drained = true
+      yield {
+        type: 'completed',
+        stopReason: 'max_tokens',
+        usage: { inputTokens: 12, outputTokens: 3 },
+      }
+    },
+  }
+  const signal = new AbortController().signal
+  const generator = new ProviderCompactionSummaryGenerator(provider, {
+    model: 'fixture',
+    messages: [],
+    tools: [],
+    signal,
+  })
+  await assert.rejects(generator.generate({ messages: [], signal }), (error: unknown) => {
+    const e = error as { code: string; compactionUsage: unknown }
+    assert.equal(e.code, 'PROVIDER_STREAM_INVALID')
+    assert.deepEqual(e.compactionUsage, { inputTokens: 12, outputTokens: 3 })
+    return true
+  })
+  assert.equal(drained, true)
+})
+
 test('Provider tokenizer registry selects explicit adapters with a conservative fallback', () => {
   assert.equal(tokenizerForProvider('kimi').id, 'openai-compatible-heuristic')
   assert.equal(tokenizerForProvider('deepseek').id, 'openai-compatible-heuristic')
@@ -214,7 +249,10 @@ test('a replayed model compaction candidate is bounded and falls back with prove
       provider: 'replay',
       model: 'failing-fixture',
     },
+    failureCode: 'COMPACTION_GENERATOR_FAILED',
+    failedGeneratorDurationMs: fallbackCheckpoint.provenance?.failedGeneratorDurationMs,
   })
+  assert.ok((fallbackCheckpoint.provenance?.failedGeneratorDurationMs ?? -1) >= 0)
   assert.match(fallbackCheckpoint.content, /keep deterministic fallback/u)
   assert.match(fallbackCheckpoint.content, /summaries must remain bounded/u)
 })

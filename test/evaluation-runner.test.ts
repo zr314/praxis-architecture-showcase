@@ -329,6 +329,7 @@ function containmentScenario(absoluteTarget: string, parentTarget: string): Eval
       eventCounts: { tool_start: 4, tool_end: 4, prompt_completed: 1 },
       eventOrder: [
         'prompt_started',
+        'message_committed',
         'tool_planning',
         'tool_start',
         'tool_end',

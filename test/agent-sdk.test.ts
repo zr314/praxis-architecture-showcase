@@ -164,6 +164,44 @@ test('Agent SDK permits concurrent Runs when the client exposes multiplexing', a
   )
 })
 
+test('Agent SDK forwards planPolicy and returns prompt_blocked as a terminal result', async () => {
+  let promptInput: PromptInput | undefined
+  const events = async function* (input: PromptInput): AsyncIterable<SessionEvent> {
+    promptInput = input
+    yield {
+      type: 'prompt_started',
+      sessionId: input.sessionId,
+      runId: 'run-blocked',
+      prompt: input.text,
+    }
+    yield {
+      type: 'prompt_blocked',
+      runId: 'run-blocked',
+      code: 'PLAN_REVIEW_REQUIRED',
+      reason: 'Final Review has not been accepted.',
+      recoverable: true,
+    }
+  }
+  const client: AgentClient = {
+    createSession: async () => session('session-blocked'),
+    resumeSession: async (sessionId) => session(sessionId),
+    prompt: events,
+    followUp: events,
+    decidePermission: async () => undefined,
+    abort: async () => undefined,
+  }
+  const agent = defineAgent({ client, cwd: 'D:/workspace' })
+
+  const result = await agent.run({ input: 'Do reviewed work.', planPolicy: 'required' })
+
+  assert.equal(promptInput?.planPolicy, 'required')
+  assert.equal(result.status, 'blocked')
+  assert.deepEqual(result.error, {
+    code: 'PLAN_REVIEW_REQUIRED',
+    message: 'Final Review has not been accepted.',
+  })
+})
+
 test('application instructions stay below Runtime policy in both prompt programs', () => {
   for (const variant of ['baseline-v1', 'iron-law-lean-v1'] as const) {
     const build = new SystemPromptComposer().compose({

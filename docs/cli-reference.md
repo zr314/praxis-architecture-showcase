@@ -4,6 +4,8 @@
 > The Chinese guide explains how to choose an operation. The English reference
 > below preserves the exact CLI tokens, options, and tables.
 
+Plan、Review、Run 等术语见 [Runtime 名词表](runtime-glossary.md)；默认动态清单见[Working Plan](working-plan.md)，Host 强制验收见[严格 ReviewPlan](strict-review-plan.md)。
+
 ## 中文导读
 
 - 直接运行 `praxis` 进入交互式 TUI；使用 `--print` 运行一次性任务，使用
@@ -35,6 +37,8 @@ Run `praxis --help` or `<command> --help` for the authoritative local synopsis.
 
 ## Global invocation
 
+本地长期记忆管理：`praxis memory status|mode|list|get|put|forget|user-access|rebind|export|import`。默认关闭，模式使用 `praxis memory mode explicit` 开启。命令、revision、作用域与删除边界见[本地长期记忆](long-term-memory.md)。
+
 ```text
 praxis [options] [command]
 ```
@@ -50,6 +54,7 @@ With no command and no `--print`, Praxis opens the interactive TUI.
 | `--model <id>` | Select the new session model and save the resulting preference. |
 | `--session <id>` | Resume an exact durable session without overriding its persisted Planner. |
 | `--planner <auto\|solo\|workflow>` | Override the initial mode policy for a newly created session. Omit it for the default `auto`. Legacy `direct/supervisor` map to `solo/workflow`. |
+| `--plan-policy <optional\|required>` | Set the trusted policy for prompts in this CLI run. `optional` allows Direct work or an editable checklist with advisory review; `required` enforces the strict ReviewPlan contract. |
 | `--storage <jsonl\|sqlite>` | V3 backend this Runtime expects; default `jsonl` on a new data root. |
 | `--context-tokens <count>` | Positive session context-token limit. |
 | `--max-turns <count>` | Positive Provider-turn budget. |
@@ -209,7 +214,7 @@ Type `/` in the TUI to browse these commands.
 | `/model [provider/model]` | Browse or select an exact model. |
 | `/compact [focus]` | Compact current session context without deleting original history. |
 | `/context` | Show checkpoint range, token estimates, and compaction provenance. |
-| `/plan` | Show the current plan JSON. |
+| `/plan` | Show policy-specific Working Plan / strict ReviewPlan; fall back to execution projection when no matching Plan exists. |
 | `/planner [auto\|solo\|workflow]` | With no argument, inspect the active policy; with an argument, override the next run. New sessions already default to `auto`; idle sessions only. |
 | `/storage` | Read the process-wide V3 backend/root; live switching is disabled. |
 | `/artifacts` | List stored artifacts. |
@@ -301,7 +306,7 @@ exact Tool and target; see [Tool policy](tool-policy.md).
 | --- | --- |
 | `0` | Command or run completed successfully. |
 | `1` | Runtime/Provider/storage failure, failed prompt, or unhealthy doctor result. |
-| `2` | CLI usage or invalid-parameter error. |
+| `2` | CLI usage/invalid parameter, or a recoverable `prompt_blocked` in non-interactive mode. Inspect the structured terminal code to distinguish them. |
 | `3` | Authentication/secure-input requirement. |
 | `4` | Permission or policy denial surfaced as a command error. |
 | `5` | Deadline, timeout, cancellation, or abort surfaced as a command error. |

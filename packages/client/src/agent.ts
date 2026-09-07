@@ -24,7 +24,7 @@ export type AgentClient = {
   abort(runId: string): Promise<void>
 }
 
-export type AgentRunStatus = 'completed' | 'failed' | 'aborted'
+export type AgentRunStatus = 'completed' | 'failed' | 'blocked' | 'aborted'
 
 export type AgentRunRequest<TState> = {
   input: string
@@ -33,6 +33,7 @@ export type AgentRunRequest<TState> = {
   metadata?: Readonly<Record<string, unknown>>
   clientRequestId?: string
   budget?: PromptInput['budget']
+  planPolicy?: PromptInput['planPolicy']
   timeoutMs?: number
   signal?: AbortSignal
 }
@@ -180,7 +181,7 @@ export class PraxisAgent<TState = undefined, TOutput = string> {
       let text = ''
       let terminal: Extract<
         SessionEvent,
-        { type: 'prompt_completed' | 'prompt_failed' | 'prompt_aborted' }
+        { type: 'prompt_completed' | 'prompt_failed' | 'prompt_blocked' | 'prompt_aborted' }
       > | null = null
       let abortRequested = normalized.signal?.aborted ?? false
       let abortFailure: unknown
@@ -210,6 +211,7 @@ export class PraxisAgent<TState = undefined, TOutput = string> {
                 },
               }),
           ...(normalized.budget === undefined ? {} : { budget: normalized.budget }),
+          ...(normalized.planPolicy === undefined ? {} : { planPolicy: normalized.planPolicy }),
           ...(normalized.timeoutMs === undefined ? {} : { timeoutMs: normalized.timeoutMs }),
         }
         const events = existingSession
@@ -321,7 +323,7 @@ export class PraxisAgent<TState = undefined, TOutput = string> {
     context: AgentRunContext<TState>,
     terminal: Extract<
       SessionEvent,
-      { type: 'prompt_completed' | 'prompt_failed' | 'prompt_aborted' }
+      { type: 'prompt_completed' | 'prompt_failed' | 'prompt_blocked' | 'prompt_aborted' }
     >,
     text: string,
   ): Promise<AgentRunResult<TOutput, TState>> {
@@ -330,7 +332,9 @@ export class PraxisAgent<TState = undefined, TOutput = string> {
         ? 'completed'
         : terminal.type === 'prompt_failed'
           ? 'failed'
-          : 'aborted'
+          : terminal.type === 'prompt_blocked'
+            ? 'blocked'
+            : 'aborted'
     const output =
       status !== 'completed'
         ? undefined
@@ -349,11 +353,11 @@ export class PraxisAgent<TState = undefined, TOutput = string> {
       ...(terminal.type !== 'prompt_completed' || terminal.stopReason === undefined
         ? {}
         : { stopReason: terminal.stopReason }),
-      ...(terminal.type !== 'prompt_failed'
+      ...(terminal.type !== 'prompt_failed' && terminal.type !== 'prompt_blocked'
         ? {}
         : {
             error: {
-              message: terminal.error,
+              message: terminal.type === 'prompt_failed' ? terminal.error : terminal.reason,
               ...(terminal.code === undefined ? {} : { code: terminal.code }),
             },
           }),
@@ -402,11 +406,12 @@ function isTerminal(
   event: SessionEvent,
 ): event is Extract<
   SessionEvent,
-  { type: 'prompt_completed' | 'prompt_failed' | 'prompt_aborted' }
+  { type: 'prompt_completed' | 'prompt_failed' | 'prompt_blocked' | 'prompt_aborted' }
 > {
   return (
     event.type === 'prompt_completed' ||
     event.type === 'prompt_failed' ||
+    event.type === 'prompt_blocked' ||
     event.type === 'prompt_aborted'
   )
 }

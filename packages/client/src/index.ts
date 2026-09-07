@@ -168,6 +168,10 @@ export class PraxisClient {
     }
   }
 
+  async manageMemory(input: import('@praxis/core-sdk').MemoryManageRequestV1): Promise<unknown> {
+    return this.request('memory.manage', { ...input })
+  }
+
   async request<T>(method: RuntimeMethod, params: Record<string, unknown>): Promise<T> {
     let failure: unknown
     for (let attempt = 0; attempt <= this.#reconnectAttempts; attempt += 1) {
@@ -567,6 +571,7 @@ function isTerminal(event: SessionEvent): boolean {
   return (
     event.type === 'prompt_completed' ||
     event.type === 'prompt_failed' ||
+    event.type === 'prompt_blocked' ||
     event.type === 'prompt_aborted'
   )
 }

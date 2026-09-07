@@ -449,13 +449,14 @@ class MemorySessionRepository implements SessionRepository {
     this.sessions.set(session.sessionId, cloneRecord(session))
   }
 
-  async appendMessage(sessionId: string, message: ProviderMessage): Promise<void> {
+  async appendMessage(sessionId: string, message: ProviderMessage): Promise<undefined> {
     this.appendStarted?.resolve()
     if (this.appendGate) await this.appendGate.promise
     if (this.failAppend) throw new Error('append failed with secret payload')
     const messages = this.messages.get(sessionId) ?? []
     messages.push(message)
     this.messages.set(sessionId, messages)
+    return undefined
   }
 
   async loadMessages(sessionId: string): Promise<ProviderMessage[]> {

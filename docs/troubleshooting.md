@@ -102,7 +102,7 @@ npm ls --global @praxis/cli
 | `SESSION_STORE_SWITCH_REQUIRES_IMPORT` | 停止 Runtime 后运行 `praxis storage migrate <target>` | [会话恢复](session-recovery.md) |
 | `SESSION_STORE_MIGRATION_RUNTIME_ACTIVE` | 关闭共用数据根的 TUI/server/CLI | [会话恢复](session-recovery.md) |
 | Auto 没有启动 Child | `/planner`，确认不是 `solo` | [Workflow](workflow-platform.md) |
-| `WORKFLOW_*` / `WORKSPACE_*` | `/plan`，查看真实 Node/terminal code | [Workflow](workflow-platform.md) |
+| `WORKFLOW_*` / `WORKSPACE_*` | Workflow 面板或 workflow.get，查看真实 Node/terminal code | [Workflow](workflow-platform.md) |
 | Tool 被拒绝 | 记录 rule 与 canonical target | [工具策略](tool-policy.md) |
 | 插件不可用 | `praxis plugin doctor` | [插件系统](plugin-system.md) |
 | 自动化返回非零 | 查看[退出码](cli-reference.md#exit-codes) | [CLI 参考](cli-reference.md) |
@@ -167,8 +167,7 @@ npm ls --global @praxis/cli
   修改 `session-journal-v3` 中的 Catalog、Projection、delta、state 或 pending 文件。若快速路径报告
   损坏，先停止所有共享该数据目录的 Runtime、备份整个 `PRAXIS_HOME`，再运行一次
   `praxis doctor --deep`。该命令会故意做全量重放，所以本身可能较慢。
-- **输入或 Spinner 卡顿：**新版 TUI 把 Transcript 与 Composer 分成独立 memo 树，稳定历史进入终端原生
-  scrollback，80 ms Spinner tick 只刷新 Footer。若仍能稳定复现，记录终端尺寸、会话消息量、
+- **输入或 Spinner 卡顿：**TUI 将 Transcript 与 Composer 分离，窗口化渲染历史，Spinner 独立刷新。若仍能稳定复现，记录终端尺寸、会话消息量、
   当前版本，以及卡顿发生在空闲输入还是模型流式输出阶段；不要用 `doctor --deep` 的运行时间衡量交互
   延迟。
 - **Workflow 失败原因不清楚：**TUI 的 `WORKFLOW` 面板直接读取 SQLite projection；Child 期限耗尽时应显示
@@ -194,12 +193,19 @@ npm ls --global @praxis/cli
   Update a policy deliberately; project instructions cannot grant access.
 - **Plugin quarantined:** run `praxis plugin doctor`, inspect bounded stderr,
   digest, isolation status, and protocol version. Disable it before rollback.
-- **`trusted-only`:** the host lacks an enforced isolation backend. Linux needs
-  `bubblewrap` and `prlimit` for the enforced path. On Windows and macOS, or
-  when those tools are absent, do not run untrusted extensions. A supervised
-  process boundary is not an OS sandbox.
+- **`trusted-only`:** Windows/macOS use a degraded backend requiring explicit trust.
+  A supervised process boundary is not an OS sandbox. MCP stdio and the built-in
+  Shell do not use the Process plugin isolation backend.
+- **`ISOLATION_UNAVAILABLE`:** the default Linux Process plugin backend could not find
+  `bubblewrap` or `prlimit`. Restore those prerequisites and check `plugin doctor`;
+  the runtime does not automatically fall back to trusted-only.
 
 ## 打包与性能 / Packaging and performance
+
+- **源码已更新但 Child 报 `CHILD_RUNTIME_EXITED`：**先检查启动日志。若出现公共包
+  `does not provide an export named ...`，确认从仓库根启动，并使用继承 `tsconfig.source.json` 的配置。
+  当前根配置与测试配置已统一源码映射；自定义 cwd/tsconfig 仍可能选择 Workspace `dist`。
+  运行已安装命令则应重新构建安装，不能用源码 typecheck 证明安装包已同步。
 
 - Run `npm run verify:supply-chain`, `npm run verify:pack`, and
   `npm run release:check -- --tag v<version>` from a release checkout.

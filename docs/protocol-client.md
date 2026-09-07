@@ -207,7 +207,6 @@ parent/child 关联 ID，但仍复用普通 `permission.decide`；这些字段�
 | 自动批准所有权限 | 默认拒绝，做完明确的权限 UI 后再允许 |
 | 无限重试 mutation | 保留 `clientRequestId`，遵循 Runtime 幂等合同 |
 | 为每个并发 Run 直接消费 `connection.notifications()` | 只使用同一个 `PraxisClient.prompt/followUp`；Client 负责多路复用 |
-| 把本地 Server 当公网 API | 当前仅 Loopback、Token、单用户、每连接一个 Runtime child |
 
 ## 权威资料 / Sources of truth
 

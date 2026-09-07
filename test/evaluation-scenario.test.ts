@@ -87,6 +87,19 @@ test('parses a strict v1 evaluation scenario and a standalone synthetic replay f
   assert.equal(parseProviderReplay(basicReplay).turns.length, 1)
 })
 
+test('accepts prompt_blocked as an evaluation terminal assertion', () => {
+  const input = scenario()
+  input.assertions.terminalEvent = {
+    type: 'prompt_blocked',
+    code: 'PLAN_REVIEW_REQUIRED',
+    reason: 'Final Review has not been accepted.',
+  }
+  input.assertions.eventCounts = { prompt_blocked: 1 }
+  input.assertions.eventOrder = ['prompt_started', 'prompt_blocked']
+
+  assert.equal(parseEvaluationScenario(input).assertions.terminalEvent.type, 'prompt_blocked')
+})
+
 test('rejects unsupported evaluation scenario schema versions', () => {
   const input = { ...scenario(), schemaVersion: 2 }
 
@@ -108,7 +121,12 @@ test('rejects duplicate replay turn IDs', () => {
 
 test('rejects unsupported Provider chunk types', () => {
   const input: unknown = {
-    turns: [{ id: 'turn-1', chunks: [{ type: 'reasoning_delta', text: 'not supported' }] }],
+    turns: [
+      {
+        id: 'turn-1',
+        chunks: [{ type: 'reasoning_delta', text: 'not supported' }],
+      },
+    ],
   }
 
   assert.throws(
@@ -128,7 +146,11 @@ test('accepts structured v2 Provider stream chunks and complete usage accounting
           { type: 'reasoning_delta', contentIndex: 0, text: 'brief' },
           { type: 'reasoning_end', contentIndex: 0 },
           { type: 'tool_call_start', index: 0, id: 'call-1', name: 'read' },
-          { type: 'tool_call_delta', index: 0, argumentsDelta: '{"path":"README.md"}' },
+          {
+            type: 'tool_call_delta',
+            index: 0,
+            argumentsDelta: '{"path":"README.md"}',
+          },
           { type: 'tool_call_end', index: 0 },
           {
             type: 'completed',
@@ -235,7 +257,10 @@ test('accepts standard dense arrays containing recursive JSON values', () => {
 })
 
 test('rejects undeclared scenario properties', () => {
-  const input = { ...scenario(), environment: { SECRET_TOKEN: 'not-a-real-secret' } }
+  const input = {
+    ...scenario(),
+    environment: { SECRET_TOKEN: 'not-a-real-secret' },
+  }
 
   assert.throws(
     () => parseEvaluationScenario(input),
@@ -274,7 +299,10 @@ test('parses explicit setup and evidence assertions while keeping nested setup s
         createdAt: '2026-01-01T00:00:00.000Z',
       },
     },
-    cancellation: { boundary: 'after_first_provider_chunk', reason: 'user_abort' },
+    cancellation: {
+      boundary: 'after_first_provider_chunk',
+      reason: 'user_abort',
+    },
   }
   ;(input.assertions as Record<string, unknown>).contextSelection = {
     contextMessagesContain: ['summary'],

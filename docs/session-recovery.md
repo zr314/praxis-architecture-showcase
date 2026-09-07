@@ -1,5 +1,9 @@
 # 会话恢复 / Session Recovery
 
+新手术语见[Runtime 名词表](runtime-glossary.md)。Working Plan 和严格 ReviewPlan 都通过 Session Journal 保存，不依赖自然语言摘要；两种政策的恢复合同分别见[Working Plan](working-plan.md)和[严格验收](strict-review-plan.md#6-恢复与耗尽)。
+
+当前默认 optional 使用 [Working Plan](working-plan.md)：`working_plan.saved/review_requested/reviewed` 在 SQLite 和 JSONL 中同样重放。重开 Item、放弃 Plan 不撤销真实 Child/Tool；旧严格记录保留，但不限制 optional Run。只有 required 继续使用本文的 ReviewPlan 完成门槛。新事件需要新版 Runtime，不能让旧二进制直接读取升级后的 Session。
+
 产品 Session 统一由 `${PRAXIS_HOME:-~/.praxis}` 下的 `SessionJournalV3` 保存。默认 JSONL 后端使用
 带 Checksum 的追加式 commit；显式 SQLite 后端使用 WAL、FULL synchronous 和事务。两者重放相同的
 Session、Message、Memory/Compaction、Plan、Usage 与 Artifact Reference 领域事件，但任一时刻只能有
@@ -24,6 +28,8 @@ nor repeated backups.
 正常退出后，Praxis **不会自动猜测要恢复哪一个旧 Session**。再次运行 `praxis` 通常创建新
 Session；要继续旧工作，请用 `/session` 或精确 `--session <id>`。先记住：恢复对话只恢复 Agent
 记忆与记录，之前已经写入的文件、Git 状态和 Shell 副作用仍以磁盘上的当前状态为准。
+
+如果严格 required Run 以 `prompt_blocked` 结束，Session 仍可查询和继续，Plan 的 revision、Item/Attempt 与 Review decision 保留；需要授权时必须先处理对应 Host 条件，不能假定普通 follow-up 自动解除。optional 的 Item blocked 只是清单状态。查询 `session.plan` 不会重新执行模型；进程重启也不会删除已提交清单和审查记录。
 
 ## 第一次恢复演练 / First recovery walkthrough
 

@@ -39,7 +39,7 @@ for (const path of paths) {
   ) {
     throw new Error(`${value.name} is missing private Apache-2.0 release metadata.`)
   }
-  if (value.repository?.url !== 'git+https://github.com/uestc-Praxis/praxis.git') {
+  if (value.repository?.url !== 'git+https://github.com/zr314/praxis-architecture-showcase.git') {
     throw new Error(`${value.name} has an unexpected repository URL.`)
   }
   for (const [name, range] of Object.entries(value.dependencies ?? {})) {

@@ -323,8 +323,9 @@ praxis --commands
 
 ## 安全提醒
 
-Process boundary 不是 OS sandbox。Linux 只有 `bubblewrap` 与 `prlimit` 都可用时才报告 enforced isolation；
-Windows、macOS 或缺少后端时为 `trusted-only`。显式启用意味着你信任该固定 digest 以当前用户权限运行。
+Process boundary 不是 OS sandbox。Process 插件的 Linux 后端只有 `bubblewrap` 与 `prlimit` 都可用时才报告 supported；
+缺少时报告 unavailable 并以 `ISOLATION_UNAVAILABLE` 拒绝启动，不自动降级。Windows、macOS 为 `trusted-only`，
+显式启用意味着你信任该固定 digest 以当前用户权限运行。MCP stdio 当前直接启动进程，不经过这个后端；见[威胁模型](security-threat-model.md)。
 
 ## English summary
 

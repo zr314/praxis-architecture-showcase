@@ -1,7 +1,7 @@
 # 兼容性与支持策略 / Compatibility and Support Policy
 
 > 本页定义已发布合同怎样演进，不承诺内部组件的发布日期。当前功能是否开放以
-> [项目状态](project-status.md)为准；Release 历史以根目录 [CHANGELOG](../CHANGELOG.md)为准。
+> [项目状态](project-status.md)为准；术语见 [Runtime 名词表](runtime-glossary.md)；Release 历史以根目录 [CHANGELOG](../CHANGELOG.md)为准。
 
 ## 中文
 
@@ -9,8 +9,12 @@ Praxis 对已发布包使用语义化版本。稳定协议版本必须保持已�
 变更通过能力协商或新协议版本交付。会话 Schema 迁移只向前执行并保留备份；V3 JSONL/SQLite
 Authority 切换使用离线校验 Export/Import，禁止双写。插件 API 与 Manifest 版本在执行前校验。
 
+### Planner 名称迁移
+
+旧产品模式 `direct` 与 `supervisor` 只保留为输入兼容别名，执行时分别按 `solo` 与 `workflow` 归一化。默认 `auto/solo + optional` 由同一 Root 自选直接执行或轻量 Working Plan；`auto` 还可通过 `agent.spawn/wait/result/cancel/steer` 形成 Run Tree。显式 `workflow` 是 deprecated legacy 图编排兼容面；Authority、Lease、effect 和历史恢复不会因移除新会话的模型可见 DAG 而删除。详见[Working Plan](working-plan.md)；显式 required 的旧严格合同单独保留。
+
 在 `1.0` 之前，支持窗口为最新 Minor 版本及其前一个 Minor 的关键安全修复。Node.js 支持
-范围以各包 `engines` 为准，CI 覆盖所声明的操作系统。默认 V3 JSONL 遵守该最低版本；显式 SQLite
+范围以各包 `engines` 为准，普通 CI 在 Ubuntu 上检查质量，专用 native 工作流决定可声明的产物平台。默认 V3 JSONL 遵守该最低版本；显式 SQLite
 还要求运行时提供 `node:sqlite`，不可用时 Fail Closed。强制 Sandbox 能力按运行主机动态报告，
 不等同于一般 Runtime 支持。
 
@@ -30,10 +34,18 @@ are forward-only and preserve a backup. V3 JSONL/SQLite authority changes use
 verified offline export/import and never dual-write. Plugin API and manifest
 versions are validated before execution.
 
+### Planner name migration
+
+Legacy `direct` and `supervisor` inputs are normalized to `solo` and `workflow`
+for execution. Existing Session records are not guaranteed to be rewritten in
+place. These aliases do not select a second planner implementation or restore
+the former fixed Supervisor workers. New sessions use the `auto` Agent Run
+Tree surface; explicit `workflow` adds graph-orchestration tools.
+
 The current pre-1.0 support window is the latest minor release plus the
 immediately preceding minor for critical security fixes. Supported Node.js
-versions are declared in package `engines`; CI covers the declared operating
-systems. The default V3 JSONL backend follows that minimum; explicit SQLite also
+versions are declared in package `engines`; ordinary CI checks quality on Ubuntu; dedicated native workflows determine
+which artifact platforms can be claimed. The default V3 JSONL backend follows that minimum; explicit SQLite also
 requires a runtime that provides `node:sqlite` and fails closed otherwise.
 Enforced sandbox support is reported dynamically and is separate from general
 Runtime support.

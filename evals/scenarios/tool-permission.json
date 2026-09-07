@@ -73,6 +73,7 @@
     "eventCounts": { "tool_start": 2, "tool_end": 3, "prompt_completed": 1 },
     "eventOrder": [
       "prompt_started",
+      "message_committed",
       "tool_planning",
       "tool_end",
       "tool_planning",

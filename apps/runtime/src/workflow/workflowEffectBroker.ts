@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import {
+  canonicalDigestV1,
   type PreparedToolInvocation,
   promptDigest,
+  type ReviewPlanExecutionRequestV1,
   type ToolResult,
   type WorkflowModePolicyV1,
   type WorkflowProjectionV1,
@@ -30,6 +32,8 @@ export class WorkflowEffectBrokerV1 implements ToolExecutionBrokerV1 {
     _signal: AbortSignal,
     invoke: () => Promise<ToolResult>,
   ): Promise<ToolResult> {
+    if (['memory.search', 'memory.get', 'memory.upsert', 'memory.forget'].includes(prepared.name))
+      return invoke()
     if (
       this.modePolicy === 'workflow' &&
       !prepared.name.startsWith('workflow.') &&
@@ -53,8 +57,15 @@ export class WorkflowEffectBrokerV1 implements ToolExecutionBrokerV1 {
     const inputDigest = promptDigest(JSON.stringify({ tool: prepared.name, input: prepared.input }))
     const explicitKey = explicitIdempotencyKey(prepared.input)
     const workspaceWrite = prepared.descriptor.sideEffect === 'write'
+    // Identical input in a later turn is a new operation: writing A, then B,
+    // then A must restore A. Only retries of the same authenticated invocation
+    // may reuse its receipt. Legacy callers without an invocation identity get
+    // a fresh operation key rather than accidentally memoizing workspace state.
     const idempotencyKey = workspaceWrite
-      ? (explicitKey ?? `workspace-${inputDigest.slice('sha256:'.length)}`)
+      ? (explicitKey ??
+        `workspace-invocation-${promptDigest(
+          prepared.executionContext?.invocation.invocationId ?? randomUUID(),
+        ).slice('sha256:'.length)}`)
       : explicitKey
     const effect = workspaceWrite
       ? ({ class: 'workspace_write', idempotencyKey, requiresApproval: false } as const)
@@ -222,10 +233,45 @@ export class WorkflowEffectBrokerV1 implements ToolExecutionBrokerV1 {
       }
     }
   }
+
+  async executeBound(
+    prepared: PreparedToolInvocation,
+    signal: AbortSignal,
+    invoke: () => Promise<ToolResult>,
+    request: ReviewPlanExecutionRequestV1,
+  ): Promise<ToolResult> {
+    const effectKind =
+      prepared.descriptor.sideEffect === 'write'
+        ? ('workspace_write' as const)
+        : explicitIdempotencyKey(prepared.input) === undefined
+          ? ('external_non_idempotent' as const)
+          : ('external_idempotent' as const)
+    const at = new Date().toISOString()
+    const requestDigest = canonicalDigestV1({
+      request,
+      toolName: prepared.name,
+      input: prepared.input,
+      effectKind,
+    })
+    await this.orchestrator.reserveEffectRequest({
+      request,
+      requestDigest,
+      effectKind,
+      ...(effectKind === 'external_idempotent'
+        ? { externalIdempotencyKey: explicitIdempotencyKey(prepared.input)! }
+        : {}),
+      ...(prepared.descriptor.timeoutMs === undefined
+        ? {}
+        : { leaseExpiresAt: new Date(Date.now() + prepared.descriptor.timeoutMs).toISOString() }),
+      at,
+    })
+    return this.execute(prepared, signal, invoke)
+  }
 }
 
 function durableEffect(prepared: PreparedToolInvocation): boolean {
   return (
+    !prepared.name.startsWith('plan.') &&
     !prepared.name.startsWith('agent.') &&
     !prepared.name.startsWith('workflow.') &&
     ['write', 'process', 'network'].includes(prepared.descriptor.sideEffect)

@@ -18,6 +18,7 @@ import type {
   ProviderToolDefinition,
   ProviderTurnResult,
   ProviderUsage,
+  MessageCommitReceiptV1,
   RuntimeError,
   SystemPromptBuild,
   ToolProgressUpdate,
@@ -46,6 +47,11 @@ import {
   LoopProgressGuard,
   typedSteerMessage,
 } from './units.js'
+import {
+  normalizeProviderToolCallIdsV1,
+  planToolInvocationContextV1,
+  rewriteAssistantToolContentV1,
+} from './toolInvocation.js'
 
 export type { AgentRun, AgentSession } from '@praxis/core-sdk'
 
@@ -116,13 +122,22 @@ export type AgentLoopPorts = {
   ): ToolResult | Promise<ToolResult>
   tools(session: AgentSession, run: AgentRun): AgentToolPort
   terminalTool?(session: AgentSession, run: AgentRun): Readonly<{ name: string }> | undefined
-  commitMessage(session: AgentSession, run: AgentRun, message: ProviderMessage): Promise<void>
+  commitMessage(
+    session: AgentSession,
+    run: AgentRun,
+    message: ProviderMessage,
+    input?: Readonly<{ messageId?: string }>,
+  ): Promise<MessageCommitReceiptV1 | undefined>
   acknowledgeSteer?(
     session: AgentSession,
     run: AgentRun,
     steer: Readonly<{ id: string; workflowMessageSequence?: number }>,
   ): Promise<void>
-  completionGuidance?(session: AgentSession, run: AgentRun): Promise<string | undefined>
+  completionGuidance?(
+    session: AgentSession,
+    run: AgentRun,
+  ): Promise<string | Readonly<{ kind: 'blocked'; code: string; reason: string }> | undefined>
+  strictPlanControls?(session: AgentSession, run: AgentRun): boolean
   emit(event: AgentEvent, sessionId?: string, runId?: string): void
   requestPermission(
     session: AgentSession,
@@ -206,7 +221,7 @@ export type RoutedProviderCandidate = {
 
 type TerminalAgentEvent = Extract<
   AgentEvent,
-  { type: 'prompt_completed' | 'prompt_failed' | 'prompt_aborted' }
+  { type: 'prompt_completed' | 'prompt_failed' | 'prompt_blocked' | 'prompt_aborted' }
 >
 
 type TraceInput = Omit<TraceRecord, 'schemaVersion' | 'timestamp'>
@@ -295,6 +310,7 @@ export class AgentLoop {
         if (this.shouldStop(run)) return
 
         const turnContext = { ...run.trace, turnId: this.ports.nextTurnId(run) }
+        const providerTurnId = this.ports.nextMessageId()
         let selected = await this.ports.selectContext(
           session,
           run,
@@ -514,8 +530,15 @@ export class AgentLoop {
           }
         }
         if (this.shouldStop(run)) return
+        const normalizedTurn = normalizeProviderToolCallIdsV1({
+          sessionId: session.sessionId,
+          runId: run.id,
+          providerTurnId,
+          content: turn.content,
+          toolCalls: turn.toolCalls,
+        })
         const toolCalls: ProviderToolCall[] = []
-        for (const providerToolCall of turn.toolCalls) {
+        for (const providerToolCall of normalizedTurn.toolCalls) {
           const toolCall =
             (await this.ports.beforeTool?.(session, run, providerToolCall, turnContext)) ??
             providerToolCall
@@ -537,27 +560,28 @@ export class AgentLoop {
           return
         }
         if (this.shouldStop(run)) return
-
-        if (turn.content.length > 0) {
-          if (this.shouldStop(run)) return
-          await this.ports.commitMessage(session, run, {
+        const assistantReceipt = await this.ports.commitMessage(
+          session,
+          run,
+          {
             role: 'assistant',
-            content: turn.content,
-          })
-          if (this.shouldStop(run)) return
-        }
+            content: rewriteAssistantToolContentV1(normalizedTurn.content, toolCalls),
+          },
+          { messageId: providerTurnId },
+        )
+        if (assistantReceipt === undefined || this.shouldStop(run)) return
+        this.ports.emit(
+          {
+            type: 'message_committed',
+            runId: run.id,
+            messageId: assistantReceipt.messageId,
+            role: 'assistant',
+          },
+          session.sessionId,
+          run.id,
+        )
 
         if (toolCalls.length === 0 && stopReason === 'max_output_tokens') {
-          this.ports.emit(
-            {
-              type: 'message_committed',
-              runId: run.id,
-              messageId: this.ports.nextMessageId(),
-              role: 'assistant',
-            },
-            session.sessionId,
-            run.id,
-          )
           await this.finish(session, run, {
             type: 'prompt_failed',
             runId: run.id,
@@ -587,6 +611,28 @@ export class AgentLoop {
                 }
             if (validation) rejections.set(toolCall.id, validation)
           }
+          const planBarrierIndex =
+            (this.ports.strictPlanControls?.(session, run) ?? true)
+              ? toolCalls.findIndex(({ name }) => name.startsWith('plan.'))
+              : -1
+          if (planBarrierIndex >= 0) {
+            const selected = toolCalls[planBarrierIndex]!
+            const code =
+              selected.name === 'plan.create'
+                ? 'PLAN_CREATE_BATCH_BARRIER'
+                : selected.name === 'plan.review'
+                  ? 'PLAN_REVIEW_BATCH_BARRIER'
+                  : 'PLAN_CONTROL_BATCH_BARRIER'
+            for (let index = 0; index < toolCalls.length; index += 1) {
+              if (index === planBarrierIndex) continue
+              rejections.set(toolCalls[index]!.id, {
+                ok: false,
+                summary:
+                  'A Plan mutation is a serialized control barrier. Retry this call on the next Provider turn using the new Plan projection.',
+                error: { code, category: 'execution', retryable: true },
+              })
+            }
+          }
           const outcomes = await executeToolBatch(
             toolCalls,
             (toolCall) =>
@@ -595,6 +641,7 @@ export class AgentLoop {
                 run,
                 toolCall,
                 turnContext,
+                providerTurnId,
                 truncated
                   ? {
                       ok: false,
@@ -615,9 +662,14 @@ export class AgentLoop {
                 const input = isRecord(toolCall.input) ? toolCall.input : undefined
                 if (!input || rejections.has(toolCall.id)) return undefined
                 try {
-                  const invocation =
+                  const invocation = bindPreparedInvocation(
                     prepared.get(toolCall.id) ??
-                    toolsPort.prepare(toolCall.name, input, session.cwd)
+                      toolsPort.prepare(toolCall.name, input, session.cwd),
+                    session,
+                    run,
+                    providerTurnId,
+                    toolCall,
+                  )
                   prepared.set(toolCall.id, invocation)
                   return invocation.permission ? undefined : invocation.descriptor
                 } catch {
@@ -633,16 +685,6 @@ export class AgentLoop {
               ? undefined
               : outcomes.find(({ call, result }) => call.name === terminalTool.name && result.ok)
           if (committedTerminalResult !== undefined) {
-            this.ports.emit(
-              {
-                type: 'message_committed',
-                runId: run.id,
-                messageId: this.ports.nextMessageId(),
-                role: 'assistant',
-              },
-              session.sessionId,
-              run.id,
-            )
             await this.finish(session, run, {
               type: 'prompt_completed',
               runId: run.id,
@@ -667,6 +709,17 @@ export class AgentLoop {
           continue
         }
         if (run.steerQueue.length > 0) continue
+        const completionGuidance = await this.ports.completionGuidance?.(session, run)
+        if (typeof completionGuidance === 'object') {
+          await this.finish(session, run, {
+            type: 'prompt_blocked',
+            runId: run.id,
+            code: completionGuidance.code,
+            reason: completionGuidance.reason,
+            recoverable: true,
+          })
+          return
+        }
         if (terminalTool !== undefined) {
           requireTerminalTool = true
           await this.ports.commitMessage(session, run, {
@@ -677,7 +730,6 @@ export class AgentLoop {
           })
           continue
         }
-        const completionGuidance = await this.ports.completionGuidance?.(session, run)
         if (completionGuidance !== undefined) {
           await this.ports.commitMessage(session, run, {
             role: 'user',
@@ -687,16 +739,6 @@ export class AgentLoop {
           })
           continue
         }
-        this.ports.emit(
-          {
-            type: 'message_committed',
-            runId: run.id,
-            messageId: this.ports.nextMessageId(),
-            role: 'assistant',
-          },
-          session.sessionId,
-          run.id,
-        )
         await this.finish(session, run, {
           type: 'prompt_completed',
           runId: run.id,
@@ -796,6 +838,7 @@ export class AgentLoop {
     run: AgentRun,
     toolCall: ProviderToolCall,
     turnContext: TraceContext,
+    providerTurnId: string,
     rejected?: ToolResult,
     preparedInvocation?: PreparedToolInvocation,
   ): Promise<ToolResult> {
@@ -833,7 +876,13 @@ export class AgentLoop {
           error: { code: errorCode, category: 'validation', retryable: true },
         }
       } else {
-        const prepared = preparedInvocation ?? tools.prepare(toolCall.name, input, session.cwd)
+        const prepared = bindPreparedInvocation(
+          preparedInvocation ?? tools.prepare(toolCall.name, input, session.cwd),
+          session,
+          run,
+          providerTurnId,
+          toolCall,
+        )
         preparedForMiddleware = prepared
         if (
           prepared.permission &&
@@ -1178,7 +1227,9 @@ export class AgentLoop {
         ...(event.code === undefined
           ? {}
           : { errorCode: boundedTraceCode(event.code, 'RUNTIME_ERROR') }),
-        ...(event.category === undefined ? {} : { errorCategory: event.category }),
+        ...(event.type !== 'prompt_failed' || event.category === undefined
+          ? {}
+          : { errorCategory: event.category }),
       },
       metrics,
     }
@@ -1445,4 +1496,42 @@ function elapsed(startedAt: number): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function bindPreparedInvocation(
+  prepared: PreparedToolInvocation,
+  session: AgentSession,
+  run: AgentRun,
+  providerTurnId: string,
+  toolCall: ProviderToolCall,
+): PreparedToolInvocation {
+  const invocation = planToolInvocationContextV1({
+    sessionId: session.sessionId,
+    runId: run.id,
+    providerTurnId,
+    providerToolCallId: toolCall.id,
+    toolName: toolCall.name,
+  })
+  if (
+    prepared.executionContext !== undefined &&
+    prepared.executionContext.invocation.invocationId !== invocation.invocationId
+  ) {
+    throw runtimeError(
+      'TOOL_INVOCATION_CONTEXT_CONFLICT',
+      'protocol',
+      'Prepared Tool invocation is already bound to another Provider Tool call.',
+    )
+  }
+  return {
+    ...prepared,
+    executionContext: {
+      invocation,
+      ...(prepared.executionContext?.planBinding === undefined
+        ? {}
+        : { planBinding: prepared.executionContext.planBinding }),
+      ...(prepared.executionContext?.planControlGrant === undefined
+        ? {}
+        : { planControlGrant: prepared.executionContext.planControlGrant }),
+    },
+  }
 }

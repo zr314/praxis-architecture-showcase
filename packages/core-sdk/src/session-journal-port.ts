@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto'
 import { runtimeError } from './contracts.js'
 import {
+  isReviewPlanEventTypeV1,
+  type ReviewPlanMutationOriginV1,
+  type ReviewPlanSessionEntryV3,
+} from './review-plan-events.js'
+import type { ReviewPlanProjectionV1 } from './review-plan.js'
+import {
   reduceSessionEntriesV3,
   validateSessionEntryV3,
   type SessionAttemptProjectionV3,
@@ -75,12 +81,32 @@ export type SessionQueryInputV3 =
       stepId: string
       attemptId: string
     }>
+  | Readonly<{ sessionId: string; kind: 'review_plan'; planId: string }>
+  | Readonly<{
+      sessionId: string
+      kind: 'review_plan_mutation'
+      origin:
+        | Readonly<{ kind: 'tool'; invocationId: `pti_${string}` }>
+        | Readonly<{ kind: 'runtime'; requestId: string }>
+        | Readonly<{ kind: 'host'; controlEventId: string; resolutionRequestId?: string }>
+    }>
 
 export type SessionQueryResultV3 =
   | Readonly<{ kind: 'run'; value: SessionRunProjectionV3 }>
   | Readonly<{ kind: 'plan'; value: SessionPlanGraphProjectionV3 }>
   | Readonly<{ kind: 'step'; value: SessionStepProjectionV3 }>
   | Readonly<{ kind: 'attempt'; value: SessionAttemptProjectionV3 }>
+  | Readonly<{ kind: 'review_plan'; value: ReviewPlanProjectionV1 }>
+  | Readonly<{
+      kind: 'review_plan_mutation'
+      value: Readonly<{
+        origin: ReviewPlanMutationOriginV1
+        mutationDigest: `sha256:${string}`
+        throughSequence: number
+        events: readonly ReviewPlanSessionEntryV3[]
+        projection: ReviewPlanProjectionV1
+      }>
+    }>
 
 export type SessionCommitAcceptedEventV3 = Readonly<{
   type: 'session.commit.accepted'
@@ -260,6 +286,9 @@ export class ReducingSessionJournalV3 implements SessionJournalV3 {
 
   async querySession(input: SessionQueryInputV3): Promise<SessionQueryResultV3> {
     validateQuery(input)
+    if (input.kind === 'review_plan_mutation') {
+      return this.#queryReviewPlanMutation(input)
+    }
     const projection = await this.loadProjection(input.sessionId)
     switch (input.kind) {
       case 'run': {
@@ -286,19 +315,52 @@ export class ReducingSessionJournalV3 implements SessionJournalV3 {
         if (value === undefined) queryNotFound()
         return deepFreeze({ kind: 'attempt', value })
       }
+      case 'review_plan':
+        if (projection.reviewPlan?.planId !== input.planId) queryNotFound()
+        return deepFreeze({ kind: 'review_plan', value: projection.reviewPlan })
     }
   }
 
-  subscribe(listener: SessionCommitListenerV3): () => void {
-    this.#listeners.add(listener)
-    return () => this.#listeners.delete(listener)
+  async #queryReviewPlanMutation(
+    input: Extract<SessionQueryInputV3, { kind: 'review_plan_mutation' }>,
+  ): Promise<Extract<SessionQueryResultV3, { kind: 'review_plan_mutation' }>> {
+    const entries = await this.#readAllEntries(input.sessionId)
+    const matches = entries.filter(
+      (entry): entry is ReviewPlanSessionEntryV3 =>
+        isReviewPlanEventTypeV1(entry.type) &&
+        originMatches((entry.data as Readonly<Record<string, unknown>>).origin, input.origin),
+    )
+    if (matches.length === 0) queryNotFound()
+    const origin = matches[0]!.data.origin as ReviewPlanMutationOriginV1
+    const mutationDigest = matches[0]!.data.mutationDigest as `sha256:${string}`
+    if (
+      matches.some(
+        (entry) =>
+          entry.revision !== matches[0]!.revision ||
+          entry.data.mutationDigest !== mutationDigest ||
+          !sameOrigin(entry.data.origin, origin),
+      )
+    ) {
+      throw journalFailure('SESSION_QUERY_CONFLICT')
+    }
+    const throughSequence = matches.at(-1)!.sequence
+    const projection = reduceSessionEntriesV3(
+      entries.filter((entry) => entry.sequence <= throughSequence),
+    ).reviewPlan
+    if (projection === undefined) queryNotFound()
+    return deepFreeze({
+      kind: 'review_plan_mutation',
+      value: {
+        origin,
+        mutationDigest,
+        throughSequence,
+        events: matches,
+        projection,
+      },
+    })
   }
 
-  async loadProjection(sessionId: string): Promise<SessionProjectionV3> {
-    if (!safeId(sessionId)) throw journalFailure('SESSION_ID_INVALID')
-    if (this.store.loadCachedProjection !== undefined) {
-      return this.store.loadCachedProjection(sessionId)
-    }
+  async #readAllEntries(sessionId: string): Promise<SessionEntryV3[]> {
     const entries: SessionEntryV3[] = []
     let afterSequence = 0
     let throughSequence: number | undefined
@@ -316,7 +378,20 @@ export class ReducingSessionJournalV3 implements SessionJournalV3 {
       hasMore = page.hasMore
     }
     if (entries.length === 0) throw journalFailure('SESSION_NOT_FOUND')
-    return reduceSessionEntriesV3(entries)
+    return entries
+  }
+
+  subscribe(listener: SessionCommitListenerV3): () => void {
+    this.#listeners.add(listener)
+    return () => this.#listeners.delete(listener)
+  }
+
+  async loadProjection(sessionId: string): Promise<SessionProjectionV3> {
+    if (!safeId(sessionId)) throw journalFailure('SESSION_ID_INVALID')
+    if (this.store.loadCachedProjection !== undefined) {
+      return this.store.loadCachedProjection(sessionId)
+    }
+    return reduceSessionEntriesV3(await this.#readAllEntries(sessionId))
   }
 }
 
@@ -439,9 +514,75 @@ function validateQuery(input: SessionQueryInputV3): void {
         queryInvalid()
       }
       break
+    case 'review_plan':
+      if (!onlyKeys(input, ['sessionId', 'kind', 'planId']) || !safeId(input.planId)) {
+        queryInvalid()
+      }
+      break
+    case 'review_plan_mutation':
+      if (
+        !onlyKeys(input, ['sessionId', 'kind', 'origin']) ||
+        !isRecord(input.origin) ||
+        !validMutationQueryOrigin(input.origin)
+      ) {
+        queryInvalid()
+      }
+      break
     default:
       queryInvalid()
   }
+}
+
+function validMutationQueryOrigin(value: Record<string, unknown>): boolean {
+  if (value.kind === 'tool') {
+    return (
+      onlyKeys(value, ['kind', 'invocationId']) &&
+      typeof value.invocationId === 'string' &&
+      /^pti_[A-Za-z0-9._:+-]{1,124}$/u.test(value.invocationId)
+    )
+  }
+  if (value.kind === 'runtime') {
+    return onlyKeys(value, ['kind', 'requestId']) && safeId(value.requestId)
+  }
+  if (value.kind === 'host') {
+    return (
+      onlyKeys(value, ['kind', 'controlEventId', 'resolutionRequestId']) &&
+      safeId(value.controlEventId) &&
+      (value.resolutionRequestId === undefined || safeId(value.resolutionRequestId))
+    )
+  }
+  return false
+}
+
+function originMatches(
+  value: unknown,
+  query: Extract<SessionQueryInputV3, { kind: 'review_plan_mutation' }>['origin'],
+): boolean {
+  if (!isRecord(value) || !isRecord(query) || value.kind !== query.kind) return false
+  if (query.kind === 'tool') return value.invocationId === query.invocationId
+  if (query.kind === 'runtime') return value.requestId === query.requestId
+  if (query.kind === 'host') {
+    return (
+      value.controlEventId === query.controlEventId &&
+      value.resolutionRequestId === query.resolutionRequestId
+    )
+  }
+  return false
+}
+
+function sameOrigin(left: unknown, right: ReviewPlanMutationOriginV1): boolean {
+  if (!isRecord(left) || left.kind !== right.kind) return false
+  if (right.kind === 'tool') {
+    return left.invocationId === right.invocationId && left.payloadDigest === right.payloadDigest
+  }
+  if (right.kind === 'runtime') {
+    return left.requestId === right.requestId && left.inputDigest === right.inputDigest
+  }
+  return (
+    left.controlEventId === right.controlEventId &&
+    left.resolutionRequestId === right.resolutionRequestId &&
+    left.inputDigest === right.inputDigest
+  )
 }
 
 function checksum(value: unknown): `sha256:${string}` {

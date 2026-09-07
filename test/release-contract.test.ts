@@ -158,11 +158,11 @@ test('public packages identify the canonical GitHub repository', async () => {
     const manifest = await readManifest(path)
     assert.deepEqual(manifest.repository, {
       type: 'git',
-      url: 'git+https://github.com/uestc-Praxis/praxis.git',
+      url: 'git+https://github.com/zr314/praxis-architecture-showcase.git',
     })
-    assert.equal(manifest.homepage, 'https://github.com/uestc-Praxis/praxis#readme')
+    assert.equal(manifest.homepage, 'https://github.com/zr314/praxis-architecture-showcase#readme')
     assert.deepEqual(manifest.bugs, {
-      url: 'https://github.com/uestc-Praxis/praxis/issues',
+      url: 'https://github.com/zr314/praxis-architecture-showcase/issues',
     })
   }
 })

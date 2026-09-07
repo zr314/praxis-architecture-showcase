@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import {
   mkdir,
   mkdtemp,
@@ -407,6 +408,18 @@ test('shell uses the local platform adapter with timeout handling', async () => 
     const result = await tools.execute('shell', { command }, workspace, controller.signal)
     assert.equal(result.ok, true)
     assert.match(JSON.stringify(result.output), /shell-proof/)
+
+    if (process.platform !== 'win32' && existsSync('/bin/bash')) {
+      const pipeline = await tools.execute(
+        'shell',
+        { command: "printf 'diagnostic failure\\n'; exit 7 | sed -n '1p'" },
+        workspace,
+        controller.signal,
+      )
+      assert.equal(shellDefinition?.description.includes('with Bash'), true)
+      assert.equal(pipeline.ok, false)
+      assert.equal((pipeline.output as { exitCode: number }).exitCode, 7)
+    }
 
     const stdinProgram = 'process.stdin.pipe(process.stdout)'
     const stdinCommand =

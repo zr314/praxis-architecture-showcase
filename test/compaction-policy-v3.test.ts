@@ -237,11 +237,18 @@ test('model generators are optional and bounded by deadline, cost, schema, and f
     }).compact({ sessionId: `session-${generator.identity.id}`, messages })
     assert.ok(checkpoint)
     assert.equal(checkpoint.trust, 'low')
-    assert.deepEqual(checkpoint.provenance, {
-      schemaVersion: 1,
-      generator: { kind: 'deterministic', id: 'praxis-deterministic-v1' },
-      fallbackFrom: generator.identity,
-    })
+    assert.deepEqual(
+      { ...checkpoint.provenance, failureCode: undefined, failedGeneratorDurationMs: undefined },
+      {
+        schemaVersion: 1,
+        generator: { kind: 'deterministic', id: 'praxis-deterministic-v1' },
+        fallbackFrom: generator.identity,
+        failureCode: undefined,
+        failedGeneratorDurationMs: undefined,
+      },
+    )
+    assert.match(checkpoint.provenance?.failureCode ?? '', /^COMPACTION_/u)
+    assert.ok((checkpoint.provenance?.failedGeneratorDurationMs ?? -1) >= 0)
   }
 
   const oversized = new OversizedGenerator()
@@ -507,7 +514,7 @@ test('summary token fitting preserves the continuation frontier before verbose e
   assert.ok(checkpoint.summary?.activePlan.some((item) => /rebuild/iu.test(item)))
 })
 
-test('successful shell source edits contribute paths to the Runtime compaction baseline', async () => {
+test('successful shell source edits contribute unverified candidates, not confirmed writes', async () => {
   const messages: ProviderMessage[] = [
     { role: 'user', content: 'Make the Cython extension compatible and install it.' },
     {
@@ -529,7 +536,11 @@ test('successful shell source edits contribute paths to the Runtime compaction b
       role: 'tool',
       toolCallId: 'ambiguous-edit',
       name: 'edit',
-      content: JSON.stringify({ ok: false, error: { code: 'EDIT_AMBIGUOUS' } }),
+      content: JSON.stringify({
+        ok: false,
+        output: { path: '/app/pkg/ccomplexity.pyx' },
+        error: { code: 'EDIT_AMBIGUOUS' },
+      }),
     },
     {
       role: 'assistant',
@@ -591,7 +602,105 @@ test('successful shell source edits contribute paths to the Runtime compaction b
 
   assert.ok(checkpoint)
   assert.equal(checkpoint.summary?.modifiedFiles.includes('/app/pkg/ccomplexity.pyx'), false)
-  assert.deepEqual(checkpoint.summary?.modifiedFiles, ['src/ccomplexity.pyx'])
+  assert.deepEqual(checkpoint.summary?.modifiedFiles, [])
+  assert.ok(
+    checkpoint.summary?.unresolved.some(
+      (value) =>
+        value.includes('Unverified shell mutation candidates') &&
+        value.includes('src/ccomplexity.pyx'),
+    ),
+  )
+})
+
+test('compaction preserves complete long semantic facts within the summary token budget', async () => {
+  const fact = `${'A qualified technical explanation. '.repeat(10)}However, the native build still fails; do not report success. 😀`
+  const checkpoint = await new CompactionService({
+    generator: {
+      identity: modelIdentity('long-facts'),
+      async generate() {
+        return { ...emptySummary(), decisions: [fact], activePlan: [fact] }
+      },
+    },
+    tokenizer: new CharacterTokenizer(),
+    retainRecentMessages: 1,
+    compactionPolicy: { minimumGain: 0, maxSummaryTokens: 4_096 },
+  }).compact({ sessionId: 'complete-facts', messages: boundaryMessages() })
+  assert.ok(checkpoint)
+  assert.ok(checkpoint.summary?.decisions.includes(fact))
+  assert.ok(checkpoint.summary?.activePlan.includes(fact))
+  assert.ok(checkpoint.estimatedTokens <= 4_096)
+})
+
+test('shell inputs and heredoc mentions cannot manufacture confirmed modified files', async () => {
+  const messages: ProviderMessage[] = [
+    { role: 'user', content: 'Only modify /app/user.cpp.' },
+    {
+      role: 'assistant',
+      content: '',
+      toolCalls: [
+        {
+          id: 'script',
+          name: 'shell',
+          input: {
+            command:
+              'cat > /tmp/probe.cpp << EOF\n#include "user.h"\nEOF\ng++ /app/main.cpp /tmp/probe.cpp -o /tmp/probe\nsed -n "1,30p" /build/locale_init.cc',
+          },
+        },
+      ],
+    },
+    {
+      role: 'tool',
+      toolCallId: 'script',
+      name: 'shell',
+      content: JSON.stringify({ ok: true, output: { stdout: '', exitCode: 0 } }),
+    },
+    { role: 'user', content: 'Continue.' },
+  ]
+  const checkpoint = await new CompactionService({
+    tokenizer: new CharacterTokenizer(),
+    retainRecentMessages: 1,
+    compactionPolicy: { minimumGain: 0, maxSummaryTokens: 4_096 },
+  }).compact({ sessionId: 'shell-path-authority', messages })
+  assert.ok(checkpoint)
+  assert.deepEqual(checkpoint.summary?.modifiedFiles, [])
+  assert.match(checkpoint.content, /Unverified shell mutation candidates/u)
+})
+
+test('zero-error Valgrind summaries do not become unresolved failures but real errors remain', async () => {
+  for (const errors of [0, 1]) {
+    const checkpoint = await new CompactionService({
+      tokenizer: new CharacterTokenizer(),
+      retainRecentMessages: 1,
+      compactionPolicy: { minimumGain: 0, maxSummaryTokens: 4_096 },
+    }).compact({
+      sessionId: `valgrind-${errors}`,
+      messages: [
+        { role: 'user', content: 'Check memory correctness.' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'check', name: 'shell', input: { command: 'valgrind ./program' } }],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'check',
+          name: 'shell',
+          content: JSON.stringify({
+            ok: true,
+            output: {
+              stderr: `==1234== ERROR SUMMARY: ${errors} errors from ${errors} contexts (suppressed: 0 from 0)`,
+            },
+          }),
+        },
+        { role: 'user', content: 'Continue.' },
+      ],
+    })
+    assert.ok(checkpoint)
+    assert.equal(
+      checkpoint.summary?.unresolved.some((value) => value.includes('ERROR SUMMARY')),
+      errors > 0,
+    )
+  }
 })
 
 test('child compaction extracts the real task contract from its context packet', async () => {

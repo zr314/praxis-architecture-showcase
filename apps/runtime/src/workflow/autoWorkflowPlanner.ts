@@ -12,6 +12,7 @@ import { LONG_LIVED_EXECUTION_POLICY_V1 } from '../longLivedExecutionPolicy.js'
 import type { AgentLoop } from '../loop/index.js'
 import type { Planner, PlannerExecution } from '../planner-api/index.js'
 import type { ToolRuntime } from '../tools/toolRuntime.js'
+import type { ToolExecutionBrokerV1 } from '../tools/toolRuntime.js'
 import { AgentDelegateToolV1, type WorkflowAgentWorkerPortV1 } from './agentDelegateTool.js'
 import { AgentHandoffToolV1 } from './agentHandoffTool.js'
 import {
@@ -49,6 +50,14 @@ export type AutoWorkflowPlannerOptionsV1 = Readonly<{
   emitProjection?(projection: WorkflowProjectionV1, input: PlannerExecution): void
   scheduling?(providerId: string): WorkflowSchedulingPolicyV1
   runTreeControl: AgentRunTreeControlPortV1
+  reviewPlanTools?(
+    input: PlannerExecution,
+  ): readonly RuntimeTool[] | Promise<readonly RuntimeTool[]>
+  rootExecutionBroker?(
+    input: PlannerExecution,
+    workflowId: string,
+    effects: WorkflowEffectBrokerV1,
+  ): ToolExecutionBrokerV1
 }>
 
 /**
@@ -114,7 +123,12 @@ export class AutoWorkflowPlannerV1 implements Planner {
       },
       mode,
     )
-    workflowTools = run.tools.fork([], { executionBroker: effectBroker })
+    const rootExecutionBroker = this.options.rootExecutionBroker?.(
+      input,
+      projection.workflowId,
+      effectBroker,
+    )
+    workflowTools = run.tools.fork([], { executionBroker: rootExecutionBroker ?? effectBroker })
     run.tools = workflowTools
     const worker = await this.options.worker(input)
     const runTreeTools: RuntimeTool[] =
@@ -175,7 +189,11 @@ export class AutoWorkflowPlannerV1 implements Planner {
               this.options.emitProjection?.(next, input),
             ),
           ]
-    const modelTools = [...runTreeTools, ...explicitWorkflowTools]
+    const reviewPlanTools =
+      mode === 'workflow' || this.options.reviewPlanTools === undefined
+        ? []
+        : await this.options.reviewPlanTools(input)
+    const modelTools = [...reviewPlanTools, ...runTreeTools, ...explicitWorkflowTools]
     for (const tool of modelTools) workflowTools.register(tool)
     const toolDefinitions = workflowTools.definitions()
     const executionSnapshot = await this.options.artifacts.put(

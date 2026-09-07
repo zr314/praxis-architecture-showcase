@@ -26,8 +26,24 @@ import {
   validatePlanGraphV1,
   validatePlanStepV1,
 } from './plan.js'
+import {
+  isReviewPlanEventTypeV1,
+  reduceReviewPlanEventV1,
+  type ReviewPlanSessionEntryV3,
+  validateReviewPlanEventV1,
+} from './review-plan-events.js'
+import type {
+  PlanControlAuthorizationChallengeV1,
+  ReviewPlanProjectionV1,
+  VerifiedPlanControlFactV1,
+} from './review-plan.js'
 import { type SubagentExecutionRequestV1, validateSubagentExecutionRequestV1 } from './subagent.js'
 import type { ArtifactReference } from './tool.js'
+import {
+  type WorkingPlanV1,
+  type WorkingReviewV1,
+  validateWorkingPlanEventV1,
+} from './working-plan.js'
 
 const MAX_ENTRIES = 100_000
 const MAX_TEXT_BYTES = 8 * 1024
@@ -63,6 +79,8 @@ export type SessionCompactionProvenanceV3 = Readonly<{
   schemaVersion: 1
   generator: CompactionGeneratorIdentity
   fallbackFrom?: CompactionGeneratorIdentity
+  failureCode?: string
+  failedGeneratorDurationMs?: number
 }>
 
 export type SessionEntryCorrelationV3 = Readonly<{
@@ -74,6 +92,14 @@ export type SessionEntryCorrelationV3 = Readonly<{
   attemptId?: string
   toolCallId?: string
   commandId?: string
+  itemId?: string
+  itemAttemptId?: string
+  executionRequestId?: string
+  reviewRequestId?: string
+  invocationId?: string
+  runtimeRequestId?: string
+  controlEventId?: string
+  resolutionRequestId?: string
 }>
 
 type SessionEntryEnvelopeV3<TType extends string, TData> = Readonly<{
@@ -137,7 +163,10 @@ export type MessageCommittedEntryV3 = SessionEntryEnvelopeV3<
   'message.committed',
   { messageId: string; message: ProviderMessage }
 >
-export type RunStartedEntryV3 = SessionEntryEnvelopeV3<'run.started', { clientRequestId: string }>
+export type RunStartedEntryV3 = SessionEntryEnvelopeV3<
+  'run.started',
+  { clientRequestId: string; planPolicy?: 'optional' | 'required' }
+>
 export type RunTerminalEntryV3 = SessionEntryEnvelopeV3<
   'run.terminal',
   {
@@ -361,12 +390,80 @@ export type VerificationRecordedEntryV3 = SessionEntryEnvelopeV3<
 export type ArtifactReferencedEntryV3 = SessionEntryEnvelopeV3<
   'artifact.referenced',
   {
-    owner: 'message' | 'run' | 'command' | 'compaction' | 'subagent' | 'verification'
+    owner:
+      | 'message'
+      | 'run'
+      | 'command'
+      | 'compaction'
+      | 'subagent'
+      | 'verification'
+      | 'review_plan_definition'
+      | 'review_evidence'
+      | 'review_decision'
+      | 'workflow_effect_request'
     artifact: ArtifactReference
   }
 >
 
+export type ControlAuthorizedEntryV3 = SessionEntryEnvelopeV3<
+  'control.authorized',
+  {
+    authorizationRequestId: string
+    challengeEnvelopeDigest: `sha256:${string}`
+    fact: VerifiedPlanControlFactV1
+  }
+>
+
+export type ControlTurnBoundEntryV3 = SessionEntryEnvelopeV3<
+  'control.turn_bound',
+  { controlEventId: string; runId: string; providerTurnId: string }
+>
+
+export type ControlDiscardedEntryV3 = SessionEntryEnvelopeV3<
+  'control.discarded',
+  {
+    controlEventId: string
+    disposition: 'unused' | 'aborted' | 'timeout' | 'provider_error' | 'run_terminated'
+  }
+>
+
+export type ControlConsumedEntryV3 = SessionEntryEnvelopeV3<
+  'control.consumed',
+  {
+    controlEventId: string
+    action: PlanControlAuthorizationChallengeV1['action']
+    targetDigest: `sha256:${string}`
+  }
+>
+
+export type ReviewBudgetReservedEntryV3 = SessionEntryEnvelopeV3<
+  'review_budget.reserved',
+  {
+    reviewRequestId: string
+    attemptNumber: number
+    reservation: ProviderUsage
+  }
+>
+
+export type ReviewBudgetSettledEntryV3 = SessionEntryEnvelopeV3<
+  'review_budget.settled',
+  {
+    reviewRequestId: string
+    attemptNumber: number
+    disposition: 'actual' | 'released_before_provider' | 'remote_outcome_unknown'
+    usage: ProviderUsage
+  }
+>
+
 export type SessionEntryV3 =
+  | SessionEntryEnvelopeV3<
+      'working_plan.saved',
+      Readonly<{ operationId: string; inputDigest: string; plan: WorkingPlanV1 }>
+    >
+  | SessionEntryEnvelopeV3<
+      'working_plan.review_requested' | 'working_plan.reviewed',
+      Readonly<{ review: WorkingReviewV1 }>
+    >
   | SessionCreatedEntryV3
   | SessionMetadataUpdatedEntryV3
   | SessionPlanUpdatedEntryV3
@@ -396,6 +493,13 @@ export type SessionEntryV3 =
   | SubagentResultRecordedEntryV3
   | VerificationRecordedEntryV3
   | ArtifactReferencedEntryV3
+  | ReviewPlanSessionEntryV3
+  | ControlAuthorizedEntryV3
+  | ControlTurnBoundEntryV3
+  | ControlDiscardedEntryV3
+  | ControlConsumedEntryV3
+  | ReviewBudgetReservedEntryV3
+  | ReviewBudgetSettledEntryV3
 
 export type SessionRunProjectionV3 = Readonly<{
   runId: string
@@ -403,6 +507,7 @@ export type SessionRunProjectionV3 = Readonly<{
   state: 'running' | 'completed' | 'failed' | 'aborted' | 'interrupted'
   usage: Readonly<Partial<BudgetUsage>>
   errorCode?: string
+  planPolicy: 'optional' | 'required'
 }>
 
 export type SessionAttemptProjectionV3 = Readonly<{
@@ -549,6 +654,26 @@ export type SessionCompactionCheckpointProjectionV3 = Readonly<{
   }>
 }>
 
+export type SessionControlProjectionV3 = Readonly<{
+  controlEventId: string
+  authorizationRequestId: string
+  challengeEnvelopeDigest: `sha256:${string}`
+  fact: VerifiedPlanControlFactV1
+  state: 'authorized' | 'turn_bound' | 'consumed' | 'discarded'
+  runId?: string
+  providerTurnId?: string
+  disposition?: ControlDiscardedEntryV3['data']['disposition']
+}>
+
+export type SessionReviewBudgetProjectionV3 = Readonly<{
+  reviewRequestId: string
+  attemptNumber: number
+  reservation: ProviderUsage
+  state: 'reserved' | 'settled'
+  disposition?: ReviewBudgetSettledEntryV3['data']['disposition']
+  usage?: ProviderUsage
+}>
+
 export type SessionProjectionV3 = Readonly<{
   snapshot: SessionSnapshotV3
   catalog: SessionCatalogProjectionV3
@@ -557,6 +682,11 @@ export type SessionProjectionV3 = Readonly<{
   planGraph?: SessionPlanGraphProjectionV3
   plannerGeneration?: SessionPlannerGenerationProjectionV3
   compactPlan?: CompactPlan
+  reviewPlan?: ReviewPlanProjectionV1
+  workingPlan?: WorkingPlanV1
+  workingReviews?: readonly WorkingReviewV1[]
+  reviewControls?: readonly SessionControlProjectionV3[]
+  reviewBudgets?: readonly SessionReviewBudgetProjectionV3[]
 }>
 
 type MutableAttempt = {
@@ -665,6 +795,11 @@ export function reduceSessionEntriesV3(input: readonly unknown[]): SessionProjec
   let checkpoint: SessionCompactionCheckpointProjectionV3 | undefined
   let usage: BudgetUsage = { turns: 0, toolCalls: 0, subagents: 0 }
   let plan: MutablePlan | undefined
+  let reviewPlan: ReviewPlanProjectionV1 | undefined
+  let workingPlan: WorkingPlanV1 | undefined
+  const workingReviews = new Map<string, WorkingReviewV1>()
+  const reviewControls = new Map<string, SessionControlProjectionV3>()
+  const reviewBudgets = new Map<string, SessionReviewBudgetProjectionV3>()
   let plannerGeneration: SessionPlannerGenerationProjectionV3 | undefined
   let previous: SessionEntryV3 = first
 
@@ -754,6 +889,7 @@ export function reduceSessionEntriesV3(input: readonly unknown[]): SessionProjec
         runs.set(entry.runId, {
           runId: entry.runId,
           clientRequestId: entry.data.clientRequestId,
+          planPolicy: entry.data.planPolicy ?? 'optional',
           state: 'running',
           usage: {},
         })
@@ -1140,6 +1276,124 @@ export function reduceSessionEntriesV3(input: readonly unknown[]): SessionProjec
         useStableId(stableIds, 'artifact', entry.data.artifact.artifactId)
         artifacts.set(entry.data.artifact.artifactId, structuredClone(entry.data.artifact))
         break
+      case 'control.authorized': {
+        const controlEventId = entry.data.fact.controlEventId
+        useStableId(stableIds, 'control', controlEventId)
+        if (reviewControls.has(controlEventId)) transitionInvalid()
+        reviewControls.set(controlEventId, {
+          controlEventId,
+          authorizationRequestId: entry.data.authorizationRequestId,
+          challengeEnvelopeDigest: entry.data.challengeEnvelopeDigest,
+          fact: structuredClone(entry.data.fact),
+          state: 'authorized',
+        })
+        break
+      }
+      case 'control.turn_bound': {
+        const control = reviewControls.get(entry.data.controlEventId)
+        if (
+          control === undefined ||
+          control.state !== 'authorized' ||
+          (control.fact.runId !== undefined && control.fact.runId !== entry.data.runId) ||
+          (control.fact.providerTurnId !== undefined &&
+            control.fact.providerTurnId !== entry.data.providerTurnId)
+        ) {
+          transitionInvalid()
+        }
+        reviewControls.set(control.controlEventId, {
+          ...control,
+          state: 'turn_bound',
+          runId: entry.data.runId,
+          providerTurnId: entry.data.providerTurnId,
+        })
+        break
+      }
+      case 'control.discarded': {
+        const control = reviewControls.get(entry.data.controlEventId)
+        if (control === undefined || control.state !== 'turn_bound') transitionInvalid()
+        reviewControls.set(control.controlEventId, {
+          ...control,
+          state: 'discarded',
+          disposition: entry.data.disposition,
+        })
+        break
+      }
+      case 'control.consumed': {
+        const control = reviewControls.get(entry.data.controlEventId)
+        if (
+          control === undefined ||
+          !['authorized', 'turn_bound'].includes(control.state) ||
+          control.fact.action !== entry.data.action ||
+          control.fact.targetDigest !== entry.data.targetDigest
+        ) {
+          transitionInvalid()
+        }
+        reviewControls.set(control.controlEventId, { ...control, state: 'consumed' })
+        break
+      }
+      case 'review_budget.reserved': {
+        const key = reviewBudgetKey(entry.data.reviewRequestId, entry.data.attemptNumber)
+        if (reviewBudgets.has(key)) transitionInvalid()
+        reviewBudgets.set(key, {
+          reviewRequestId: entry.data.reviewRequestId,
+          attemptNumber: entry.data.attemptNumber,
+          reservation: structuredClone(entry.data.reservation),
+          state: 'reserved',
+        })
+        break
+      }
+      case 'review_budget.settled': {
+        const key = reviewBudgetKey(entry.data.reviewRequestId, entry.data.attemptNumber)
+        const budget = reviewBudgets.get(key)
+        if (budget === undefined || budget.state !== 'reserved') transitionInvalid()
+        reviewBudgets.set(key, {
+          ...budget,
+          state: 'settled',
+          disposition: entry.data.disposition,
+          usage: structuredClone(entry.data.usage),
+        })
+        usage = mergeUsage(usage, {
+          turns: 0,
+          toolCalls: 0,
+          subagents: 0,
+          ...entry.data.usage,
+        })
+        break
+      }
+      case 'working_plan.saved': {
+        const next = entry.data.plan
+        if (next.revision !== (workingPlan?.revision ?? 0) + 1) transitionInvalid()
+        workingPlan = structuredClone(next)
+        break
+      }
+      case 'working_plan.review_requested': {
+        const r = entry.data.review
+        if (workingReviews.has(r.reviewRequestId)) transitionInvalid()
+        workingReviews.set(r.reviewRequestId, structuredClone(r))
+        break
+      }
+      case 'working_plan.reviewed': {
+        const r = entry.data.review
+        const prior = workingReviews.get(r.reviewRequestId)
+        if (
+          prior === undefined ||
+          prior.reportRef !== undefined ||
+          Object.entries(prior).some(([key, value]) => Reflect.get(r, key) !== value)
+        )
+          transitionInvalid()
+        workingReviews.set(r.reviewRequestId, structuredClone(r))
+        break
+      }
+      default:
+        if (!isReviewPlanEventTypeV1(entry.type)) transitionInvalid()
+        reviewPlan = reduceReviewPlanEventV1(reviewPlan, {
+          type: entry.type,
+          sequence: entry.sequence,
+          revision: entry.revision,
+          ...(entry.runId === undefined ? {} : { runId: entry.runId }),
+          data: entry.data,
+        })
+        break
     }
     previous = entry
   }
@@ -1174,7 +1428,14 @@ export function reduceSessionEntriesV3(input: readonly unknown[]): SessionProjec
     permissionRequestIds,
     usage,
     ...(checkpoint === undefined ? {} : { checkpointId: checkpoint.checkpointId }),
-    artifactIds: [...artifacts.keys()],
+    artifactIds: [
+      ...new Set([
+        ...artifacts.keys(),
+        ...[...workingReviews.values()].flatMap((r) =>
+          r.reportRef === undefined ? [r.inputRef] : [r.inputRef, r.reportRef],
+        ),
+      ]),
+    ],
   })
   return deepFreeze({
     snapshot,
@@ -1208,10 +1469,31 @@ export function reduceSessionEntriesV3(input: readonly unknown[]): SessionProjec
     ...(checkpoint === undefined ? {} : { checkpoint }),
     ...(planGraph === undefined ? {} : { planGraph }),
     ...(plannerGeneration === undefined ? {} : { plannerGeneration }),
+    ...(reviewPlan === undefined ? {} : { reviewPlan }),
+    ...(workingPlan === undefined ? {} : { workingPlan }),
+    ...(workingReviews.size === 0 ? {} : { workingReviews: [...workingReviews.values()] }),
+    ...(reviewControls.size === 0 ? {} : { reviewControls: [...reviewControls.values()] }),
+    ...(reviewBudgets.size === 0 ? {} : { reviewBudgets: [...reviewBudgets.values()] }),
   })
 }
 
 function validatePayload(type: string, data: Record<string, unknown>, runId: unknown): void {
+  if (
+    ['working_plan.saved', 'working_plan.review_requested', 'working_plan.reviewed'].includes(type)
+  ) {
+    validateWorkingPlanEventV1(type, data)
+    return
+  }
+  if (isReviewPlanEventTypeV1(type)) {
+    validateReviewPlanEventV1({
+      type,
+      sequence: 1,
+      revision: 1,
+      ...(typeof runId === 'string' ? { runId } : {}),
+      data,
+    })
+    return
+  }
   switch (type) {
     case 'session.created':
       exactData(
@@ -1288,8 +1570,9 @@ function validatePayload(type: string, data: Record<string, unknown>, runId: unk
       break
     case 'run.started':
       requireRunId(runId)
-      exactData(data, ['clientRequestId'])
+      exactData(data, ['clientRequestId'], ['planPolicy'])
       safe(data.clientRequestId)
+      if (data.planPolicy !== undefined) enumValue(data.planPolicy, ['optional', 'required'])
       break
     case 'run.terminal':
       requireRunId(runId)
@@ -1587,8 +1870,68 @@ function validatePayload(type: string, data: Record<string, unknown>, runId: unk
       break
     case 'artifact.referenced':
       exactData(data, ['owner', 'artifact'])
-      enumValue(data.owner, ['message', 'run', 'command', 'compaction', 'subagent', 'verification'])
+      enumValue(data.owner, [
+        'message',
+        'run',
+        'command',
+        'compaction',
+        'subagent',
+        'verification',
+        'review_plan_definition',
+        'review_evidence',
+        'review_decision',
+        'workflow_effect_request',
+      ])
       artifact(data.artifact)
+      break
+    case 'control.authorized':
+      exactData(data, ['authorizationRequestId', 'challengeEnvelopeDigest', 'fact'])
+      safe(data.authorizationRequestId)
+      digest(data.challengeEnvelopeDigest)
+      verifiedPlanControlFact(data.fact)
+      break
+    case 'control.turn_bound':
+      exactData(data, ['controlEventId', 'runId', 'providerTurnId'])
+      safe(data.controlEventId)
+      safe(data.runId)
+      safe(data.providerTurnId)
+      break
+    case 'control.discarded':
+      exactData(data, ['controlEventId', 'disposition'])
+      safe(data.controlEventId)
+      enumValue(data.disposition, [
+        'unused',
+        'aborted',
+        'timeout',
+        'provider_error',
+        'run_terminated',
+      ])
+      break
+    case 'control.consumed':
+      exactData(data, ['controlEventId', 'action', 'targetDigest'])
+      safe(data.controlEventId)
+      enumValue(data.action, [
+        'abandon',
+        'scope_change',
+        'resolve_block',
+        'cancel',
+        'session_close',
+      ])
+      digest(data.targetDigest)
+      break
+    case 'review_budget.reserved':
+      exactData(data, ['reviewRequestId', 'attemptNumber', 'reservation'])
+      safe(data.reviewRequestId)
+      positive(data.attemptNumber)
+      providerUsageValue(data.reservation)
+      if (isRecord(data.reservation) && Object.keys(data.reservation).length === 0) invalid()
+      break
+    case 'review_budget.settled':
+      exactData(data, ['reviewRequestId', 'attemptNumber', 'disposition', 'usage'])
+      safe(data.reviewRequestId)
+      positive(data.attemptNumber)
+      enumValue(data.disposition, ['actual', 'released_before_provider', 'remote_outcome_unknown'])
+      providerUsageValue(data.usage)
       break
     default:
       invalid()
@@ -1827,10 +2170,111 @@ function validCorrelation(value: unknown): boolean {
     'attemptId',
     'toolCallId',
     'commandId',
+    'itemId',
+    'itemAttemptId',
+    'executionRequestId',
+    'reviewRequestId',
+    'invocationId',
+    'runtimeRequestId',
+    'controlEventId',
+    'resolutionRequestId',
   ]
   return (
     Object.keys(value).length > 0 && onlyKeys(value, keys) && Object.values(value).every(safeId)
   )
+}
+
+function reviewBudgetKey(reviewRequestId: string, attemptNumber: number): string {
+  return `${reviewRequestId}:${attemptNumber}`
+}
+
+function verifiedPlanControlFact(value: unknown): void {
+  if (!isRecord(value)) invalid()
+  exactData(
+    value,
+    [
+      'controlEventId',
+      'actorId',
+      'actorBindingDigest',
+      'sessionId',
+      'action',
+      'reasonCode',
+      'target',
+      'targetDigest',
+      'challengeId',
+      'challengeDigest',
+      'tokenDigest',
+      'issuedAt',
+      'expiresAt',
+    ],
+    ['runId', 'providerTurnId'],
+  )
+  for (const key of ['controlEventId', 'actorId', 'sessionId']) safe(value[key])
+  for (const key of ['actorBindingDigest', 'targetDigest', 'challengeDigest', 'tokenDigest']) {
+    digest(value[key])
+  }
+  if (typeof value.challengeId !== 'string' || !value.challengeId.startsWith('pcc_')) invalid()
+  enumValue(value.action, ['abandon', 'scope_change', 'resolve_block', 'cancel', 'session_close'])
+  enumValue(value.reasonCode, [
+    'user_requested_abandon',
+    'user_changed_scope',
+    'user_resolved_block',
+    'user_cancelled',
+    'user_closed_session',
+    'host_policy_override',
+  ])
+  if (!controlReasonMatches(value.action as string, value.reasonCode as string)) invalid()
+  instant(value.issuedAt)
+  instant(value.expiresAt)
+  if ((value.expiresAt as string) <= (value.issuedAt as string)) invalid()
+  optionalSafe(value.runId)
+  optionalSafe(value.providerTurnId)
+  planControlTarget(value.target)
+}
+
+function controlReasonMatches(action: string, reason: string): boolean {
+  const allowed: Record<string, readonly string[]> = {
+    abandon: ['user_requested_abandon'],
+    scope_change: ['user_changed_scope', 'host_policy_override'],
+    resolve_block: ['user_resolved_block', 'host_policy_override'],
+    cancel: ['user_cancelled', 'host_policy_override'],
+    session_close: ['user_closed_session'],
+  }
+  return allowed[action]?.includes(reason) === true
+}
+
+function planControlTarget(value: unknown): void {
+  if (!isRecord(value)) invalid()
+  if (value.kind === 'plan') {
+    exactData(value, ['kind', 'planId', 'expectedPlanRevision', 'planStateDigest'])
+    safe(value.planId)
+    positive(value.expectedPlanRevision)
+    digest(value.planStateDigest)
+    return
+  }
+  if (value.kind === 'run') {
+    exactData(value, ['kind', 'runId', 'runStateDigest', 'planBinding'])
+    safe(value.runId)
+    digest(value.runStateDigest)
+    planControlBinding(value.planBinding)
+    return
+  }
+  if (value.kind === 'session') {
+    exactData(value, ['kind', 'sessionStateDigest', 'planBinding'])
+    digest(value.sessionStateDigest)
+    planControlBinding(value.planBinding)
+    return
+  }
+  invalid()
+}
+
+function planControlBinding(value: unknown): void {
+  if (value === null) return
+  if (!isRecord(value)) invalid()
+  exactData(value, ['planId', 'planRevision', 'stateDigest'])
+  safe(value.planId)
+  positive(value.planRevision)
+  digest(value.stateDigest)
 }
 
 function providerMessage(value: unknown): void {
@@ -1987,10 +2431,26 @@ function compactionSummary(value: unknown): void {
 
 function compactionProvenance(value: unknown): void {
   if (!isRecord(value)) invalid()
-  exactData(value, ['schemaVersion', 'generator'], ['fallbackFrom'])
+  exactData(
+    value,
+    ['schemaVersion', 'generator'],
+    ['fallbackFrom', 'failureCode', 'failedGeneratorDurationMs'],
+  )
   if (value.schemaVersion !== 1) invalid()
   compactionGeneratorIdentity(value.generator)
   if (value.fallbackFrom !== undefined) compactionGeneratorIdentity(value.fallbackFrom)
+  if (value.failureCode !== undefined) safe(value.failureCode)
+  if (
+    value.failedGeneratorDurationMs !== undefined &&
+    (!Number.isSafeInteger(value.failedGeneratorDurationMs) ||
+      (value.failedGeneratorDurationMs as number) < 0)
+  )
+    invalid()
+  if (
+    (value.failureCode !== undefined || value.failedGeneratorDurationMs !== undefined) &&
+    value.fallbackFrom === undefined
+  )
+    invalid()
 }
 
 function compactionGeneratorIdentity(value: unknown): void {

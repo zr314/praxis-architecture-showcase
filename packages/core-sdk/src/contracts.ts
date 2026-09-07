@@ -58,6 +58,13 @@ export type AgentEvent =
       code?: string
       category?: RuntimeErrorCategory
     }
+  | {
+      type: 'prompt_blocked'
+      runId: string
+      code: string
+      reason: string
+      recoverable: true
+    }
   | { type: 'prompt_aborted'; runId: string; reason?: CancellationReason }
 
 export type RuntimeErrorCategory =
@@ -429,6 +436,7 @@ export type AgentRun = {
   steerQueue: Array<{ id: string; text: string; workflowMessageSequence?: number }>
   budget?: ExecutionBudget
   usage?: BudgetUsage
+  planPolicy?: 'optional' | 'required'
 }
 
 export type AgentSession = {
@@ -474,6 +482,8 @@ export type CompactionProvenance = {
   schemaVersion: 1
   generator: CompactionGeneratorIdentity
   fallbackFrom?: CompactionGeneratorIdentity
+  failureCode?: string
+  failedGeneratorDurationMs?: number
 }
 
 export type CompactionSummary = {
@@ -507,13 +517,19 @@ export type SessionMemory = {
   plan?: CompactPlan
 }
 
+export type MessageCommitReceiptV1 = Readonly<{ messageId: string }>
+
 export interface SessionRepository {
   initialize(): Promise<void>
   list(): Promise<SessionRecord[]>
   get(sessionId: string): Promise<SessionRecord | undefined>
   create(session: SessionRecord): Promise<void>
   update(session: SessionRecord): Promise<void>
-  appendMessage(sessionId: string, message: ProviderMessage): Promise<void>
+  appendMessage(
+    sessionId: string,
+    message: ProviderMessage,
+    input?: Readonly<{ messageId?: string }>,
+  ): Promise<MessageCommitReceiptV1 | undefined>
   loadMessages(sessionId: string): Promise<ProviderMessage[]>
   loadMemory(sessionId: string): Promise<SessionMemory>
   saveMemory(memory: SessionMemory): Promise<void>
@@ -522,8 +538,13 @@ export interface SessionRepository {
     clientRequestId: string,
     runId: string,
     message: ProviderMessage,
-  ): Promise<{ duplicateRunId?: string }>
+    planPolicy?: 'optional' | 'required',
+  ): Promise<{
+    duplicateRunId?: string
+    duplicatePlanPolicy?: 'optional' | 'required'
+  }>
   loadClientRequests?(sessionId: string): Promise<Record<string, string>>
+  loadClientRequestPolicies?(sessionId: string): Promise<Record<string, 'optional' | 'required'>>
   updateTerminal?(
     sessionId: string,
     terminal: NonNullable<SessionRecord['lastTerminalState']>,

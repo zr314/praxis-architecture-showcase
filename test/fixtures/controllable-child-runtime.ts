@@ -23,7 +23,11 @@ input.on('line', (line) => {
   }
   if (request.method === 'events.subscribe') {
     subscriptionId = 'sub-controlled'
-    write(request.id, { subscriptionId, nextSequence: sequence, replaySupported: false })
+    write(request.id, {
+      subscriptionId,
+      nextSequence: sequence,
+      replaySupported: false,
+    })
     return
   }
   if (request.method === 'session.create') {
@@ -47,6 +51,18 @@ input.on('line', (line) => {
       runId,
       prompt: 'bounded child prompt',
     })
+    if (String(request.params.text).includes('emit-blocked')) {
+      terminal = true
+      notify({
+        type: 'prompt_blocked',
+        runId,
+        code: 'PLAN_REVIEW_REQUIRED',
+        reason: 'Final Review has not been accepted.',
+        recoverable: true,
+        usage: { turns: 1, toolCalls: 0, subagents: 0 },
+      })
+      return
+    }
     notify({
       type: 'tool_start',
       runId,

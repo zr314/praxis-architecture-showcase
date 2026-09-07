@@ -84,8 +84,11 @@ import {
   SkillTool,
   type TurnResourceSnapshot,
 } from '../extensions/index.js'
+import { type MemoryAccessV1, MemoryServiceV1 } from '../long-term-memory/memoryService.js'
+import { createMemoryToolsV1 } from '../long-term-memory/tools.js'
 import { canonicalDeadlineAfter } from '../longDurationTimer.js'
 import { LONG_LIVED_EXECUTION_POLICY_V1 } from '../longLivedExecutionPolicy.js'
+import { recordAuxiliaryProviderUsageV1 } from '../loop/auxiliaryUsage.js'
 import { AgentLoop, type AgentRun } from '../loop/index.js'
 import {
   type CompactionPolicy,
@@ -122,6 +125,7 @@ import {
   promptCapabilitySnapshot,
   SystemPromptComposer,
 } from '../prompt/index.js'
+import type { MemoryContextV1 } from '../prompt/memoryContext.js'
 import type { ProviderRouterOptions } from '../provider-router/index.js'
 import { effectiveProviderCapabilities, ProviderRouter } from '../provider-router/index.js'
 import { ModelCatalog } from '../providers/modelCatalog.js'
@@ -131,6 +135,22 @@ import {
   providerWorkflowConcurrencyPolicyV1,
   workflowSchedulingForProviderV1,
 } from '../providers/providerExecutionPolicy.js'
+import { validateRecapSnapshot } from '../recap/recap.js'
+import type { RecapContext } from '../recap/recapContext.js'
+import {
+  createReviewPlanToolsV1,
+  PlanControlServiceV1,
+  ProviderSemanticReviewerV1,
+  ReviewBudgetServiceV1,
+  ReviewCallStoreV1,
+  ReviewCoordinatorV1,
+  RootToolExecutionBrokerV1,
+  reviewPlanSnapshotMessageV1,
+} from '../review-plan/index.js'
+import {
+  RegisteredReviewChecksV1,
+  type RegisteredReviewCheckV1,
+} from '../review-plan/registeredChecks.js'
 import { platformIsolationBackend } from '../security/index.js'
 import {
   type ManagedSession,
@@ -157,13 +177,16 @@ import {
   WorkflowEffectBrokerV1,
   WorkflowOrchestratorV1,
 } from '../workflow/index.js'
+import { ProviderAdvisoryReviewerV1 } from '../working-plan/advisoryReviewer.js'
+import { createWorkingPlanToolsV1, workingPlanSnapshotMessageV1 } from '../working-plan/tools.js'
+import { WorkingPlanServiceV1 } from '../working-plan/workingPlanService.js'
 import {
   type ChildRuntimeMiddlewareProfile,
   type RuntimeMiddleware,
   type RuntimeMiddlewareHealthSnapshot,
+  RuntimeMiddlewarePipeline,
   type RuntimeMiddlewarePolicyOptions,
   type RuntimeMiddlewareRegistry,
-  RuntimeMiddlewarePipeline,
 } from './runtimeMiddleware.js'
 
 type Subscription = {
@@ -189,6 +212,8 @@ type RuntimeRun = AgentRun & {
    * establishes a new replay boundary.
    */
   promptContextView?: PromptContextView
+  memoryAccess?: MemoryAccessV1
+  memoryContext?: MemoryContextV1
   sensitivePromptValues: readonly string[]
   application?: Readonly<{
     name?: string
@@ -232,6 +257,8 @@ type PendingPromptCommand = Readonly<{
 type RequestHandler = (params: unknown) => Promise<unknown>
 
 export type RuntimeKernelOptions = {
+  /** Trusted Host opt-in: solo prompts without explicit budget/deadline run without a ceiling. */
+  unbudgetedSoloRuns?: boolean
   credentials?: CredentialService
   credentialOptions?: CredentialServiceOptions
   extensions?: RuntimeExtensions
@@ -259,6 +286,13 @@ export type RuntimeKernelOptions = {
   planner?: PlannerRouterOptionsV1
   commandAuditStore?: CommandAuditStoreV1
   workflowAuthority?: WorkflowAuthorityPortV1
+  reviewCallStore?: ReviewCallStoreV1
+  /** Local cross-session memory; false disables it for an embedded Host. */
+  memoryService?: MemoryServiceV1 | false
+  /** Experimental Host-owned snapshot, scoped to one exact workspace; never inherited by Child. */
+  recapContext?: RecapContext & Readonly<{ workspace: string }>
+  /** Trusted, version-pinned deterministic validators exposed to Plan tools. */
+  reviewChecks?: readonly RegisteredReviewCheckV1[]
   promptVariant?: PromptVariant
   workflowProviderConcurrency?: ProviderWorkflowConcurrencyPolicyV1
   /** Trusted in-process model and Tool interception owned by the Runtime host. */
@@ -316,6 +350,7 @@ export class RuntimeKernel {
   private readonly resourceCatalog: ResourceCatalog
   private readonly isolationBackend = platformIsolationBackend()
   private readonly repository: SessionRepository
+  private readonly planControl?: PlanControlServiceV1
   private readonly sessionService: SessionService<RuntimeRun>
   private readonly runCoordinator: RunCoordinator
   private readonly policy: PolicyEngine
@@ -341,6 +376,10 @@ export class RuntimeKernel {
   private readyExtensions?: ReadyExtensions
   private readonly loop: AgentLoop
   private readonly workflowAuthority: WorkflowAuthorityPortV1
+  private readonly reviewCallStore?: ReviewCallStoreV1
+  private readonly memoryService?: MemoryServiceV1
+  private readonly recapContext?: RuntimeKernelOptions['recapContext']
+  private readonly unbudgetedSoloRuns: boolean
   private readonly workflowAuthorityServer?: WorkflowAuthorityHttpServerV1
   private readonly autoPlanner: AutoWorkflowPlannerV1
   private readonly workflowWorkerService: DurableWorkflowWorkerServiceV1
@@ -366,13 +405,13 @@ export class RuntimeKernel {
   private workflowWakePumping = false
   private nextSubscription = 1
   private nextSteer = 1
-  private nextMessage = 1
   private nextPermission = 1
   private nextTurn = 1
   private finalizationFailures = 0
   private compositionFinalized = false
 
   constructor(options: RuntimeKernelOptions = {}) {
+    this.unbudgetedSoloRuns = options.unbudgetedSoloRuns === true
     const praxisHome = process.env.PRAXIS_HOME ?? join(homedir(), '.praxis')
     const remoteAuthorityUrl = process.env.PRAXIS_WORKFLOW_AUTHORITY_URL
     const authorityToken = process.env.PRAXIS_WORKFLOW_AUTHORITY_TOKEN
@@ -394,6 +433,19 @@ export class RuntimeKernel {
       )
     }
     this.authority = options.authority
+    if (options.recapContext && options.authority) throw new TypeError('RECAP_CHILD_UNAVAILABLE')
+    this.recapContext =
+      options.recapContext === undefined
+        ? undefined
+        : {
+            ...structuredClone(options.recapContext),
+            snapshot: validateRecapSnapshot(options.recapContext.snapshot),
+            workspace: resolve(options.recapContext.workspace),
+          }
+    this.memoryService =
+      options.authority !== undefined || options.memoryService === false
+        ? undefined
+        : (options.memoryService ?? new MemoryServiceV1(praxisHome))
     this.onShutdown = options.onShutdown
     this.contextPolicy = contextPolicy(options.contextPolicy)
     this.contextEditingPolicy = contextEditingPolicy(options.contextEditingPolicy)
@@ -407,6 +459,9 @@ export class RuntimeKernel {
         ? new ArtifactStore()
         : new RemoteArtifactStoreV1(remoteAuthorityUrl, requiredAuthorityToken(authorityToken)))
     this.repository = options.sessionRepository ?? new SessionRepositoryV3()
+    this.planControl = hasSessionJournal(this.repository)
+      ? new PlanControlServiceV1(lazySessionJournal(this.repository))
+      : undefined
     const configuredPlanner = plannerOptionsFromEnvironment(process.env)
     this.plannerRouter = new PlannerRouter(options.planner ?? configuredPlanner)
     this.sessionService = new SessionService<RuntimeRun>(this.repository)
@@ -437,7 +492,9 @@ export class RuntimeKernel {
     this.credentials =
       options.credentials ??
       new CredentialService((id) => this.extensions.provider(id), {
-        ...(options.credentialOptions ?? { store: new EncryptedFileCredentialStore() }),
+        ...(options.credentialOptions ?? {
+          store: new EncryptedFileCredentialStore(),
+        }),
       })
     this.traceService = options.traceService ?? new TraceService()
     this.settings = options.settings ?? new UserSettingsStore()
@@ -449,6 +506,11 @@ export class RuntimeKernel {
             remoteAuthorityUrl,
             requiredAuthorityToken(authorityToken),
           ))
+    this.reviewCallStore =
+      options.reviewCallStore ??
+      (options.sessionRepository === undefined && this.authority === undefined
+        ? new ReviewCallStoreV1(praxisHome)
+        : undefined)
     const authorityListen = process.env.PRAXIS_WORKFLOW_AUTHORITY_LISTEN
     if (authorityListen !== undefined && remoteAuthorityUrl === undefined) {
       const address = workflowAuthorityAddress(authorityListen)
@@ -480,6 +542,7 @@ export class RuntimeKernel {
     this.loop = new AgentLoop(
       {
         providerFor: (id) => this.extensions.provider(id),
+        strictPlanControls: (_session, run) => run.planPolicy === 'required',
         providerForRun: (_session, run, id) => (run as RuntimeRun).capabilities.provider(id),
         streamProvider: (provider, request, context, prepareRequest) =>
           this.providerRouter.stream(
@@ -514,8 +577,8 @@ export class RuntimeKernel {
             prepareRequest,
             (id) => (run as RuntimeRun).capabilities.provider(id),
           ),
-        beforeModel: (session, run, request, context) =>
-          this.middleware.beforeModel(
+        beforeModel: async (session, run, request, context) => {
+          const prepared = await this.middleware.beforeModel(
             {
               sessionId: session.sessionId,
               runId: run.id,
@@ -527,7 +590,12 @@ export class RuntimeKernel {
               signal: run.controller.signal,
             },
             request,
-          ),
+          )
+          // Conservative revocation: never replay a contaminated checkpoint/native
+          // state. A fresh Session is required instead of claiming transcript erasure.
+          if ((run as RuntimeRun).memoryAccess) this.memoryService?.assertSession(session.sessionId)
+          return prepared
+        },
         afterModel: (session, run, _request, result, context) =>
           this.middleware.afterModel(
             {
@@ -577,17 +645,18 @@ export class RuntimeKernel {
           ),
         tools: (_session, run) => (run as RuntimeRun).tools,
         terminalTool: () => this.authority?.terminalTool,
-        commitMessage: (session, run, message) => {
+        commitMessage: (session, run, message, input) => {
           const runtimeSession = session as RuntimeSession
           if (run.aborted || run.terminal || runtimeSession.activeRun?.id !== run.id)
-            return Promise.resolve()
+            return Promise.resolve(undefined)
           const runtimeRun = run as RuntimeRun
           return this.sessionService.commitMessage(
             runtimeSession,
             message,
             runtimeRun.sensitivePromptValues.length === 0
-              ? {}
+              ? (input ?? {})
               : {
+                  ...(input?.messageId === undefined ? {} : { messageId: input.messageId }),
                   durableMessage: durableSensitiveMessage(
                     message,
                     runtimeRun.sensitivePromptValues,
@@ -600,7 +669,12 @@ export class RuntimeKernel {
           if (workflowId === undefined || steer.workflowMessageSequence === undefined) return
           await this.workflowAuthority.acknowledgeMessage(workflowId, steer.id, 'root')
         },
-        completionGuidance: async (_session, run) => {
+        completionGuidance: async (session, run) => {
+          const planGuidance = await this.reviewPlanCompletionGuidance(
+            session as RuntimeSession,
+            run as RuntimeRun,
+          )
+          if (planGuidance !== undefined) return planGuidance
           const workflowId = (run as RuntimeRun).workflowId
           if (workflowId === undefined) return undefined
           const tasks = await this.workflowAuthority.listTasks({ workflowId })
@@ -701,15 +775,17 @@ export class RuntimeKernel {
               ? declaredMaximum
               : Math.min(configuredMaximum, declaredMaximum)
           const tokenizer = tokenizerForProvider(provider.id)
-          const liveContextView = hasSessionJournal(this.repository)
-            ? journalContextView(
-                await sessionJournal(this.repository).loadProjection(session.sessionId),
-              )
-            : compatibilityContextView({
-                sessionId: session.sessionId,
-                messages: session.messages,
-                memory: runtimeSession.memory,
-              })
+          const liveProjection = hasSessionJournal(this.repository)
+            ? await sessionJournal(this.repository).loadProjection(session.sessionId)
+            : undefined
+          const liveContextView =
+            liveProjection !== undefined
+              ? journalContextView(liveProjection)
+              : compatibilityContextView({
+                  sessionId: session.sessionId,
+                  messages: session.messages,
+                  memory: runtimeSession.memory,
+                })
           const contextView = runtimeRun.promptContextView ?? liveContextView
           runtimeRun.promptContextView = contextView
           const responseTokens = Math.min(
@@ -729,10 +805,26 @@ export class RuntimeKernel {
               ...(this.authority?.pinnedContextMessages ?? []),
               ...(runtimeRun.pinnedContextMessages ?? []),
             ],
+            ...(liveProjection === undefined
+              ? {}
+              : {
+                  dynamicContextMessages: [
+                    runtimeRun.planPolicy === 'required'
+                      ? reviewPlanSnapshotMessageV1(liveProjection.reviewPlan)
+                      : workingPlanSnapshotMessageV1(liveProjection),
+                  ].filter((message): message is ProviderMessage => message !== undefined),
+                }),
             ...(runtimeSession.memory.checkpoint === undefined
               ? {}
               : { checkpoint: runtimeSession.memory.checkpoint }),
             tools,
+            ...(this.recapContext === undefined ||
+            resolve(session.cwd) !== this.recapContext.workspace
+              ? {}
+              : { recapContext: this.recapContext }),
+            ...(runtimeRun.memoryContext === undefined
+              ? {}
+              : { memoryContext: runtimeRun.memoryContext }),
             contextEditingTools: runtimeRun.tools.definitions(),
             contextEditingPolicy: this.contextEditingPolicy,
             reasoningEditingPolicy: this.reasoningEditingPolicy,
@@ -748,6 +840,24 @@ export class RuntimeKernel {
               ),
             },
           })
+          if (assembled.manifest.memory) {
+            const memory = assembled.manifest.memory
+            await this.traceService
+              .record({
+                kind: 'memory.retrieve',
+                context: run.trace,
+                attributes: {
+                  memoryProjectId: memory.projectId,
+                  memorySnapshotId: memory.snapshotId,
+                  manifestDigest: memory.digest,
+                },
+                metrics: {
+                  estimatedTokens: memory.tokens,
+                  selectedMessages: memory.records.length,
+                },
+              })
+              .catch(() => undefined)
+          }
           return {
             messages: [...assembled.messages],
             contextMessages: [...assembled.contextMessages],
@@ -780,7 +890,7 @@ export class RuntimeKernel {
           if (result.compacted) (run as RuntimeRun).promptContextView = undefined
           return result
         },
-        nextMessageId: () => `m-${this.nextMessage++}`,
+        nextMessageId: () => `m-${randomUUID()}`,
         nextSteerId: () => `steer-${this.nextSteer++}`,
         trace: (record) => this.traceService.record(record),
         nextTurnId: (run) => `${run.id}-turn-${this.nextTurn++}`,
@@ -803,7 +913,10 @@ export class RuntimeKernel {
       grant: (input) => {
         const run = input.run as RuntimeRun
         return {
-          tools: run.tools.definitions().map(({ name }) => name),
+          tools: run.tools
+            .definitions()
+            .map(({ name }) => name)
+            .filter((name) => !name.startsWith('memory.')),
           skills: run.resources.skills.map(({ id }) => id),
           mcpServers: run.capabilities.mcp.servers.map(({ serverId }) => serverId),
           workspace: 'write',
@@ -819,6 +932,46 @@ export class RuntimeKernel {
           this.workflowWorkerService.cancelNodes(workflowId, childIds, reason),
         steer: (workflowId, childId, instruction) =>
           this.workflowWorkerService.steerNode(workflowId, childId, instruction),
+      },
+      reviewPlanTools: async (input) => {
+        if (this.planControl === undefined || !hasSessionJournal(this.repository)) return []
+        const run = input.run as RuntimeRun
+        const session = input.session as RuntimeSession
+        const provider = await run.capabilities.provider(session.provider)
+        if (provider === undefined) return []
+        const projection = await sessionJournal(this.repository).loadProjection(session.sessionId)
+        const strict =
+          projection.snapshot.runs.find((r) => r.runId === run.id)?.planPolicy === 'required'
+        if (!strict) {
+          return this.workingPlanTools(session, run)
+        }
+        const registeredChecks = new RegisteredReviewChecksV1(options.reviewChecks)
+        const coordinator = new ReviewCoordinatorV1({
+          journal: sessionJournal(this.repository),
+          control: this.planControl,
+          artifacts: this.artifactStore,
+          reviewer: new ProviderSemanticReviewerV1(provider, session.model),
+          ...(this.reviewCallStore === undefined ? {} : { reviewCalls: this.reviewCallStore }),
+          reviewBudget: new ReviewBudgetServiceV1(sessionJournal(this.repository)),
+          onProviderUsage: (callId, usage) => recordAuxiliaryProviderUsageV1(run, callId, usage),
+          registeredChecks,
+        })
+        return createReviewPlanToolsV1({
+          control: this.planControl,
+          coordinator,
+          registeredChecks: registeredChecks.definitions(),
+        })
+      },
+      rootExecutionBroker: (input, workflowId, effects) => {
+        if (this.planControl === undefined || !hasSessionJournal(this.repository)) return effects
+        return new RootToolExecutionBrokerV1({
+          journal: sessionJournal(this.repository),
+          control: this.planControl,
+          artifacts: this.artifactStore,
+          workflowId,
+          effects,
+          sensitiveValues: (input.run as RuntimeRun).sensitivePromptValues,
+        })
       },
       emitProjection: (projection, input) => this.emitWorkflowProjection(projection, input.run.id),
     })
@@ -877,6 +1030,8 @@ export class RuntimeKernel {
       await this.sessionService.initialize()
       await this.policy.initialize()
       await this.commandService.initialize()
+      await this.reviewCallStore?.initialize()
+      await this.reviewCallStore?.recoverExpired()
       if (this.authority === undefined) {
         await this.workflowAuthority.initialize()
         await this.workflowAuthorityServer?.start()
@@ -903,7 +1058,10 @@ export class RuntimeKernel {
       }
       return
     }
-    const input = createInterface({ input: process.stdin, crlfDelay: Infinity })
+    const input = createInterface({
+      input: process.stdin,
+      crlfDelay: Infinity,
+    })
     input.on('line', (line) => void this.handleLine(line))
     input.on('close', () => void this.shutdown())
   }
@@ -987,6 +1145,49 @@ export class RuntimeKernel {
       'settings.get': () => this.getSettings(),
       'settings.model.set': (params) => this.setDefaultModel(params),
       'runtime.doctor': (params) => this.doctor(params),
+      'memory.manage': async (params) => {
+        if (!this.memoryService)
+          throw rpcError('MEMORY_DISABLED', 'Memory management is unavailable in this Host.')
+        const request = params as import('@praxis/core-sdk').MemoryManageRequestV1
+        const context = this.traceService.createContext({ runtimeId: this.runtimeId })
+        const started = performance.now()
+        const trace = async (record: Parameters<RuntimeTraceService['record']>[0]) => {
+          try {
+            await this.traceService.record(record)
+          } catch {
+            /* Observability cannot undo a committed mutation. */
+          }
+        }
+        try {
+          const result = await this.memoryService.manage(request)
+          await trace({
+            kind:
+              request.action === 'forget' || request.action === 'configure'
+                ? 'memory.revoke'
+                : ['upsert', 'import', 'rebind'].includes(request.action)
+                  ? 'memory.write'
+                  : 'memory.retrieve',
+            context,
+            attributes: {
+              ...(isRecord(result) && typeof result.projectId === 'string'
+                ? { memoryProjectId: result.projectId }
+                : {}),
+              ...(isRecord(result) && typeof result.id === 'string' ? { memoryId: result.id } : {}),
+              ...(request.operationId ? { memoryOperationId: request.operationId } : {}),
+            },
+            metrics: { durationMs: performance.now() - started },
+          })
+          return result
+        } catch (error) {
+          await trace({
+            kind: 'memory.conflict',
+            context,
+            attributes: { errorCode: isRuntimeError(error) ? error.code : 'MEMORY_FAILED' },
+            metrics: { durationMs: performance.now() - started },
+          })
+          throw error
+        }
+      },
       'commands.list': (params) => this.listCommands(params),
       'commands.invoke': (params) => this.invokeCommand(params),
       'plugin.install': (params) => this.installPlugin(params),
@@ -1239,7 +1440,9 @@ export class RuntimeKernel {
           : 'solo',
       ...(optionalPositiveInteger(value.contextLimitTokens) === undefined
         ? {}
-        : { contextLimitTokens: optionalPositiveInteger(value.contextLimitTokens) }),
+        : {
+            contextLimitTokens: optionalPositiveInteger(value.contextLimitTokens),
+          }),
       ...(optionalString(value.name) ? { name: optionalString(value.name) } : {}),
       ...(optionalStringArray(value.labels) ? { labels: optionalStringArray(value.labels) } : {}),
     })
@@ -1368,10 +1571,15 @@ export class RuntimeKernel {
     const source = await this.sessionService.resumeSession(
       requireString(value.sessionId, 'sessionId'),
     )
+    const forkId = `s-${randomUUID()}`
+    if (this.memoryService) {
+      await this.memoryService.initialize()
+      this.memoryService.inheritSession(source.sessionId, forkId)
+    }
     const session = await this.sessionService.forkSession(
       source.sessionId,
       {
-        sessionId: `s-${randomUUID()}`,
+        sessionId: forkId,
         cwd: source.cwd,
         provider: source.provider,
         model: source.model,
@@ -1395,12 +1603,32 @@ export class RuntimeKernel {
   }
 
   private async sessionPlan(params: unknown): Promise<unknown> {
-    const session = this.requireSession(params)
-    const [latest] = await this.workflowAuthority.list({ sessionId: session.sessionId, limit: 1 })
+    // Plan inspection is read-only and must also work after Run completion evicts live state.
+    const session = await this.sessionService.inspectSession(
+      requireString(requireRecord(params, 'session.plan params').sessionId, 'sessionId'),
+    )
+    const planProjection = hasSessionJournal(this.repository)
+      ? await sessionJournal(this.repository).loadProjection(session.sessionId)
+      : undefined
+    const policy = planProjection?.snapshot.runs.at(-1)?.planPolicy ?? 'optional'
+    const reviewPlan =
+      policy === 'required' ? planProjection?.reviewPlan : planProjection?.workingPlan
+    const [latest] = await this.workflowAuthority.list({
+      sessionId: session.sessionId,
+      limit: 1,
+    })
     return {
       sessionId: session.sessionId,
-      plan: latest === undefined ? null : workflowUpdate(latest),
+      plan:
+        reviewPlan === undefined
+          ? latest === undefined
+            ? null
+            : workflowUpdate(latest)
+          : reviewPlan,
       plannerGeneration: null,
+      planPolicy: policy,
+      workingReviews: planProjection?.workingReviews ?? [],
+      strictReviewPlan: planProjection?.reviewPlan ?? null,
     }
   }
 
@@ -1476,7 +1704,11 @@ export class RuntimeKernel {
     if (workspace) {
       try {
         await canonicalDirectory(workspace)
-        checks.push({ id: 'workspace', status: 'ok', message: 'Workspace is accessible.' })
+        checks.push({
+          id: 'workspace',
+          status: 'ok',
+          message: 'Workspace is accessible.',
+        })
       } catch {
         checks.push({
           id: 'workspace',
@@ -1728,7 +1960,10 @@ export class RuntimeKernel {
         })
       case 'logout': {
         if (typeof arguments_.provider !== 'string') {
-          return commandUiAction('open_catalog', { view: 'providers', intent: 'logout' })
+          return commandUiAction('open_catalog', {
+            view: 'providers',
+            intent: 'logout',
+          })
         }
         await this.authLogout({ provider: arguments_.provider })
         return commandUiAction('show_message', {
@@ -1756,7 +1991,10 @@ export class RuntimeKernel {
           currentProviderMatch ??
           (idMatches.length === 1 ? idMatches[0] : undefined)
         if (model === undefined) {
-          return commandUiAction('open_catalog', { view: 'models', query: search })
+          return commandUiAction('open_catalog', {
+            view: 'models',
+            query: search,
+          })
         }
         if ((await this.credentials.status(model.provider)).status !== 'authenticated') {
           return commandUiAction('open_catalog', {
@@ -1813,10 +2051,16 @@ export class RuntimeKernel {
           typeof arguments_.workflowId === 'string' ? arguments_.workflowId : undefined
         const workflowId =
           requestedWorkflowId ??
-          (await this.workflowAuthority.list({ sessionId: session.sessionId, limit: 1 }))[0]
-            ?.workflowId
+          (
+            await this.workflowAuthority.list({
+              sessionId: session.sessionId,
+              limit: 1,
+            })
+          )[0]?.workflowId
         if (workflowId === undefined) {
-          return commandUiAction('show_message', { message: 'No Workflow for this session.' })
+          return commandUiAction('show_message', {
+            message: 'No Workflow for this session.',
+          })
         }
         const tasks = await this.workflowAuthority.listHumanTasks(workflowId)
         return commandUiAction('show_message', {
@@ -1894,7 +2138,9 @@ export class RuntimeKernel {
         })
       }
       case 'doctor': {
-        const result = (await this.doctor({ workspace: request.workspace })) as {
+        const result = (await this.doctor({
+          workspace: request.workspace,
+        })) as {
           checks: Array<{ id: string; status: string; message: string }>
         }
         return commandUiAction('show_message', {
@@ -2118,6 +2364,13 @@ export class RuntimeKernel {
     const clientRequestId = requireString(value.clientRequestId, 'clientRequestId')
     const duplicateRunId = session.clientRequests.get(clientRequestId)
     if (duplicateRunId) return { runId: duplicateRunId, accepted: true }
+    const planPolicy = normalizePlanPolicy(value.planPolicy)
+    if (plannerMode === 'workflow' && planPolicy === 'required') {
+      throw rpcError(
+        'INVALID_PARAMS',
+        'required ReviewPlan uses auto or solo; explicit legacy workflow has its own business execution policy.',
+      )
+    }
     const application = optionalRunApplication(value.agent)
     const requestedBudget = isRecord(value.budget) ? value.budget : {}
     const timeoutMs = optionalPositiveInteger(value.timeoutMs)
@@ -2148,10 +2401,96 @@ export class RuntimeKernel {
       (explicitInvocation === undefined
         ? requestedText
         : explicitSkill!.body || `[Invoke Skill ${explicitInvocation.capabilityId}.]`)
-    const additionalTools =
+    const additionalTools: RuntimeTool[] =
       resourceSnapshot.skills.length === 0
         ? []
         : [new SkillTool(skillInvocations, this.promptVariant)]
+    let memoryAccess: MemoryAccessV1 | undefined
+    let memoryContext: MemoryContextV1 | undefined
+    if (this.memoryService) {
+      try {
+        const project = await this.memoryService.project(session.cwd)
+        this.memoryService.assertSession(session.sessionId)
+        memoryAccess = {
+          projectId: project.projectId,
+          sessionId: session.sessionId,
+          runId,
+          promptId: pendingPrompt?.produced.envelope.id ?? `prompt-${runId}`,
+        }
+        if (project.mode !== 'off') {
+          const records = this.memoryService.search(memoryAccess, 'project', effectiveText)
+          if (project.userAccess) {
+            const preferences = this.memoryService.search(memoryAccess, 'user', effectiveText, 2)
+            records.splice(8 - preferences.length)
+            records.unshift(...preferences)
+          }
+          memoryContext = {
+            projectId: project.projectId,
+            snapshotId: `memory-snapshot-${runId}`,
+            records,
+          }
+          additionalTools.push(
+            ...createMemoryToolsV1(
+              this.memoryService,
+              memoryAccess,
+              async (request) => {
+                const invocation = request.executionContext!.invocation
+                const active = session.activeRun
+                if (!active || active.id !== runId || active.aborted) return false
+                // Intentionally do not consult or create durable allow_always grants.
+                // This approves one concrete memory mutation, not automatic learning.
+                const decision = await this.requestPermission(
+                  session,
+                  active,
+                  { id: invocation.providerToolCallId, name: request.name, input: request.input },
+                  request.input,
+                  { risk: 'medium', rule: `memory-write:${invocation.invocationId}` },
+                )
+                return decision.type !== 'deny'
+              },
+              async (action, request, code) => {
+                await this.traceService.record({
+                  kind: code
+                    ? 'memory.conflict'
+                    : action === 'forget'
+                      ? 'memory.revoke'
+                      : action === 'upsert'
+                        ? 'memory.write'
+                        : 'memory.retrieve',
+                  context: {
+                    ...(session.activeRun?.trace ?? this.createRunTrace(session.sessionId, runId)),
+                    toolCallId: request.executionContext?.invocation.providerToolCallId,
+                  },
+                  attributes: {
+                    memoryProjectId: project.projectId,
+                    memoryOperationId: request.executionContext?.invocation.invocationId,
+                    ...(code ? { errorCode: code } : {}),
+                  },
+                })
+              },
+            ).filter(
+              (tool) =>
+                project.mode === 'explicit' || tool.definition.execution?.sideEffect === 'read',
+            ),
+          )
+        }
+      } catch (error) {
+        if (isRuntimeError(error) && error.code === 'MEMORY_CONTEXT_REVOKED') throw error
+        // If a previously exposed Session cannot be checked, fail closed instead
+        // of sending its old history. New, empty Sessions can run without memory.
+        if (session.messages.length > 0)
+          throw runtimeError(
+            'MEMORY_UNAVAILABLE',
+            'persistence',
+            'Cannot check memory revocation for this existing session; retry or use a fresh session.',
+          )
+        this.emit({
+          type: 'runtime_warning',
+          code: 'MEMORY_UNAVAILABLE',
+          message: 'Local memory unavailable; this fresh session will run without it.',
+        })
+      }
+    }
     const runTools = capabilities.tools.fork(additionalTools)
     const envelope =
       pendingPrompt?.produced.envelope ??
@@ -2206,12 +2545,15 @@ export class RuntimeKernel {
       terminal: false,
       controller: new AbortController(),
       steerQueue: [],
+      planPolicy,
       resources: resourceSnapshot,
       skillInvocations,
       capabilities,
       tools: runTools,
       envelope,
       promptCapabilitySnapshot: capabilitySnapshot,
+      ...(memoryAccess === undefined ? {} : { memoryAccess }),
+      ...(memoryContext === undefined ? {} : { memoryContext }),
       pinnedContextMessages: [taskContractMessage(envelope, promptKind)],
       sensitivePromptValues:
         pendingPrompt?.produced.sensitiveValues ??
@@ -2219,19 +2561,27 @@ export class RuntimeKernel {
           ? []
           : [explicitSkill.arguments]),
       ...(application === undefined ? {} : { application }),
-      budget: {
-        maxTurns: optionalPositiveInteger(requestedBudget.maxTurns) ?? DEFAULT_RUN_BUDGET.maxTurns,
-        maxToolCalls:
-          optionalNonNegativeInteger(requestedBudget.maxToolCalls) ??
-          DEFAULT_RUN_BUDGET.maxToolCalls,
-        ...(optionalPositiveInteger(requestedBudget.maxTokens) === undefined
-          ? {}
-          : { maxTokens: optionalPositiveInteger(requestedBudget.maxTokens) }),
-        ...plannerRoute.childBudget,
-        ...(timeoutMs === undefined
-          ? {}
-          : { deadlineAt: canonicalDeadlineAfter(Date.now(), timeoutMs) }),
-      },
+      budget:
+        this.unbudgetedSoloRuns &&
+        !this.authority &&
+        plannerMode === 'solo' &&
+        value.budget === undefined &&
+        timeoutMs === undefined
+          ? undefined
+          : {
+              maxTurns:
+                optionalPositiveInteger(requestedBudget.maxTurns) ?? DEFAULT_RUN_BUDGET.maxTurns,
+              maxToolCalls:
+                optionalNonNegativeInteger(requestedBudget.maxToolCalls) ??
+                DEFAULT_RUN_BUDGET.maxToolCalls,
+              ...(optionalPositiveInteger(requestedBudget.maxTokens) === undefined
+                ? {}
+                : { maxTokens: optionalPositiveInteger(requestedBudget.maxTokens) }),
+              ...plannerRoute.childBudget,
+              ...(timeoutMs === undefined
+                ? {}
+                : { deadlineAt: canonicalDeadlineAfter(Date.now(), timeoutMs) }),
+            },
     }
     const liveMessage = taskContractMessage(envelope, promptKind)
     const started = await this.sessionService.beginRun(session, clientRequestId, run, liveMessage, {
@@ -2278,7 +2628,13 @@ export class RuntimeKernel {
       })
     }
     this.runsAwaitingPromptStarted.add(run.id)
-    const execution = planner.execute({ session, run }).catch(async (error: unknown) => {
+    // A Host-owned unbudgeted solo run has no child/workflow allocation to admit.
+    // Keep the normal Session, prompt, Tool, permission and terminal-event pipeline.
+    const execution = (
+      run.budget === undefined
+        ? this.executeUnbudgetedSolo(session, run)
+        : planner.execute({ session, run })
+    ).catch(async (error: unknown) => {
       if (run.terminal) return
       run.terminal = true
       const failure = isRuntimeError(error)
@@ -2410,10 +2766,16 @@ export class RuntimeKernel {
       rule: pending.rule,
       ...(pending.target === undefined ? {} : { target: pending.target }),
     }
-    if (value.decision.type === 'allow_always') {
+    if (value.decision.type === 'allow_always' && !pending.tool.startsWith('memory.')) {
       await this.policy.grant(policyRequest)
     } else {
-      await this.policy.record({ ...policyRequest, decision: value.decision.type })
+      await this.policy.record({
+        ...policyRequest,
+        decision:
+          pending.tool.startsWith('memory.') && value.decision.type === 'allow_always'
+            ? 'allow_once'
+            : value.decision.type,
+      })
     }
     pending.resolve(value.decision)
     return { accepted: true }
@@ -2497,6 +2859,8 @@ export class RuntimeKernel {
     this.compositionFinalized = true
     await this.workflowAuthorityServer?.close()
     this.workflowAuthority.close()
+    this.reviewCallStore?.close()
+    this.memoryService?.close()
     if (isClosableRepository(this.repository)) await this.repository.close()
     await this.onShutdown?.({ failed })
   }
@@ -2606,7 +2970,11 @@ export class RuntimeKernel {
     requirement: PermissionRequirement,
     cwd: string,
   ): boolean {
-    return this.policy.allows({ workspace: cwd, tool: name, rule: requirement.rule })
+    return this.policy.allows({
+      workspace: cwd,
+      tool: name,
+      rule: requirement.rule,
+    })
   }
 
   private cancelPendingPermissions(runId: string): void {
@@ -2636,6 +3004,18 @@ export class RuntimeKernel {
     event: TerminalAgentEvent,
   ): Promise<TerminalAgentEvent> {
     const startedAt = Date.now()
+    if (event.type === 'prompt_completed') {
+      const guidance = await this.reviewPlanCompletionGuidance(session, run)
+      if (guidance !== undefined) {
+        event = {
+          type: 'prompt_blocked',
+          runId: run.id,
+          code: typeof guidance === 'string' ? 'PLAN_COMPLETION_REQUIRED' : guidance.code,
+          reason: typeof guidance === 'string' ? guidance : guidance.reason,
+          recoverable: true,
+        }
+      }
+    }
     const finalized = await this.runCoordinator.finalize(session, run, event)
     run.terminalOutcome =
       finalized.type === 'prompt_completed'
@@ -2643,11 +3023,15 @@ export class RuntimeKernel {
         : finalized.type === 'prompt_aborted'
           ? 'aborted'
           : 'failed'
-    run.terminalCode = finalized.type === 'prompt_failed' ? finalized.code : undefined
+    run.terminalCode =
+      finalized.type === 'prompt_failed' || finalized.type === 'prompt_blocked'
+        ? finalized.code
+        : undefined
     try {
       await run.finalizeWorkflow?.({
         ok: finalized.type === 'prompt_completed',
-        ...(finalized.type === 'prompt_failed' && finalized.code !== undefined
+        ...((finalized.type === 'prompt_failed' || finalized.type === 'prompt_blocked') &&
+        finalized.code !== undefined
           ? { errorCode: finalized.code }
           : finalized.type === 'prompt_aborted'
             ? { errorCode: 'ROOT_AGENT_ABORTED' }
@@ -2704,6 +3088,74 @@ export class RuntimeKernel {
     return finalized
   }
 
+  private async workingPlanTools(session: RuntimeSession, run: RuntimeRun) {
+    if (!hasSessionJournal(this.repository)) return []
+    const provider = await run.capabilities.provider(session.provider)
+    if (provider === undefined) return []
+    return createWorkingPlanToolsV1(
+      new WorkingPlanServiceV1({
+        sessionId: session.sessionId,
+        journal: sessionJournal(this.repository),
+        artifacts: this.artifactStore,
+        reviewer: new ProviderAdvisoryReviewerV1(provider, session.model),
+        legacyReviewer: new ProviderSemanticReviewerV1(provider, session.model),
+        ...(this.reviewCallStore === undefined ? {} : { reviewCalls: this.reviewCallStore }),
+        onProviderUsage: (callId, usage) => recordAuxiliaryProviderUsageV1(run, callId, usage),
+      }),
+    )
+  }
+
+  private async executeUnbudgetedSolo(session: RuntimeSession, run: RuntimeRun) {
+    // Strict ReviewPlan requires the execution broker installed by the planner.
+    // Never silently expose advisory tools as a substitute for required acceptance.
+    if (run.planPolicy === 'required')
+      throw runtimeError(
+        'UNBUDGETED_STRICT_PLAN_UNSUPPORTED',
+        'configuration',
+        'Required ReviewPlan needs the planner execution broker; use an explicitly budgeted Run.',
+      )
+    for (const tool of await this.workingPlanTools(session, run)) run.tools.register(tool)
+    await this.loop.execute(session, run)
+  }
+
+  private async reviewPlanCompletionGuidance(
+    session: RuntimeSession,
+    run: RuntimeRun,
+  ): Promise<string | Readonly<{ kind: 'blocked'; code: string; reason: string }> | undefined> {
+    if (!hasSessionJournal(this.repository)) return undefined
+    const projection = await sessionJournal(this.repository).loadProjection(session.sessionId)
+    const policy =
+      projection.snapshot.runs.find(({ runId }) => runId === run.id)?.planPolicy ?? 'optional'
+    if (policy !== 'required') return undefined
+    const plan = projection.reviewPlan
+    if (plan === undefined) {
+      return policy === 'required'
+        ? 'This Run requires a ReviewPlan. Call plan.create before performing work or completing.'
+        : undefined
+    }
+    if (plan.state === 'completed') return undefined
+    if (plan.state === 'abandoned' || plan.state === 'cancelled') {
+      return policy === 'required'
+        ? 'The required ReviewPlan was not completed; successful completion is not allowed.'
+        : undefined
+    }
+    if (plan.state === 'blocked') {
+      return {
+        kind: 'blocked',
+        code: 'PLAN_REVIEW_BLOCKED',
+        reason:
+          'The ReviewPlan is durably blocked. The Run has stopped and requires new user input or Runtime resolution before continuing.',
+      }
+    }
+    if (plan.state === 'reviewing') {
+      return 'Review is still pending. Wait for or recover the Review decision before completing.'
+    }
+    const pending = plan.items
+      .filter(({ state }) => state !== 'accepted' && state !== 'skipped')
+      .map(({ id, state }) => `${id} (${state})`)
+    return `The ReviewPlan has not passed final Review. Continue the ordered Items, call plan.review for checkpoints and final acceptance, then complete. Pending: ${pending.join(', ') || 'final review'}.`
+  }
+
   private async getWorkflow(params: unknown) {
     const value = requireRecord(params, 'workflow.get params')
     return workflowUpdate(
@@ -2716,7 +3168,9 @@ export class RuntimeKernel {
     const sessionId = optionalString(value.sessionId)
     return Promise.all(
       (
-        await this.workflowAuthority.list({ ...(sessionId === undefined ? {} : { sessionId }) })
+        await this.workflowAuthority.list({
+          ...(sessionId === undefined ? {} : { sessionId }),
+        })
       ).map((projection) => workflowUpdate(projection)),
     )
   }
@@ -2924,6 +3378,7 @@ export class RuntimeKernel {
           ? {
               estimatedGainTokens: attempt.estimatedGainTokens,
               minimumGainTokens: attempt.minimumGainTokens,
+              ...(attempt.usage === undefined ? {} : { usage: attempt.usage }),
             }
           : {}),
       }
@@ -2994,7 +3449,11 @@ export class RuntimeKernel {
   private createRunTrace(sessionId: string, runId: string): AgentRunTraceContext {
     try {
       return {
-        ...this.traceService.createContext({ runtimeId: this.runtimeId, sessionId, runId }),
+        ...this.traceService.createContext({
+          runtimeId: this.runtimeId,
+          sessionId,
+          runId,
+        }),
         sessionId,
         runId,
       }
@@ -3334,6 +3793,7 @@ export class RuntimeKernel {
     } else if (
       event.type === 'prompt_completed' ||
       event.type === 'prompt_failed' ||
+      event.type === 'prompt_blocked' ||
       event.type === 'prompt_aborted'
     ) {
       this.runsAwaitingPromptStarted.delete(event.runId)
@@ -3363,7 +3823,10 @@ export class RuntimeKernel {
     if (this.runsAwaitingPromptStarted.has(effectiveRunId)) {
       this.workflowProjectionsAwaitingPromptStarted.set(
         effectiveRunId,
-        Object.freeze({ projection, ...(runId === undefined ? {} : { runId }) }),
+        Object.freeze({
+          projection,
+          ...(runId === undefined ? {} : { runId }),
+        }),
       )
       return
     }
@@ -3569,7 +4032,9 @@ async function canonicalDirectory(path: string): Promise<string> {
     if (!metadata.isDirectory()) throw new Error('not a directory')
     return await realpath(absolute)
   } catch {
-    throw rpcError('INVALID_PARAMS', 'cwd must be an accessible directory.', { cwd: path })
+    throw rpcError('INVALID_PARAMS', 'cwd must be an accessible directory.', {
+      cwd: path,
+    })
   }
 }
 
@@ -3876,7 +4341,10 @@ function optionalRunApplication(
   if (name !== undefined && (name.length === 0 || Buffer.byteLength(name, 'utf8') > 128)) {
     throw rpcError('INVALID_PARAMS', 'agent.name must contain between 1 and 128 UTF-8 bytes.')
   }
-  return Object.freeze({ ...(name === undefined ? {} : { name }), instructions })
+  return Object.freeze({
+    ...(name === undefined ? {} : { name }),
+    instructions,
+  })
 }
 
 function optionalPlannerMode(value: unknown): PlannerModeV1 | undefined {
@@ -3916,6 +4384,12 @@ function optionalNonNegativeInteger(value: unknown): number | undefined {
 
 function optionalPositiveInteger(value: unknown): number | undefined {
   return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined
+}
+
+function normalizePlanPolicy(value: unknown): 'optional' | 'required' {
+  if (value === undefined) return 'optional'
+  if (value === 'optional' || value === 'required') return value
+  throw rpcError('INVALID_PARAMS', 'planPolicy must be optional or required.')
 }
 
 function isPolicyStore(
@@ -3959,9 +4433,9 @@ function workflowAuthorityAddress(value: string): Readonly<{ host: string; port:
   return { host: match[1] === 'localhost' ? '127.0.0.1' : match[1]!, port }
 }
 
-function hasSessionJournal(
-  repository: SessionRepository,
-): repository is SessionRepository & { journal(): import('@praxis/core-sdk').SessionJournalV3 } {
+function hasSessionJournal(repository: SessionRepository): repository is SessionRepository & {
+  journal(): import('@praxis/core-sdk').SessionJournalV3
+} {
   return typeof Reflect.get(repository, 'journal') === 'function'
 }
 
@@ -3976,6 +4450,21 @@ function sessionJournal(
     )
   }
   return repository.journal()
+}
+
+function lazySessionJournal(
+  repository: SessionRepository & {
+    journal(): import('@praxis/core-sdk').SessionJournalV3
+  },
+): import('@praxis/core-sdk').SessionJournalV3 {
+  return {
+    appendCommit: (commit) => sessionJournal(repository).appendCommit(commit),
+    readEntries: (input) => sessionJournal(repository).readEntries(input),
+    loadProjection: (sessionId) => sessionJournal(repository).loadProjection(sessionId),
+    loadSnapshot: (sessionId) => sessionJournal(repository).loadSnapshot(sessionId),
+    querySession: (input) => sessionJournal(repository).querySession(input),
+    subscribe: (listener) => sessionJournal(repository).subscribe(listener),
+  }
 }
 
 function selectedChildMiddlewareProfile(
@@ -3999,7 +4488,11 @@ function selectedChildMiddlewareProfile(
   return profile
 }
 
-function childRuntimeLaunch(): { command: string; args: string[]; cwd: string } {
+function childRuntimeLaunch(): {
+  command: string
+  args: string[]
+  cwd: string
+} {
   const entry = process.argv[1]
   if (entry === undefined) {
     throw runtimeError(
@@ -4084,7 +4577,12 @@ function repositoryStorageStatus(repository: SessionRepository): {
   if (typeof candidate === 'function') {
     return candidate.call(repository) as ReturnType<typeof repositoryStorageStatus>
   }
-  return { authority: 'injected', store: 'custom', root: '[injected]', liveSwitch: false }
+  return {
+    authority: 'injected',
+    store: 'custom',
+    root: '[injected]',
+    liveSwitch: false,
+  }
 }
 
 function validatePermissionDecision(value: unknown): asserts value is PermissionDecision {
@@ -4131,6 +4629,7 @@ function toSessionEvent(event: AgentEvent, usage?: BudgetUsage): SessionEvent {
   const terminalUsage =
     event.type === 'prompt_completed' ||
     event.type === 'prompt_failed' ||
+    event.type === 'prompt_blocked' ||
     event.type === 'prompt_aborted'
       ? {
           turns: usage?.turns ?? 0,
@@ -4151,7 +4650,11 @@ function toSessionEvent(event: AgentEvent, usage?: BudgetUsage): SessionEvent {
     const { category: _category, ...protocolEvent } = event
     return { ...protocolEvent, usage: terminalUsage }
   }
-  if (event.type === 'prompt_completed' || event.type === 'prompt_aborted') {
+  if (
+    event.type === 'prompt_completed' ||
+    event.type === 'prompt_blocked' ||
+    event.type === 'prompt_aborted'
+  ) {
     return { ...event, usage: terminalUsage }
   }
   return event

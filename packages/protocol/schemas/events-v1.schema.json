@@ -29,7 +29,7 @@
         { "$ref": "#/$defs/runtimeReady" }, { "$ref": "#/$defs/loginAction" }, { "$ref": "#/$defs/authChanged" }, { "$ref": "#/$defs/runtimeWarning" },
         { "$ref": "#/$defs/promptStarted" }, { "$ref": "#/$defs/thinkingDelta" }, { "$ref": "#/$defs/textDelta" },
         { "$ref": "#/$defs/toolPlanning" }, { "$ref": "#/$defs/permissionRequest" }, { "$ref": "#/$defs/toolStart" }, { "$ref": "#/$defs/toolUpdate" }, { "$ref": "#/$defs/toolEnd" },
-        { "$ref": "#/$defs/steerQueued" }, { "$ref": "#/$defs/steerApplied" }, { "$ref": "#/$defs/messageCommitted" }, { "$ref": "#/$defs/promptCompleted" }, { "$ref": "#/$defs/promptFailed" }, { "$ref": "#/$defs/promptAborted" }, { "$ref": "#/$defs/supervisorUpdateEvent" }, { "$ref": "#/$defs/workflowUpdateEvent" }
+        { "$ref": "#/$defs/steerQueued" }, { "$ref": "#/$defs/steerApplied" }, { "$ref": "#/$defs/messageCommitted" }, { "$ref": "#/$defs/promptCompleted" }, { "$ref": "#/$defs/promptFailed" }, { "$ref": "#/$defs/promptBlocked" }, { "$ref": "#/$defs/promptAborted" }, { "$ref": "#/$defs/supervisorUpdateEvent" }, { "$ref": "#/$defs/workflowUpdateEvent" }
       ]
     },
     "runtimeReady": { "type": "object", "required": ["type", "runtimeId"], "properties": { "type": { "const": "runtime_ready" }, "runtimeId": { "type": "string" } }, "additionalProperties": false },
@@ -50,6 +50,7 @@
     "usageSummary": { "type": "object", "properties": { "turns": { "type": "integer", "minimum": 0 }, "toolCalls": { "type": "integer", "minimum": 0 }, "inputTokens": { "type": "number", "minimum": 0 }, "outputTokens": { "type": "number", "minimum": 0 }, "cacheReadTokens": { "type": "number", "minimum": 0 }, "cacheWriteTokens": { "type": "number", "minimum": 0 }, "costUsd": { "type": "number", "minimum": 0 }, "subagents": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
     "promptCompleted": { "type": "object", "required": ["type", "runId"], "properties": { "type": { "const": "prompt_completed" }, "runId": { "type": "string" }, "usage": { "$ref": "#/$defs/usageSummary" }, "stopReason": { "type": "string" } }, "additionalProperties": false },
     "promptFailed": { "type": "object", "required": ["type", "runId", "error"], "properties": { "type": { "const": "prompt_failed" }, "runId": { "type": "string" }, "error": { "type": "string" }, "code": { "type": "string" }, "usage": { "$ref": "#/$defs/usageSummary" } }, "additionalProperties": false },
+    "promptBlocked": { "type": "object", "required": ["type", "runId", "code", "reason", "recoverable"], "properties": { "type": { "const": "prompt_blocked" }, "runId": { "type": "string" }, "code": { "type": "string" }, "reason": { "type": "string" }, "recoverable": { "const": true }, "usage": { "$ref": "#/$defs/usageSummary" } }, "additionalProperties": false },
     "promptAborted": { "type": "object", "required": ["type", "runId"], "properties": { "type": { "const": "prompt_aborted" }, "runId": { "type": "string" }, "reason": { "type": "string" }, "usage": { "$ref": "#/$defs/usageSummary" } }, "additionalProperties": false },
     "supervisorCorrelation": {
       "type": "object",

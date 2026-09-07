@@ -137,9 +137,17 @@ test('child runtime fixture clamps budget, records terminal usage, and reclaims 
   const result = await host.runFixture({
     parentRunId: 'parent',
     childRunId: 'child',
-    requestedBudget: requestedBudget({ maxTurns: 9, maxToolCalls: 9, maxDepth: 9 }),
+    requestedBudget: requestedBudget({
+      maxTurns: 9,
+      maxToolCalls: 9,
+      maxDepth: 9,
+    }),
     parentUsage: { turns: 0, toolCalls: 0 },
-    launch: { command: process.execPath, args: ['--import', 'tsx', fixture], cwd: process.cwd() },
+    launch: {
+      command: process.execPath,
+      args: ['--import', 'tsx', fixture],
+      cwd: process.cwd(),
+    },
     request: { method: 'child.execute', params: { value: 'hello' } },
   })
 
@@ -181,9 +189,17 @@ test('child runtime host inherits only bounded non-secret process environment', 
   const result = await host.runFixture({
     parentRunId: 'environment-parent',
     childRunId: 'environment-child',
-    requestedBudget: requestedBudget({ maxTurns: 1, maxToolCalls: 0, maxDepth: 0 }),
+    requestedBudget: requestedBudget({
+      maxTurns: 1,
+      maxToolCalls: 0,
+      maxDepth: 0,
+    }),
     parentUsage: { turns: 0, toolCalls: 0 },
-    launch: { command: process.execPath, args: ['--import', 'tsx', fixture], cwd: process.cwd() },
+    launch: {
+      command: process.execPath,
+      args: ['--import', 'tsx', fixture],
+      cwd: process.cwd(),
+    },
     request: { method: 'child.execute', params: { mode: 'environment' } },
   })
 
@@ -223,7 +239,11 @@ test('child vertical slice evaluates timeout, crash, malformed, and oversized ou
       host.runFixture({
         parentRunId,
         childRunId: `fixture-child-${mode}`,
-        requestedBudget: requestedBudget({ maxTurns: 1, maxToolCalls: 0, maxDepth: 1 }),
+        requestedBudget: requestedBudget({
+          maxTurns: 1,
+          maxToolCalls: 0,
+          maxDepth: 1,
+        }),
         parentUsage: { turns: 0, toolCalls: 0 },
         launch: {
           command: process.execPath,
@@ -258,7 +278,9 @@ test('child vertical slice evaluates timeout, crash, malformed, and oversized ou
 
 test('child runtime cancellation closes the shared transport and reclaims the process', async () => {
   const events: SubagentAdmissionEvent[] = []
-  const ledger = new InMemorySubagentAdmissionLedger({ events: (event) => events.push(event) })
+  const ledger = new InMemorySubagentAdmissionLedger({
+    events: (event) => events.push(event),
+  })
   ledger.registerRootScope({
     runId: 'cancel-parent',
     budget: rootBudget({ maxTurns: 2, maxToolCalls: 1, maxDepth: 2 }),
@@ -271,9 +293,17 @@ test('child runtime cancellation closes the shared transport and reclaims the pr
   const execution = host.runFixture({
     parentRunId: 'cancel-parent',
     childRunId: 'cancel-child',
-    requestedBudget: requestedBudget({ maxTurns: 1, maxToolCalls: 0, maxDepth: 1 }),
+    requestedBudget: requestedBudget({
+      maxTurns: 1,
+      maxToolCalls: 0,
+      maxDepth: 1,
+    }),
     parentUsage: { turns: 0, toolCalls: 0 },
-    launch: { command: process.execPath, args: ['--import', 'tsx', fixture], cwd: process.cwd() },
+    launch: {
+      command: process.execPath,
+      args: ['--import', 'tsx', fixture],
+      cwd: process.cwd(),
+    },
     request: { method: 'child.execute', params: { mode: 'timeout' } },
   })
 
@@ -319,9 +349,17 @@ test('child runtime host binds an immutable bootstrap profile through the dedica
     const result = await host.runFixture({
       parentRunId: 'bootstrap-parent',
       childRunId: 'bootstrap-child',
-      requestedBudget: requestedBudget({ maxTurns: 1, maxToolCalls: 0, maxDepth: 1 }),
+      requestedBudget: requestedBudget({
+        maxTurns: 1,
+        maxToolCalls: 0,
+        maxDepth: 1,
+      }),
       parentUsage: { turns: 0, toolCalls: 0 },
-      launch: { command: process.execPath, args: ['--import', 'tsx', fixture], cwd: process.cwd() },
+      launch: {
+        command: process.execPath,
+        args: ['--import', 'tsx', fixture],
+        cwd: process.cwd(),
+      },
       bootstrapProfile: bootstrapProfile(root, deadlineAt),
       request: { method: 'session.prompt', params: { mode: 'bootstrap' } },
     })
@@ -364,14 +402,21 @@ test('child runtime host rejects a method outside the launch profile before spaw
     runId: 'denied-parent',
     budget: rootBudget({ maxTurns: 2, maxToolCalls: 1, maxDepth: 2 }),
   })
-  const host = new ChildRuntimeHost({ ledger, cancellation: new CancellationTree() })
+  const host = new ChildRuntimeHost({
+    ledger,
+    cancellation: new CancellationTree(),
+  })
 
   try {
     await assert.rejects(
       host.runFixture({
         parentRunId: 'denied-parent',
         childRunId: 'denied-child',
-        requestedBudget: requestedBudget({ maxTurns: 1, maxToolCalls: 0, maxDepth: 1 }),
+        requestedBudget: requestedBudget({
+          maxTurns: 1,
+          maxToolCalls: 0,
+          maxDepth: 1,
+        }),
         parentUsage: { turns: 0, toolCalls: 0 },
         launch: { command: 'must-not-spawn' },
         bootstrapProfile: bootstrapProfile(root, deadlineAt),
@@ -395,7 +440,10 @@ test('formal child host rejects packet authority drift before spawn or charge', 
     runId: 'production-parent',
     budget: rootBudget({ maxTurns: 2, maxToolCalls: 1, maxDepth: 1 }),
   })
-  const host = new ChildRuntimeHost({ ledger, cancellation: new CancellationTree() })
+  const host = new ChildRuntimeHost({
+    ledger,
+    cancellation: new CancellationTree(),
+  })
   const profile = bootstrapProfile(root, deadlineAt)
   const packet = contextPacket(profile, deadlineAt)
 
@@ -426,7 +474,10 @@ test('formal child host rejects descendant authority before spawn or charge', as
     runId: 'production-parent',
     budget: rootBudget({ maxTurns: 4, maxToolCalls: 4, maxDepth: 2 }),
   })
-  const host = new ChildRuntimeHost({ ledger, cancellation: new CancellationTree() })
+  const host = new ChildRuntimeHost({
+    ledger,
+    cancellation: new CancellationTree(),
+  })
 
   try {
     const deadlineAt = new Date(Date.now() + 60_000).toISOString()
@@ -579,7 +630,12 @@ test('child runtime host executes and accepts early steer through formal session
       assert.equal('stepId' in event, false)
     }
   } finally {
-    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })
   }
 })
 
@@ -603,7 +659,10 @@ test('child vertical slice denies an ungranted write without workspace or main-s
 
   try {
     const deadlineAt = new Date(Date.now() + 60_000).toISOString()
-    const profile = bootstrapProfile(root, deadlineAt, { workspace, toolNames: ['read'] })
+    const profile = bootstrapProfile(root, deadlineAt, {
+      workspace,
+      toolNames: ['read'],
+    })
     const packet = contextPacket(profile, deadlineAt)
     const result = await host.run({
       packet: {
@@ -639,7 +698,12 @@ test('child vertical slice denies an ungranted write without workspace or main-s
     assert.equal(ledger.scope('production-parent')?.chargedChildRuns, 1)
     assert.equal(ledger.scope('production-parent')?.activeChildren, 0)
   } finally {
-    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })
   }
 })
 
@@ -685,7 +749,9 @@ test('parent cancellation yields one child terminal result and bounded stderr tr
   const events: SubagentAdmissionEvent[] = []
   const trace: ChildRuntimeTraceEventV1[] = []
   const cancellation = new CancellationTree()
-  const ledger = new InMemorySubagentAdmissionLedger({ events: (event) => events.push(event) })
+  const ledger = new InMemorySubagentAdmissionLedger({
+    events: (event) => events.push(event),
+  })
   ledger.registerRootScope({
     runId: 'production-parent',
     budget: rootBudget({ maxTurns: 4, maxToolCalls: 4, maxDepth: 2 }),
@@ -745,7 +811,59 @@ test('parent cancellation yields one child terminal result and bounded stderr tr
     assert.match(terminalTrace?.stderr?.digest ?? '', /^sha256:[a-f0-9]{64}$/u)
     assert.equal('content' in (terminalTrace?.stderr ?? {}), false)
   } finally {
-    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })
+  }
+})
+
+test('formal child host treats prompt_blocked as a terminal result', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'praxis-child-host-blocked-'))
+  const ledger = new InMemorySubagentAdmissionLedger()
+  ledger.registerRootScope({
+    runId: 'production-parent',
+    budget: rootBudget({ maxTurns: 4, maxToolCalls: 4, maxDepth: 2 }),
+  })
+  const host = new ChildRuntimeHost({
+    ledger,
+    cancellation: new CancellationTree(),
+    handshakeTimeoutMs: 5_000,
+    shutdownGraceMs: 500,
+  })
+
+  try {
+    const deadlineAt = new Date(Date.now() + 60_000).toISOString()
+    const profile = bootstrapProfile(home, deadlineAt)
+    const packet = contextPacket(profile, deadlineAt)
+    const result = await host.run({
+      packet: {
+        ...packet,
+        step: { ...packet.step, instructions: 'emit-blocked' },
+      },
+      parentUsage: { turns: 0, toolCalls: 0 },
+      launch: {
+        command: process.execPath,
+        args: ['--import', 'tsx', controlledRuntime],
+        cwd: process.cwd(),
+      },
+      bootstrapProfile: profile,
+    })
+
+    assert.equal(result.status, 'failed')
+    assert.equal(result.error?.code, 'PLAN_REVIEW_REQUIRED')
+    assert.equal(result.retryable, false)
+    assert.deepEqual(result.usage, { turns: 1, toolCalls: 0, subagents: 0 })
+    assert.equal(ledger.scope('production-parent')?.activeChildren, 0)
+  } finally {
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })
   }
 })
 
@@ -788,7 +906,12 @@ test('execution deadline is independent from handshake timeout and aborts the ch
     assert.ok(Date.now() - startedAt >= 3_000)
     assert.ok(Date.now() - startedAt < 10_000)
   } finally {
-    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })
   }
 })
 
@@ -836,7 +959,12 @@ test('long-lived child deadline is not clipped to the native timer range', async
     host.cancel('production-parent', 'user_abort')
     assert.equal((await execution).status, 'cancelled')
   } finally {
-    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })
   }
 })
 
@@ -875,7 +1003,12 @@ test('no-progress deadline aborts an idle child without consuming its total dead
     assert.match(result.summary, /no-progress deadline/u)
     assert.ok(Date.now() - startedAt < 10_000)
   } finally {
-    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })
   }
 })
 
@@ -926,7 +1059,12 @@ test('formal child host denies an out-of-workspace read without consulting paren
     assert.equal(parentDecisions, 0)
     assert.equal(ledger.scope('production-parent')?.chargedChildRuns, 1)
   } finally {
-    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })
   }
 })
 
@@ -940,7 +1078,10 @@ test('shipping Runtime reserves protocol-version errors for schema-valid initial
       protocolVersion: 1 as const,
       supportedProtocolVersions: [2],
       client: { name: 'child-runtime-host-test', version: '1' },
-      capabilities: { interactivePermissions: false, outputFormats: ['json'] as const },
+      capabilities: {
+        interactivePermissions: false,
+        outputFormats: ['json'] as const,
+      },
     },
   }
   assertProtocolMessage(request)
@@ -950,7 +1091,12 @@ test('shipping Runtime reserves protocol-version errors for schema-valid initial
     assert.equal(response.id, request.id)
     assert.equal(response.error?.code, 'PROTOCOL_VERSION_UNSUPPORTED')
   } finally {
-    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })
   }
 })
 
@@ -1000,7 +1146,10 @@ function bootstrapProfile(
     capabilityBundleDigest: capabilityBundle.digest,
     capabilityBundle,
     deadlineAt,
-    trace: { traceId: 'trace-child-bootstrap', parentTraceId: 'trace-parent-bootstrap' },
+    trace: {
+      traceId: 'trace-child-bootstrap',
+      parentTraceId: 'trace-parent-bootstrap',
+    },
   }
 }
 
@@ -1038,7 +1187,10 @@ function contextPacket(
       },
     ],
     successCriteria: [
-      { id: 'manifest-read', description: 'The package manifest is read successfully.' },
+      {
+        id: 'manifest-read',
+        description: 'The package manifest is read successfully.',
+      },
     ],
     workspace: profile.workspace,
     grant: {
@@ -1148,7 +1300,10 @@ async function requestShippingRuntime(
       }
       const onLine = (line: string) => {
         try {
-          const response = JSON.parse(line) as { id?: string; error?: { code?: string } }
+          const response = JSON.parse(line) as {
+            id?: string
+            error?: { code?: string }
+          }
           assertProtocolMessage(response)
           cleanup()
           resolve(response)

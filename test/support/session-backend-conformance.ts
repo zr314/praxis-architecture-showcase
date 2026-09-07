@@ -279,8 +279,9 @@ class TerminalFailingRepository implements SessionRepository {
     return this.delegate.update(session)
   }
 
-  appendMessage(sessionId: string, message: ProviderMessage): Promise<void> {
-    return this.delegate.appendMessage(sessionId, message)
+  async appendMessage(sessionId: string, message: ProviderMessage): Promise<undefined> {
+    await this.delegate.appendMessage(sessionId, message)
+    return undefined
   }
 
   loadMessages(sessionId: string): Promise<ProviderMessage[]> {

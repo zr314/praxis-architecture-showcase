@@ -52,7 +52,13 @@
   "assertions": {
     "terminalEvent": { "type": "prompt_failed", "code": "PROCESS_PLUGIN_EXITED" },
     "eventCounts": { "prompt_failed": 1, "prompt_completed": 0, "prompt_aborted": 0 },
-    "eventOrder": ["prompt_started", "tool_planning", "tool_start", "prompt_failed"],
+    "eventOrder": [
+      "prompt_started",
+      "message_committed",
+      "tool_planning",
+      "tool_start",
+      "prompt_failed"
+    ],
     "committedRoles": ["assistant"],
     "traceKinds": [
       "run.started",

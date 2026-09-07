@@ -45,6 +45,14 @@ export async function runCli(argv: readonly string[] = process.argv): Promise<vo
     )
     .addOption(
       new Option(
+        '--plan-policy <policy>',
+        'ReviewPlan policy for each prompt (optional lets the model choose; required gates work)',
+      )
+        .choices(['optional', 'required'])
+        .default('optional'),
+    )
+    .addOption(
+      new Option(
         '--storage <store>',
         'V3 Session storage backend for this Runtime process',
       ).choices(['jsonl', 'sqlite']),
@@ -56,6 +64,179 @@ export async function runCli(argv: readonly string[] = process.argv): Promise<vo
     .option('--timeout-ms <milliseconds>', 'run deadline in milliseconds', positiveInteger)
     .option('--policy-file <path>', 'non-interactive Tool policy JSON')
     .action(() => {})
+
+  const memory = program
+    .command('memory')
+    .description('manage local cross-session memory (no cloud or vectors)')
+  for (const action of ['status', 'list', 'export'] as const) {
+    memory
+      .command(action)
+      .option('--workspace <path>', 'project workspace', process.cwd())
+      .addOption(
+        new Option('--scope <scope>', 'memory scope')
+          .choices(['project', 'user'])
+          .default('project'),
+      )
+      .option('--query <text>', 'filter memory notes')
+      .option('--after <id>', 'next export page cursor')
+      .option('--json', 'emit JSON')
+      .action((options) => {
+        managementAction = {
+          kind: 'memory',
+          json: options.json ?? false,
+          request: {
+            action,
+            workspace: options.workspace,
+            scope: options.scope as 'project' | 'user',
+            query: options.query,
+            afterId: options.after,
+          },
+        }
+      })
+  }
+  memory
+    .command('get')
+    .argument('<id>')
+    .option('--workspace <path>', 'project workspace', process.cwd())
+    .addOption(new Option('--scope <scope>').choices(['project', 'user']).default('project'))
+    .option('--json')
+    .action((id, options) => {
+      managementAction = {
+        kind: 'memory',
+        json: options.json ?? false,
+        request: {
+          action: 'get',
+          id,
+          workspace: options.workspace,
+          scope: options.scope as 'project' | 'user',
+        },
+      }
+    })
+  memory
+    .command('mode')
+    .argument('<mode>', 'off, read-only, or explicit')
+    .option('--workspace <path>', 'project workspace', process.cwd())
+    .option('--json')
+    .action((mode, options) => {
+      if (!['off', 'read-only', 'explicit'].includes(mode))
+        throw new Error('Memory mode must be off, read-only, or explicit.')
+      managementAction = {
+        kind: 'memory',
+        json: options.json ?? false,
+        request: {
+          action: 'configure',
+          workspace: options.workspace,
+          mode: mode as 'off' | 'read-only' | 'explicit',
+        },
+      }
+    })
+  memory
+    .command('user-access')
+    .argument('<decision>', 'allow or deny cross-project preference reads')
+    .option('--workspace <path>', 'project workspace', process.cwd())
+    .option('--json')
+    .action((decision, options) => {
+      if (!['allow', 'deny'].includes(decision))
+        throw new Error('User access must be allow or deny.')
+      managementAction = {
+        kind: 'memory',
+        json: options.json ?? false,
+        request: {
+          action: 'configure',
+          workspace: options.workspace,
+          userAccess: decision === 'allow',
+        },
+      }
+    })
+  memory
+    .command('put')
+    .argument('<key>')
+    .argument('<content>')
+    .option('--workspace <path>', 'project workspace', process.cwd())
+    .addOption(new Option('--scope <scope>').choices(['project', 'user']).default('project'))
+    .addOption(
+      new Option('--kind <kind>')
+        .choices(['preference', 'feedback', 'decision', 'reference', 'experience'])
+        .default('preference'),
+    )
+    .option(
+      '--revision <number>',
+      '0 creates only; edits require current revision',
+      nonNegativeInteger,
+      0,
+    )
+    .option('--applies <text>', 'conditions for use')
+    .option('--expires <timestamp>', 'future ISO timestamp')
+    .option('--json')
+    .action((key, content, options) => {
+      managementAction = {
+        kind: 'memory',
+        json: options.json ?? false,
+        request: {
+          action: 'upsert',
+          workspace: options.workspace,
+          scope: options.scope as 'project' | 'user',
+          memory: {
+            key,
+            content,
+            kind: options.kind as import('@praxis/core-sdk').MemoryKindV1,
+            expectedRevision: options.revision,
+            applicability: options.applies,
+            expiresAt: options.expires,
+          },
+        },
+      }
+    })
+  memory
+    .command('forget')
+    .argument('<id>')
+    .requiredOption('--revision <number>', 'current revision', nonNegativeInteger)
+    .option('--workspace <path>', 'project workspace', process.cwd())
+    .addOption(new Option('--scope <scope>').choices(['project', 'user']).default('project'))
+    .option('--json')
+    .action((id, options) => {
+      managementAction = {
+        kind: 'memory',
+        json: options.json ?? false,
+        request: {
+          action: 'forget',
+          workspace: options.workspace,
+          scope: options.scope as 'project' | 'user',
+          id,
+          expectedRevision: options.revision,
+        },
+      }
+    })
+  memory
+    .command('import')
+    .argument('<file>', 'bounded JSON export; create-only, no overwrite')
+    .option('--workspace <path>', 'target workspace', process.cwd())
+    .addOption(new Option('--scope <scope>').choices(['project', 'user']).default('project'))
+    .option('--json')
+    .action((file, options) => {
+      managementAction = {
+        kind: 'memory',
+        importFile: file,
+        json: options.json ?? false,
+        request: {
+          action: 'import',
+          workspace: options.workspace,
+          scope: options.scope as 'project' | 'user',
+        },
+      }
+    })
+  memory
+    .command('rebind')
+    .argument('<projectId>', 'existing identity after moving a project')
+    .option('--workspace <path>', 'new workspace', process.cwd())
+    .option('--json')
+    .action((id, options) => {
+      managementAction = {
+        kind: 'memory',
+        json: options.json ?? false,
+        request: { action: 'rebind', workspace: options.workspace, id },
+      }
+    })
 
   const auth = program
     .command('auth')
@@ -531,6 +712,7 @@ export async function runCli(argv: readonly string[] = process.argv): Promise<vo
         bridge.prompt({
           sessionId: session.sessionId,
           text: command.prompt ?? options.print,
+          planPolicy: options.planPolicy,
           ...(command.commandInvocationId === undefined
             ? {}
             : { commandInvocationId: command.commandInvocationId }),
@@ -552,7 +734,7 @@ export async function runCli(argv: readonly string[] = process.argv): Promise<vo
   }
 
   const terminalOutput = new NativeTerminalOutput(process.stdout)
-  const app = render(<App bridge={bridge} session={session} />, {
+  const app = render(<App bridge={bridge} session={session} planPolicy={options.planPolicy} />, {
     ...TUI_RENDER_OPTIONS,
     stdout: terminalOutput as unknown as NodeJS.WriteStream,
   })

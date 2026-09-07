@@ -13,6 +13,21 @@ import {
 } from '../apps/runtime/src/commands/builtinCommandRegistry.js'
 
 const baseRequest = { jsonrpc: '2.0' as const, id: '1' }
+
+test('session.plan exposes working progress and scoped advisory metadata without accepting unknown fields', () => {
+  const result = {
+    sessionId: 's-plan',
+    plan: { planId: 'working', state: 'active', items: [] },
+    plannerGeneration: null,
+    planPolicy: 'optional',
+    strictReviewPlan: null,
+    workingReviews: [],
+  }
+  assert.doesNotThrow(() => assertProtocolResult('session.plan', 'working-plan', result))
+  assert.throws(() =>
+    assertProtocolResult('session.plan', 'working-plan', { ...result, unknown: true }),
+  )
+})
 const commandCatalog = createRuntimeCommandRegistryV1().snapshot({
   workspaceId: 'workspace:test',
   workspaceTrusted: true,

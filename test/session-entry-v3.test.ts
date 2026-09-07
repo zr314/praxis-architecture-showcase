@@ -185,6 +185,7 @@ test('one SessionEntryV3 stream deterministically rebuilds every public projecti
       {
         runId: 'run-root',
         clientRequestId: 'request-1',
+        planPolicy: 'optional',
         state: 'completed',
         usage: {
           turns: 1,

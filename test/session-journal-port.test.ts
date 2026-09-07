@@ -138,7 +138,13 @@ test('the journal accepts a whole commit, reads exclusive cursors, and rebuilds 
     await journal.querySession({ sessionId: 'session-root', kind: 'run', runId: 'run-1' }),
     {
       kind: 'run',
-      value: { runId: 'run-1', clientRequestId: 'request-1', state: 'running', usage: {} },
+      value: {
+        runId: 'run-1',
+        clientRequestId: 'request-1',
+        planPolicy: 'optional',
+        state: 'running',
+        usage: {},
+      },
     },
   )
   const plan = await journal.querySession({

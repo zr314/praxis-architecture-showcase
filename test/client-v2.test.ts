@@ -228,7 +228,9 @@ test('typed client negotiates v1 and rejects event sequence gaps', async () => {
     },
     async close() {},
   }
-  const client = new PraxisClient(async () => connection, { reconnectAttempts: 0 })
+  const client = new PraxisClient(async () => connection, {
+    reconnectAttempts: 0,
+  })
   await client.connect()
   await assert.rejects(async () => {
     for await (const _event of client.events()) {
@@ -243,9 +245,20 @@ test('typed client negotiates v1 and rejects event sequence gaps', async () => {
 
 test('typed client fails only a slow consumer that exceeds its bounded event queue', async () => {
   const connection = scriptedConnection('runtime-buffer', [], async function* () {
-    yield notification(1, { type: 'runtime_ready', runtimeId: 'runtime-buffer' })
-    yield notification(2, { type: 'runtime_warning', code: 'ONE', message: 'one' })
-    yield notification(3, { type: 'runtime_warning', code: 'TWO', message: 'two' })
+    yield notification(1, {
+      type: 'runtime_ready',
+      runtimeId: 'runtime-buffer',
+    })
+    yield notification(2, {
+      type: 'runtime_warning',
+      code: 'ONE',
+      message: 'one',
+    })
+    yield notification(3, {
+      type: 'runtime_warning',
+      code: 'TWO',
+      message: 'two',
+    })
   })
   const client = new PraxisClient(async () => connection, {
     reconnectAttempts: 0,
@@ -255,7 +268,9 @@ test('typed client fails only a slow consumer that exceeds its bounded event que
 
   assert.equal((await iterator.next()).value?.type, 'runtime_ready')
   await new Promise<void>((resolve) => setImmediate(resolve))
-  await assert.rejects(() => iterator.next(), { name: 'EventBufferOverflowError' })
+  await assert.rejects(() => iterator.next(), {
+    name: 'EventBufferOverflowError',
+  })
   await client.close()
 })
 
@@ -269,7 +284,9 @@ test('typed client rejects schema-invalid connection results', async () => {
     async *notifications() {},
     async close() {},
   }
-  const client = new PraxisClient(async () => connection, { reconnectAttempts: 0 })
+  const client = new PraxisClient(async () => connection, {
+    reconnectAttempts: 0,
+  })
 
   await assert.rejects(() => client.connect(), /Protocol schema validation failed/)
   await client.close()
@@ -285,7 +302,11 @@ test('typed client exposes resume, follow-up, steer, and abort Runtime controls'
           return {
             protocolVersion: 1,
             supportedProtocolVersions: [1],
-            runtime: { name: 'runtime', version: '1', runtimeId: 'runtime-controls' },
+            runtime: {
+              name: 'runtime',
+              version: '1',
+              runtimeId: 'runtime-controls',
+            },
             capabilities: {},
           } as T
         case 'events.subscribe':
@@ -317,11 +338,16 @@ test('typed client exposes resume, follow-up, steer, and abort Runtime controls'
         runId: 'run-controls',
         prompt: 'Continue.',
       })
-      yield notification(2, { type: 'prompt_completed', runId: 'run-controls' })
+      yield notification(2, {
+        type: 'prompt_completed',
+        runId: 'run-controls',
+      })
     },
     async close() {},
   }
-  const client = new PraxisClient(async () => connection, { reconnectAttempts: 0 })
+  const client = new PraxisClient(async () => connection, {
+    reconnectAttempts: 0,
+  })
 
   await client.resumeSession('session-controls')
   const events: SessionEvent[] = []
@@ -359,6 +385,65 @@ test('typed client exposes resume, follow-up, steer, and abort Runtime controls'
   await client.close()
 })
 
+test('typed client ends a Run stream on recoverable prompt_blocked', async () => {
+  const connection: ProtocolConnection = {
+    async request<T>(request: JsonRpcRequest): Promise<T> {
+      if (request.method === 'initialize') {
+        return {
+          protocolVersion: 1,
+          supportedProtocolVersions: [1],
+          runtime: {
+            name: 'runtime',
+            version: '1',
+            runtimeId: 'runtime-blocked',
+          },
+          capabilities: {},
+        } as T
+      }
+      if (request.method === 'events.subscribe') {
+        return {
+          subscriptionId: 'subscription-1',
+          nextSequence: 1,
+          replaySupported: true,
+        } as T
+      }
+      return { runId: 'run-blocked', accepted: true } as T
+    },
+    async *notifications() {
+      yield notification(1, {
+        type: 'prompt_started',
+        sessionId: 'session-blocked',
+        runId: 'run-blocked',
+        prompt: 'Complete a required Plan.',
+      })
+      yield notification(2, {
+        type: 'prompt_blocked',
+        runId: 'run-blocked',
+        code: 'PLAN_COMPLETION_REQUIRED',
+        reason: 'Final Review is required.',
+        recoverable: true,
+      })
+    },
+    async close() {},
+  }
+  const client = new PraxisClient(async () => connection, {
+    reconnectAttempts: 0,
+  })
+
+  const events = await collectEvents(
+    client.prompt({
+      sessionId: 'session-blocked',
+      text: 'Complete a required Plan.',
+    }),
+  )
+
+  assert.deepEqual(
+    events.map(({ type }) => type),
+    ['prompt_started', 'prompt_blocked'],
+  )
+  await client.close()
+})
+
 test('typed client multiplexes interleaved concurrent Run streams without losing early events', async () => {
   const queue = new NotificationQueue()
   let sequence = 1
@@ -369,7 +454,11 @@ test('typed client multiplexes interleaved concurrent Run streams without losing
         return {
           protocolVersion: 1,
           supportedProtocolVersions: [1],
-          runtime: { name: 'runtime', version: '1', runtimeId: 'runtime-multiplex' },
+          runtime: {
+            name: 'runtime',
+            version: '1',
+            runtimeId: 'runtime-multiplex',
+          },
           capabilities: {},
         } as T
       }
@@ -393,10 +482,32 @@ test('typed client multiplexes interleaved concurrent Run streams without losing
           }),
         )
         if (promptRequests === 2) {
-          queue.push(notification(sequence++, { type: 'text_delta', runId: 'run-2', text: 'B' }))
-          queue.push(notification(sequence++, { type: 'text_delta', runId: 'run-1', text: 'A' }))
-          queue.push(notification(sequence++, { type: 'prompt_completed', runId: 'run-2' }))
-          queue.push(notification(sequence++, { type: 'prompt_completed', runId: 'run-1' }))
+          queue.push(
+            notification(sequence++, {
+              type: 'text_delta',
+              runId: 'run-2',
+              text: 'B',
+            }),
+          )
+          queue.push(
+            notification(sequence++, {
+              type: 'text_delta',
+              runId: 'run-1',
+              text: 'A',
+            }),
+          )
+          queue.push(
+            notification(sequence++, {
+              type: 'prompt_completed',
+              runId: 'run-2',
+            }),
+          )
+          queue.push(
+            notification(sequence++, {
+              type: 'prompt_completed',
+              runId: 'run-1',
+            }),
+          )
         }
         return { runId, accepted: true } as T
       }
@@ -407,7 +518,9 @@ test('typed client multiplexes interleaved concurrent Run streams without losing
       queue.close()
     },
   }
-  const client = new PraxisClient(async () => connection, { reconnectAttempts: 0 })
+  const client = new PraxisClient(async () => connection, {
+    reconnectAttempts: 0,
+  })
 
   const [first, second] = await Promise.all([
     collectEvents(client.prompt({ sessionId: 'session-1', text: 'First.' })),
@@ -438,7 +551,11 @@ test('typed client replays one Runtime epoch but resets sequence state for a new
       yield notification(1, { type: 'runtime_ready', runtimeId: 'runtime-2' })
     }),
   ]
-  const epochs: Array<{ previousRuntimeId?: string; runtimeId: string; epoch: number }> = []
+  const epochs: Array<{
+    previousRuntimeId?: string
+    runtimeId: string
+    epoch: number
+  }> = []
   const client = new PraxisClient(
     async () => {
       const connection = connections.shift()
@@ -481,7 +598,10 @@ test('typed client requests replay only when reconnecting to the same Runtime ep
   const requests: JsonRpcRequest[][] = [[], []]
   const connections = [
     scriptedConnection('runtime-stable', requests[0]!, async function* () {
-      yield notification(1, { type: 'runtime_ready', runtimeId: 'runtime-stable' })
+      yield notification(1, {
+        type: 'runtime_ready',
+        runtimeId: 'runtime-stable',
+      })
       throw new Error('temporary transport failure')
     }),
     scriptedConnection('runtime-stable', requests[1]!, async function* () {
@@ -492,7 +612,9 @@ test('typed client requests replay only when reconnecting to the same Runtime ep
       })
     }),
   ]
-  const client = new PraxisClient(async () => connections.shift()!, { reconnectAttempts: 1 })
+  const client = new PraxisClient(async () => connections.shift()!, {
+    reconnectAttempts: 1,
+  })
 
   const events: SessionEvent[] = []
   for await (const event of client.events()) events.push(event)
@@ -518,10 +640,15 @@ test('typed client replays sequence one when a same-Runtime connection fails bef
       throw new Error('transport failed before first event')
     }),
     scriptedConnection('runtime-stable', requests[1]!, async function* () {
-      yield notification(1, { type: 'runtime_ready', runtimeId: 'runtime-stable' })
+      yield notification(1, {
+        type: 'runtime_ready',
+        runtimeId: 'runtime-stable',
+      })
     }),
   ]
-  const client = new PraxisClient(async () => connections.shift()!, { reconnectAttempts: 1 })
+  const client = new PraxisClient(async () => connections.shift()!, {
+    reconnectAttempts: 1,
+  })
 
   const events: SessionEvent[] = []
   for await (const event of client.events()) events.push(event)
@@ -545,7 +672,10 @@ test('typed client resets the reconnect budget after receiving a valid replayed 
   const requests: JsonRpcRequest[][] = [[], [], []]
   const connections = [
     scriptedConnection('runtime-stable', requests[0]!, async function* () {
-      yield notification(1, { type: 'runtime_ready', runtimeId: 'runtime-stable' })
+      yield notification(1, {
+        type: 'runtime_ready',
+        runtimeId: 'runtime-stable',
+      })
       throw new Error('first isolated transport failure')
     }),
     scriptedConnection('runtime-stable', requests[1]!, async function* () {
@@ -564,7 +694,9 @@ test('typed client resets the reconnect budget after receiving a valid replayed 
       })
     }),
   ]
-  const client = new PraxisClient(async () => connections.shift()!, { reconnectAttempts: 1 })
+  const client = new PraxisClient(async () => connections.shift()!, {
+    reconnectAttempts: 1,
+  })
 
   const events: SessionEvent[] = []
   for await (const event of client.events()) events.push(event)
@@ -589,7 +721,12 @@ test('typed client resets the reconnect budget after receiving a valid replayed 
 })
 
 async function* events(): AsyncIterable<SessionEvent> {
-  yield { type: 'prompt_started', sessionId: 'session', runId: 'run', prompt: 'prompt' }
+  yield {
+    type: 'prompt_started',
+    sessionId: 'session',
+    runId: 'run',
+    prompt: 'prompt',
+  }
   yield { type: 'text_delta', runId: 'run', text: 'answer' }
   yield {
     type: 'prompt_completed',

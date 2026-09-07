@@ -316,7 +316,9 @@
           "additionalProperties": false,
           "required": ["type", "contentIndex"],
           "properties": {
-            "type": { "enum": ["text_start", "text_end", "reasoning_start", "reasoning_end"] },
+            "type": {
+              "enum": ["text_start", "text_end", "reasoning_start", "reasoning_end"]
+            },
             "contentIndex": { "type": "integer", "minimum": 0 }
           }
         },
@@ -399,7 +401,11 @@
           "required": ["type"],
           "properties": {
             "type": { "const": "completed" },
-            "stopReason": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "stopReason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
             "usage": {
               "type": "object",
               "additionalProperties": false,
@@ -453,7 +459,9 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["prompt_completed", "prompt_failed", "prompt_aborted"] },
+        "type": {
+          "enum": ["prompt_completed", "prompt_failed", "prompt_blocked", "prompt_aborted"]
+        },
         "code": { "type": "string", "minLength": 1, "maxLength": 64 },
         "stopReason": { "type": "string", "minLength": 1, "maxLength": 128 },
         "reason": { "type": "string", "minLength": 1, "maxLength": 128 }
@@ -473,6 +481,7 @@
         "message_committed",
         "prompt_completed",
         "prompt_failed",
+        "prompt_blocked",
         "prompt_aborted"
       ]
     },
@@ -600,7 +609,9 @@
         },
         "remainingReplayTurns": { "type": "integer", "minimum": 0 },
         "contextSelection": { "$ref": "#/$defs/contextSelectionAssertion" },
-        "cancellationEvidence": { "$ref": "#/$defs/cancellationEvidenceAssertion" }
+        "cancellationEvidence": {
+          "$ref": "#/$defs/cancellationEvidenceAssertion"
+        }
       }
     }
   }

@@ -6,12 +6,18 @@ import type { DatabaseSync } from 'node:sqlite'
 import {
   type AgentProfileV1,
   applyWorkflowEventV1,
+  canonicalJsonV1,
   initialWorkflowProjectionV1,
   promptDigest,
+  validatePlanExecutionBindingV1,
   validateWorkflowSpecV1,
+  workflowTaskRequestDigestV1,
+  type ReviewPlanExecutionRequestV1,
+  type ReserveWorkflowEffectRequestV1,
   type WorkflowAuthorityPortV1,
   type WorkflowEffectAdmissionV1,
   type WorkflowEffectReceiptV1,
+  type WorkflowEffectRequestV1,
   type WorkflowEffectReservationV1,
   type WorkflowEventDataV1,
   type WorkflowEventV1,
@@ -27,13 +33,14 @@ import {
   type WorkflowTaskClaimV1,
   type WorkflowTaskKindV1,
   type WorkflowTaskLeaseV1,
+  type WorkflowTaskSpecV1,
   type WorkflowTaskV1,
   type WorkflowTimerV1,
   type WorkflowTransactionV1,
 } from '@praxis/core-sdk'
 import { loadNodeSqlite } from '../store/nodeSqlite.js'
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 const DEFAULT_LEASE_MS = 60_000
 const MAX_LIST = 500
 const MAX_MESSAGE_BYTES = 64 * 1024
@@ -52,6 +59,10 @@ type HumanTaskRow = { task_json: string }
 type EffectReceiptRow = { receipt_json: string }
 type EffectReservationRow = { reservation_json: string }
 type WorkflowMessageRow = { message_json: string }
+type TaskRequestRow = {
+  request_digest: string
+  task_id: string
+}
 
 /**
  * Single-node workflow authority. Every state change, task enqueue/ack, timer and
@@ -247,6 +258,150 @@ export class SqliteWorkflowAuthorityV1 implements WorkflowAuthorityPortV1 {
     return rows
       .map(({ task_json }) => parseTask(task_json))
       .filter((task) => (states?.has(task.state) ?? true) && (kinds?.has(task.kind) ?? true))
+  }
+
+  admitTaskForRequest(input: {
+    request: ReviewPlanExecutionRequestV1
+    taskSpec: WorkflowTaskSpecV1
+  }): Promise<{ task: WorkflowTaskV1; replayed: boolean }> {
+    const requestDigest = workflowTaskRequestDigestV1(input)
+    const binding = validatePlanExecutionBindingV1({
+      sessionId: input.request.sessionId,
+      planId: input.request.planId,
+      planRevision: input.request.planRevision,
+      itemId: input.request.itemId,
+      itemAttemptId: input.request.itemAttemptId,
+      requestId: input.request.requestId,
+    })
+    return this.exclusive(() => {
+      const database = this.database()
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const prior = database
+          .prepare(
+            'SELECT request_digest, task_id FROM workflow_task_requests WHERE workflow_id = ? AND request_id = ?',
+          )
+          .get(input.request.workflowId, input.request.requestId) as TaskRequestRow | undefined
+        if (prior !== undefined) {
+          if (prior.request_digest !== requestDigest)
+            throw authorityError('WORKFLOW_TASK_REQUEST_CONFLICT')
+          const task = taskById(database, prior.task_id)
+          database.exec('COMMIT')
+          return { task, replayed: true }
+        }
+
+        let projection = loadProjection(database, input.request.workflowId)
+        if (projection.sessionId !== input.request.sessionId)
+          throw authorityError('WORKFLOW_TASK_REQUEST_CONFLICT')
+        const at = input.taskSpec.readyAt
+        const taskId = `task-${randomUUID()}`
+        const attemptId = `attempt-${randomUUID()}`
+        const task: WorkflowTaskV1 = Object.freeze({
+          schemaVersion: 1,
+          taskId,
+          workflowId: projection.workflowId,
+          runId: projection.runId,
+          nodeId: input.taskSpec.node.nodeId,
+          attemptId,
+          kind: input.taskSpec.kind,
+          ...(input.taskSpec.profileRef === undefined
+            ? {}
+            : { profileRef: input.taskSpec.profileRef }),
+          payload: structuredClone(input.taskSpec.payload),
+          state: 'ready',
+          priority: input.taskSpec.priority,
+          readyAt: input.taskSpec.readyAt,
+          deadlineAt: input.taskSpec.deadlineAt,
+          conflictKeys: [...input.taskSpec.conflictKeys],
+          effect: input.taskSpec.node.effect,
+          retry: input.taskSpec.node.retry,
+          timeout: input.taskSpec.node.timeout,
+          executionBinding: binding,
+          createdAt: at,
+          updatedAt: at,
+        })
+        const transactionId = `execution-admit-${input.request.requestId}`
+        const events = envelopeEvents(
+          projection.spec,
+          projection.sequence,
+          transactionId,
+          [
+            {
+              type: 'execution.task_admitted',
+              requestId: input.request.requestId,
+              requestDigest,
+              node: input.taskSpec.node,
+              attempt: {
+                attemptId,
+                nodeId: input.taskSpec.node.nodeId,
+                ordinal: 1,
+                state: 'scheduled',
+              },
+            },
+          ],
+          at,
+        )
+        for (const event of events) projection = applyWorkflowEventV1(projection, event)
+        insertEvents(database, events)
+        insertTask(database, task)
+        insertOutbox(database, {
+          messageId: `outbox-${taskId}`,
+          workflowId: projection.workflowId,
+          topic: 'workflow.task.ready',
+          key: taskId,
+          payload: { taskId },
+          availableAt: at,
+        })
+        database
+          .prepare(
+            `INSERT INTO workflow_task_requests
+             (workflow_id, request_id, request_digest, input_digest, session_id, plan_id,
+              plan_revision, item_id, item_attempt_id, node_id, task_id, request_json,
+              task_spec_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            projection.workflowId,
+            input.request.requestId,
+            requestDigest,
+            input.request.inputDigest,
+            input.request.sessionId,
+            input.request.planId,
+            input.request.planRevision,
+            input.request.itemId,
+            input.request.itemAttemptId,
+            input.taskSpec.node.nodeId,
+            taskId,
+            canonicalJsonV1(input.request),
+            canonicalJsonV1(input.taskSpec),
+            at,
+          )
+        saveProjection(database, projection)
+        recordTransaction(database, transactionId, projection)
+        database.exec('COMMIT')
+        return { task, replayed: false }
+      } catch (error) {
+        rollback(database)
+        throw mapError(error)
+      }
+    })
+  }
+
+  async getTaskByRequestId(
+    workflowId: string,
+    requestId: string,
+  ): Promise<WorkflowTaskV1 | undefined> {
+    if (!safeId(workflowId) || !safeId(requestId))
+      throw authorityError('WORKFLOW_TASK_REQUEST_INVALID')
+    const row = this.database()
+      .prepare(
+        `SELECT t.task_json, t.lease_expires_at
+         FROM workflow_task_requests r
+         JOIN workflow_tasks t ON t.task_id = r.task_id
+         WHERE r.workflow_id = ? AND r.request_id = ?`,
+      )
+      .get(workflowId, requestId) as TaskRow | undefined
+    return row === undefined ? undefined : parseTask(row.task_json)
   }
 
   bindTaskCapabilityBundle(
@@ -1019,6 +1174,139 @@ export class SqliteWorkflowAuthorityV1 implements WorkflowAuthorityPortV1 {
     )
   }
 
+  reserveEffectRequest(input: ReserveWorkflowEffectRequestV1): Promise<{
+    request: WorkflowEffectRequestV1
+    replayed: boolean
+  }> {
+    const binding = validatePlanExecutionBindingV1({
+      sessionId: input.request.sessionId,
+      planId: input.request.planId,
+      planRevision: input.request.planRevision,
+      itemId: input.request.itemId,
+      itemAttemptId: input.request.itemAttemptId,
+      requestId: input.request.requestId,
+    })
+    if (
+      !safeId(input.request.workflowId) ||
+      !/^sha256:[a-f0-9]{64}$/u.test(input.requestDigest) ||
+      !['workspace_write', 'external_idempotent', 'external_non_idempotent'].includes(
+        input.effectKind,
+      ) ||
+      (input.effectKind === 'external_idempotent' && !safeId(input.externalIdempotencyKey)) ||
+      (input.effectKind !== 'external_idempotent' && input.externalIdempotencyKey !== undefined) ||
+      (input.leaseExpiresAt !== undefined && !timestamp(input.leaseExpiresAt)) ||
+      !timestamp(input.at)
+    ) {
+      return Promise.reject(authorityError('WORKFLOW_EFFECT_REQUEST_INVALID'))
+    }
+    const request: WorkflowEffectRequestV1 = Object.freeze({
+      schemaVersion: 1,
+      workflowId: input.request.workflowId,
+      requestId: input.request.requestId,
+      requestDigest: input.requestDigest,
+      effectKind: input.effectKind,
+      executionBinding: binding,
+      ...(input.externalIdempotencyKey === undefined
+        ? {}
+        : { externalIdempotencyKey: input.externalIdempotencyKey }),
+      state: 'reserved',
+      ...(input.leaseExpiresAt === undefined ? {} : { leaseExpiresAt: input.leaseExpiresAt }),
+      createdAt: input.at,
+      updatedAt: input.at,
+    })
+    return this.exclusive(() => {
+      const database = this.database()
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const projection = loadProjection(database, input.request.workflowId)
+        if (projection.sessionId !== input.request.sessionId)
+          throw authorityError('WORKFLOW_EFFECT_REQUEST_CONFLICT')
+        const priorRow = database
+          .prepare(
+            'SELECT request_json FROM workflow_effect_requests WHERE workflow_id = ? AND request_id = ?',
+          )
+          .get(input.request.workflowId, input.request.requestId) as
+          | { request_json: string }
+          | undefined
+        if (priorRow !== undefined) {
+          const prior = parseJson<WorkflowEffectRequestV1>(
+            priorRow.request_json,
+            'WORKFLOW_EFFECT_REQUEST_CORRUPT',
+          )
+          if (
+            prior.requestDigest !== request.requestDigest ||
+            canonicalJsonV1(prior.executionBinding) !== canonicalJsonV1(binding)
+          ) {
+            throw authorityError('WORKFLOW_EFFECT_REQUEST_CONFLICT')
+          }
+          database.exec('COMMIT')
+          return { request: prior, replayed: true }
+        }
+        database
+          .prepare(
+            `INSERT INTO workflow_effect_requests
+             (workflow_id, request_id, request_digest, effect_kind, session_id, plan_id,
+              plan_revision, item_id, item_attempt_id, external_idempotency_key, state,
+              lease_expires_at, request_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?)`,
+          )
+          .run(
+            request.workflowId,
+            request.requestId,
+            request.requestDigest,
+            request.effectKind,
+            binding.sessionId,
+            binding.planId,
+            binding.planRevision,
+            binding.itemId,
+            binding.itemAttemptId,
+            request.externalIdempotencyKey ?? null,
+            request.leaseExpiresAt ?? null,
+            canonicalJsonV1(request),
+            request.createdAt,
+            request.updatedAt,
+          )
+        database.exec('COMMIT')
+        return { request, replayed: false }
+      } catch (error) {
+        rollback(database)
+        throw mapError(error)
+      }
+    })
+  }
+
+  async getEffectRequestByRequestId(
+    workflowId: string,
+    requestId: string,
+  ): Promise<WorkflowEffectRequestV1 | undefined> {
+    if (!safeId(workflowId) || !safeId(requestId))
+      throw authorityError('WORKFLOW_EFFECT_REQUEST_INVALID')
+    const row = this.database()
+      .prepare(
+        'SELECT request_json FROM workflow_effect_requests WHERE workflow_id = ? AND request_id = ?',
+      )
+      .get(workflowId, requestId) as { request_json: string } | undefined
+    return row === undefined
+      ? undefined
+      : parseJson<WorkflowEffectRequestV1>(row.request_json, 'WORKFLOW_EFFECT_REQUEST_CORRUPT')
+  }
+
+  async getEffectReceiptByRequestId(
+    workflowId: string,
+    requestId: string,
+  ): Promise<WorkflowEffectReceiptV1 | undefined> {
+    if (!safeId(workflowId) || !safeId(requestId))
+      throw authorityError('WORKFLOW_EFFECT_RECEIPT_INVALID')
+    const row = this.database()
+      .prepare(
+        'SELECT receipt_json FROM workflow_effect_receipts WHERE workflow_id = ? AND request_id = ?',
+      )
+      .get(workflowId, requestId) as EffectReceiptRow | undefined
+    return row === undefined
+      ? undefined
+      : parseJson<WorkflowEffectReceiptV1>(row.receipt_json, 'WORKFLOW_EFFECT_RECEIPT_CORRUPT')
+  }
+
   reserveEffect(
     workflowId: string,
     idempotencyKey: string,
@@ -1622,7 +1910,6 @@ export class SqliteWorkflowAuthorityV1 implements WorkflowAuthorityPortV1 {
 function migrate(database: DatabaseSync): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS workflow_schema (version INTEGER PRIMARY KEY);
-    INSERT OR IGNORE INTO workflow_schema(version) VALUES (${SCHEMA_VERSION});
     CREATE TABLE IF NOT EXISTS workflows (
       workflow_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, session_id TEXT NOT NULL,
       revision INTEGER NOT NULL, sequence INTEGER NOT NULL, state TEXT NOT NULL,
@@ -1707,8 +1994,122 @@ function migrate(database: DatabaseSync): void {
   const versions = database.prepare('SELECT version FROM workflow_schema').all() as Array<{
     version: number
   }>
-  if (versions.length !== 1 || Number(versions[0]?.version) !== SCHEMA_VERSION)
+  if (
+    versions.length > 1 ||
+    (versions.length === 1 && ![1, SCHEMA_VERSION].includes(Number(versions[0]?.version)))
+  ) {
     throw authorityError('WORKFLOW_SCHEMA_UNSUPPORTED')
+  }
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    addColumnIfMissing(database, 'workflow_effect_reservations', 'request_id', 'TEXT')
+    addColumnIfMissing(database, 'workflow_effect_receipts', 'request_id', 'TEXT')
+    addColumnIfMissing(database, 'workflow_effect_receipts', 'session_id', 'TEXT')
+    addColumnIfMissing(database, 'workflow_effect_receipts', 'plan_id', 'TEXT')
+    addColumnIfMissing(database, 'workflow_effect_receipts', 'plan_revision', 'INTEGER')
+    addColumnIfMissing(database, 'workflow_effect_receipts', 'item_id', 'TEXT')
+    addColumnIfMissing(database, 'workflow_effect_receipts', 'item_attempt_id', 'TEXT')
+    addColumnIfMissing(database, 'workflow_effect_receipts', 'changed_files_digest', 'TEXT')
+    addColumnIfMissing(database, 'workflow_effect_receipts', 'workspace_evidence_ref', 'TEXT')
+    addColumnIfMissing(database, 'workflow_effect_receipts', 'source', 'TEXT')
+    addColumnIfMissing(database, 'workflow_effect_receipts', 'attestation_digest', 'TEXT')
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS workflow_task_requests (
+        workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id) ON DELETE CASCADE,
+        request_id TEXT NOT NULL,
+        request_digest TEXT NOT NULL,
+        input_digest TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        plan_id TEXT NOT NULL,
+        plan_revision INTEGER NOT NULL,
+        item_id TEXT NOT NULL,
+        item_attempt_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        task_id TEXT NOT NULL UNIQUE REFERENCES workflow_tasks(task_id),
+        request_json TEXT NOT NULL,
+        task_spec_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workflow_id, request_id)
+      );
+      CREATE TABLE IF NOT EXISTS workflow_effect_requests (
+        workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id) ON DELETE CASCADE,
+        request_id TEXT NOT NULL,
+        request_digest TEXT NOT NULL,
+        effect_kind TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        plan_id TEXT NOT NULL,
+        plan_revision INTEGER NOT NULL,
+        item_id TEXT NOT NULL,
+        item_attempt_id TEXT NOT NULL,
+        external_idempotency_key TEXT,
+        state TEXT NOT NULL,
+        lease_expires_at TEXT,
+        receipt_id TEXT,
+        receipt_ref TEXT,
+        resolution_request_id TEXT,
+        control_event_id TEXT,
+        block_id TEXT,
+        request_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (workflow_id, request_id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS workflow_effect_requests_resolution
+        ON workflow_effect_requests(workflow_id, resolution_request_id)
+        WHERE resolution_request_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS workflow_effect_reservations_request
+        ON workflow_effect_reservations(workflow_id, request_id)
+        WHERE request_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS workflow_effect_receipts_request
+        ON workflow_effect_receipts(workflow_id, request_id)
+        WHERE request_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS workflow_unknown_effect_resolutions (
+        workflow_id TEXT NOT NULL,
+        resolution_request_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        block_id TEXT NOT NULL,
+        control_event_id TEXT NOT NULL,
+        resolution_digest TEXT NOT NULL,
+        disposition TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        evidence_refs_digest TEXT NOT NULL,
+        attestation_digest TEXT,
+        proof_digest TEXT NOT NULL,
+        proof_key_id TEXT NOT NULL,
+        proof_key_generation TEXT NOT NULL,
+        receipt_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workflow_id, resolution_request_id),
+        UNIQUE (workflow_id, request_id),
+        FOREIGN KEY (workflow_id, request_id)
+          REFERENCES workflow_effect_requests(workflow_id, request_id)
+          ON DELETE CASCADE
+      );
+    `)
+    if (versions.length === 0) {
+      database.prepare('INSERT INTO workflow_schema(version) VALUES (?)').run(SCHEMA_VERSION)
+    } else if (Number(versions[0]?.version) === 1) {
+      database
+        .prepare('UPDATE workflow_schema SET version = ? WHERE version = 1')
+        .run(SCHEMA_VERSION)
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    rollback(database)
+    throw error
+  }
+}
+
+function addColumnIfMissing(
+  database: DatabaseSync,
+  table: string,
+  column: string,
+  declaration: string,
+): void {
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+  if (!columns.some(({ name }) => name === column)) {
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`)
+  }
 }
 
 function envelopeEvents(
@@ -1775,6 +2176,14 @@ function insertTask(database: DatabaseSync, task: WorkflowTaskV1): void {
       task.createdAt,
       task.updatedAt,
     )
+}
+
+function taskById(database: DatabaseSync, taskId: string): WorkflowTaskV1 {
+  const row = database
+    .prepare('SELECT task_json, lease_expires_at FROM workflow_tasks WHERE task_id = ?')
+    .get(taskId) as TaskRow | undefined
+  if (row === undefined) throw authorityError('WORKFLOW_TASK_NOT_FOUND')
+  return parseTask(row.task_json)
 }
 
 function acknowledgeTask(
@@ -1998,7 +2407,9 @@ function insertEffectReceipt(database: DatabaseSync, receipt: WorkflowEffectRece
     !safeId(receipt.workflowId) ||
     !safeId(receipt.nodeId) ||
     !safeId(receipt.attemptId) ||
-    !['external_idempotent', 'external_non_idempotent'].includes(receipt.effectClass) ||
+    !['workspace_write', 'external_idempotent', 'external_non_idempotent'].includes(
+      receipt.effectClass,
+    ) ||
     (receipt.idempotencyKey !== undefined && !safeId(receipt.idempotencyKey)) ||
     !timestamp(receipt.createdAt)
   )
@@ -2025,8 +2436,11 @@ function insertEffectReceipt(database: DatabaseSync, receipt: WorkflowEffectRece
   database
     .prepare(
       `INSERT INTO workflow_effect_receipts
-       (receipt_id, workflow_id, node_id, attempt_id, effect_class, idempotency_key, state, receipt_json, created_at, compensated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (receipt_id, workflow_id, node_id, attempt_id, effect_class, idempotency_key, state,
+        receipt_json, created_at, compensated_at, request_id, session_id, plan_id,
+        plan_revision, item_id, item_attempt_id, changed_files_digest,
+        workspace_evidence_ref, source, attestation_digest)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       receipt.receiptId,
@@ -2039,7 +2453,39 @@ function insertEffectReceipt(database: DatabaseSync, receipt: WorkflowEffectRece
       JSON.stringify(receipt),
       receipt.createdAt,
       receipt.compensatedAt ?? null,
+      receipt.requestId ?? null,
+      receipt.executionBinding?.sessionId ?? null,
+      receipt.executionBinding?.planId ?? null,
+      receipt.executionBinding?.planRevision ?? null,
+      receipt.executionBinding?.itemId ?? null,
+      receipt.executionBinding?.itemAttemptId ?? null,
+      receipt.changedFilesDigest ?? null,
+      receipt.workspaceEvidenceRef === undefined
+        ? null
+        : JSON.stringify(receipt.workspaceEvidenceRef),
+      receipt.source ?? null,
+      receipt.attestationDigest ?? null,
     )
+  if (receipt.requestId !== undefined) {
+    database
+      .prepare(
+        `UPDATE workflow_effect_requests
+         SET state = 'committed', receipt_id = ?, receipt_ref = ?, request_json = json_set(
+           request_json, '$.state', 'committed', '$.receiptId', ?, '$.receiptRef', json(?), '$.updatedAt', ?
+         ), updated_at = ?
+         WHERE workflow_id = ? AND request_id = ?`,
+      )
+      .run(
+        receipt.receiptId,
+        JSON.stringify(receipt.artifactRef),
+        receipt.receiptId,
+        JSON.stringify(receipt.artifactRef),
+        receipt.createdAt,
+        receipt.createdAt,
+        receipt.workflowId,
+        receipt.requestId,
+      )
+  }
 }
 
 function taskForAttempt(
@@ -2146,7 +2592,20 @@ function parseProjection(value: string): WorkflowProjectionV1 {
 
 function parseTask(value: string): WorkflowTaskV1 {
   const parsed = parseJson<WorkflowTaskV1>(value, 'WORKFLOW_TASK_CORRUPT')
-  if (parsed.schemaVersion !== 1 || !safeId(parsed.taskId) || !safeId(parsed.workflowId))
+  if (
+    parsed.schemaVersion !== 1 ||
+    !safeId(parsed.taskId) ||
+    !safeId(parsed.workflowId) ||
+    (parsed.executionBinding !== undefined &&
+      (() => {
+        try {
+          validatePlanExecutionBindingV1(parsed.executionBinding)
+          return false
+        } catch {
+          return true
+        }
+      })())
+  )
     throw authorityError('WORKFLOW_TASK_CORRUPT')
   return Object.freeze(parsed)
 }

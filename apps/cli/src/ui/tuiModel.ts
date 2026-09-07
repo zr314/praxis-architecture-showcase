@@ -263,6 +263,33 @@ export function workflowPlanSnapshot(value: unknown): WorkflowPlanView | undefin
   if (!isRecord(value) || !isRecord(value.plan)) return undefined
   const plan = value.plan
   if (
+    typeof plan.planId === 'string' &&
+    typeof plan.state === 'string' &&
+    Array.isArray(plan.items)
+  ) {
+    if (
+      plan.items.some(
+        (item) =>
+          !isRecord(item) ||
+          typeof item.id !== 'string' ||
+          typeof item.title !== 'string' ||
+          typeof (item.status ?? item.state) !== 'string',
+      )
+    )
+      return undefined
+    return {
+      planId: plan.planId,
+      state: plan.state,
+      ...(typeof plan.objective === 'string' ? { objective: plan.objective } : {}),
+      steps: plan.items.map((item, order) => ({
+        stepId: item.id as string,
+        title: item.title as string,
+        order,
+        state: (item.status ?? item.state) as string,
+      })),
+    }
+  }
+  if (
     typeof plan.planId !== 'string' ||
     typeof plan.state !== 'string' ||
     !Array.isArray(plan.steps)

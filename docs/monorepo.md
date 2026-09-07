@@ -92,15 +92,16 @@ node dist/cli.js --provider mock -p "smoke"
 Runtime entry into root `dist/` for existing users. Each workspace also creates
 its own `dist/` directory, which is the only published payload for that package.
 
-Pull-request CI intentionally keeps one packaging gate instead of a source-test
-matrix:
+Source subprocesses and the parent test runner share `tsconfig.source.json` through the root and check configurations. Running source tests from the repository root does not require existing workspace `dist` exports. Packaged programs still use build output; see [贡献指南](../CONTRIBUTING.md#开发循环--development-loop) for custom launcher requirements.
 
-- Ubuntu with Node 24 runs the supply-chain policy and `package:npm`.
-- The packaged output must import every public Workspace and complete one CLI
-  smoke run.
-- Full tests, the focused Windows compatibility suite, static checks and
-  deterministic evaluations remain explicit local and release-readiness
-  commands; they do not block ordinary pull requests.
+Pull-request CI intentionally keeps one quality job instead of duplicating release matrices:
+
+- Ubuntu with Node 24 runs `npm run check`, `npm test`, then `npm run build`.
+- npm packaging/supply-chain verification stays in release or scheduled security workflows.
+- Release/package verification checks imports and packaged CLI smoke separately.
+- Full source tests and static checks block ordinary pull requests. The focused
+  Windows compatibility suite and external paid evaluations are additional
+  explicit diagnostics, not extra jobs in ordinary CI.
 
 Push CI runs only on `main`; pull requests run once and superseded commits are
 cancelled. Tag release, scheduled dependency audit and the self-hosted private
@@ -112,11 +113,11 @@ permissions, triggers and failure semantics.
 - Changes crossing a workspace boundary require an integration test or a
   dependency-boundary test.
 - Protocol schema and type changes are versioned contract changes; update both
-  fixtures and the relevant ADR before relying on them.
+  fixtures and the relevant architecture/protocol reference before relying on them.
 - A publishable package must keep `files`, `exports`, `types`, and `prepack`
   aligned with its package-local `dist/` output.
-- CI validates source tests, built CLI behavior, direct workspace imports, and
-  package manifests. Do not bypass those checks with root-only aliases.
+- Ordinary CI validates source quality, tests and builds. Dedicated package/release
+  checks additionally validate exports and manifests; do not bypass them with root-only aliases.
 
 `@praxis/plugin-protocol` is the implementation-free public contract package
 for plugin manifests, process handshakes, Tool execution descriptors, Provider

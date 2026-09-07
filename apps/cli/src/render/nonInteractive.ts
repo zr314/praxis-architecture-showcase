@@ -61,6 +61,8 @@ export async function renderNonInteractive(
 
   if (finalEvent?.type === 'prompt_failed') {
     process.exitCode = 1
+  } else if (finalEvent?.type === 'prompt_blocked') {
+    process.exitCode = 2
   } else if (finalEvent?.type === 'prompt_aborted') {
     process.exitCode = 130
   }
@@ -74,6 +76,7 @@ function automationKind(event: SessionEvent): AutomationEnvelope['kind'] {
   if (
     event.type === 'prompt_completed' ||
     event.type === 'prompt_failed' ||
+    event.type === 'prompt_blocked' ||
     event.type === 'prompt_aborted'
   ) {
     return 'terminal'

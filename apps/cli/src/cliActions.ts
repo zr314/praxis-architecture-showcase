@@ -1,4 +1,5 @@
-import { mkdir, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
 import { dirname, resolve } from 'node:path'
 import type { PluginGrant } from '@praxis/plugin-protocol'
@@ -14,6 +15,12 @@ import type {
 import { promptForSecret, readSecretLine, SecureInputError } from './securePrompt.js'
 
 export type ManagementAction =
+  | {
+      kind: 'memory'
+      request: import('@praxis/core-sdk').MemoryManageRequestV1
+      importFile?: string
+      json: boolean
+    }
   | { kind: 'auth.status'; provider: string; json: boolean }
   | { kind: 'auth.login'; provider: string; stdin: boolean; json: boolean }
   | { kind: 'auth.logout'; provider: string; json: boolean }
@@ -81,6 +88,39 @@ export async function executeManagementAction(
   action: ManagementAction,
 ): Promise<ActionResult> {
   switch (action.kind) {
+    case 'memory': {
+      if (!bridge.manageMemory)
+        throw new Error('This Runtime does not support local memory management.')
+      let request = action.request
+      if (action.importFile) {
+        if ((await stat(action.importFile)).size > 256 * 1024)
+          throw new Error('Memory import is limited to 256 KiB.')
+        const parsed: unknown = JSON.parse(await readFile(action.importFile, 'utf8'))
+        if (
+          typeof parsed !== 'object' ||
+          parsed === null ||
+          !('memories' in parsed) ||
+          !Array.isArray(parsed.memories)
+        )
+          throw new Error('Import requires a JSON document containing memories.')
+        request = {
+          ...request,
+          memories: parsed.memories.map((record) => ({
+            key: record.key,
+            kind: record.kind,
+            content: record.content,
+            ...(record.applicability === undefined ? {} : { applicability: record.applicability }),
+            ...(record.expiresAt === undefined ? {} : { expiresAt: record.expiresAt }),
+            expectedRevision: 0,
+          })),
+        }
+      }
+      const data = await bridge.manageMemory({
+        ...request,
+        operationId: request.operationId ?? `memory-cli-${randomUUID()}`,
+      })
+      return { data, human: JSON.stringify(data, null, 2), json: action.json }
+    }
     case 'auth.status': {
       const status = await bridge.authStatus(action.provider)
       return {

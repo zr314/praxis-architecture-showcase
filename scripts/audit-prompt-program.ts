@@ -13,6 +13,8 @@ const sourceFiles = [
   'apps/runtime/src/extensions/skillInvocationService.ts',
   'apps/runtime/src/planner/providerPlanGenerator.ts',
   'apps/runtime/src/planner/providerSemanticVerifier.ts',
+  'apps/runtime/src/review-plan/semanticReviewer.ts',
+  'apps/runtime/src/review-plan/reviewCoordinator.ts',
   'apps/runtime/src/framework/runtimeKernel.ts',
 ] as const
 

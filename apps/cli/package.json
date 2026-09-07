@@ -5,11 +5,11 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/uestc-Praxis/praxis.git"
+    "url": "git+https://github.com/zr314/praxis-architecture-showcase.git"
   },
-  "homepage": "https://github.com/uestc-Praxis/praxis#readme",
+  "homepage": "https://github.com/zr314/praxis-architecture-showcase#readme",
   "bugs": {
-    "url": "https://github.com/uestc-Praxis/praxis/issues"
+    "url": "https://github.com/zr314/praxis-architecture-showcase/issues"
   },
   "type": "module",
   "bin": {

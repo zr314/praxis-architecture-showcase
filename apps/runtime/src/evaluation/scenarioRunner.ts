@@ -156,7 +156,10 @@ export async function runEvaluationScenario(
     }
 
     if (scenario.setup.processPlugin) {
-      const host = new ProcessPluginHost({ enabled: true, requestTimeoutMs: 2_000 })
+      const host = new ProcessPluginHost({
+        enabled: true,
+        requestTimeoutMs: 2_000,
+      })
       plugin = await host.start({
         command: process.execPath,
         args: [processPluginFixture(scenario.setup.processPlugin.fixture)],
@@ -225,7 +228,9 @@ export async function runEvaluationScenario(
     const router = new ProviderRouter(providerLookup, {
       retryAttempts: scenario.setup.providerRouting?.retryAttempts ?? 0,
       fallbacks: scenario.setup.providerRouting
-        ? { [scenario.request.provider]: [scenario.setup.providerRouting.fallback] }
+        ? {
+            [scenario.request.provider]: [scenario.setup.providerRouting.fallback],
+          }
         : undefined,
     })
     const toolRuntime = evaluationTools(scenario.setup.tools)
@@ -244,7 +249,10 @@ export async function runEvaluationScenario(
         executePrepared: async (prepared, signal, onUpdate) => {
           const { name, input } = prepared
           if (!selectedToolNames.has(name as EvaluationToolName)) {
-            return { ok: false, summary: 'Evaluation tool is outside the selected execution set.' }
+            return {
+              ok: false,
+              summary: 'Evaluation tool is outside the selected execution set.',
+            }
           }
           if (!(await toolTargetIsContained(name, input, workspaceRoot, canonicalWorkspaceRoot))) {
             return {
@@ -269,14 +277,21 @@ export async function runEvaluationScenario(
               trace,
             },
           )
-          return { ok: true, summary: 'Plugin unexpectedly completed.', output }
+          return {
+            ok: true,
+            summary: 'Plugin unexpectedly completed.',
+            output,
+          }
         },
       }),
-      commitMessage: async (target, targetRun, message) => {
-        if (targetRun.aborted || targetRun.terminal) return
+      commitMessage: async (target, targetRun, message, input) => {
+        if (targetRun.aborted || targetRun.terminal) return undefined
         const committed = structuredClone(message)
         target.messages.push(committed)
         committedMessages.push(structuredClone(committed))
+        return {
+          messageId: input?.messageId ?? `evaluation-message-${committedMessages.length}`,
+        }
       },
       emit: (event) => {
         events.push(structuredClone(event))
@@ -449,7 +464,10 @@ function evaluationTools(names: readonly EvaluationToolName[]): ToolRuntime {
         parameters: { type: 'object' },
       },
       async execute() {
-        return { ok: false, summary: 'The process boundary must own this invocation.' }
+        return {
+          ok: false,
+          summary: 'The process boundary must own this invocation.',
+        }
       },
     },
     {
@@ -807,10 +825,15 @@ function portablePath(path: string): string {
   return path.replaceAll('\\', '/')
 }
 
-function isTerminalEvent(
-  event: AgentEvent,
-): event is Extract<AgentEvent, { type: 'prompt_completed' | 'prompt_failed' | 'prompt_aborted' }> {
-  return ['prompt_completed', 'prompt_failed', 'prompt_aborted'].includes(event.type)
+function isTerminalEvent(event: AgentEvent): event is Extract<
+  AgentEvent,
+  {
+    type: 'prompt_completed' | 'prompt_failed' | 'prompt_blocked' | 'prompt_aborted'
+  }
+> {
+  return ['prompt_completed', 'prompt_failed', 'prompt_blocked', 'prompt_aborted'].includes(
+    event.type,
+  )
 }
 
 function sameArray<T>(actual: readonly T[], expected: readonly T[]): boolean {

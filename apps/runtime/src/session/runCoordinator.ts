@@ -3,7 +3,7 @@ import type { ManagedSession, SessionService } from './sessionService.js'
 
 export type TerminalAgentEvent = Extract<
   AgentEvent,
-  { type: 'prompt_completed' | 'prompt_failed' | 'prompt_aborted' }
+  { type: 'prompt_completed' | 'prompt_failed' | 'prompt_blocked' | 'prompt_aborted' }
 >
 
 export class RunCoordinator {
@@ -19,7 +19,9 @@ export class RunCoordinator {
         memory: terminalMemory(session.memory, event),
         terminal: terminalState(event),
         usage: terminalUsage(run),
-        ...(event.type === 'prompt_failed' ? { errorCode: event.code } : {}),
+        ...(event.type === 'prompt_failed' || event.type === 'prompt_blocked'
+          ? { errorCode: event.code }
+          : {}),
       })
       return event
     } catch {

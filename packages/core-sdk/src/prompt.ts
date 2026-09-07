@@ -145,6 +145,16 @@ export type PromptAssemblyManifest = PromptManifest &
     }>
     capability: PromptCapabilitySnapshotManifest &
       Readonly<{ toolSchemaTokens: number; bundleScoped: boolean }>
+    memory?: import('./long-term-memory.js').MemoryContextManifestV1
+    recap?: Readonly<{
+      snapshotDigest: string
+      sourceDigest: string
+      strategy: string
+      selectedIds: readonly string[]
+      omittedIds: readonly string[]
+      tokens: number
+      digest: string
+    }>
     target: Readonly<{ provider: string; model: string }>
     budget: Readonly<{
       tokenizerId: string

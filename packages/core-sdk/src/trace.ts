@@ -21,6 +21,10 @@ export type TraceKind =
   | 'context.compacted'
   | 'persistence.completed'
   | 'persistence.failed'
+  | 'memory.retrieve'
+  | 'memory.write'
+  | 'memory.conflict'
+  | 'memory.revoke'
 
 export type TraceContext = {
   traceId: string
@@ -37,6 +41,10 @@ export type TraceContext = {
 
 /** Fixed, content-free annotations for a trace event. */
 export type TraceAttributes = {
+  memoryProjectId?: string
+  memorySnapshotId?: string
+  memoryId?: string
+  memoryOperationId?: string
   providerId?: string
   model?: string
   toolName?: string
@@ -126,6 +134,10 @@ const TRACE_KINDS: ReadonlySet<TraceKind> = new Set([
   'context.compacted',
   'persistence.completed',
   'persistence.failed',
+  'memory.retrieve',
+  'memory.write',
+  'memory.conflict',
+  'memory.revoke',
 ])
 
 const PERMISSION_DECISIONS: ReadonlySet<NonNullable<TraceAttributes['permissionDecision']>> =
@@ -224,6 +236,10 @@ function safeTraceId(value: unknown): string {
 function cloneAttributes(attributes: TraceAttributes | undefined): TraceAttributes | undefined {
   if (attributes === undefined) return undefined
   return {
+    ...optionalIdentifier(attributes.memoryProjectId, 'memoryProjectId'),
+    ...optionalIdentifier(attributes.memorySnapshotId, 'memorySnapshotId'),
+    ...optionalIdentifier(attributes.memoryId, 'memoryId'),
+    ...optionalIdentifier(attributes.memoryOperationId, 'memoryOperationId'),
     ...optionalIdentifier(attributes.providerId, 'providerId'),
     ...optionalIdentifier(attributes.model, 'model'),
     ...optionalIdentifier(attributes.toolName, 'toolName'),

@@ -339,7 +339,7 @@ function workflowGuidance(input: PromptBuildInput): string {
     rootDelegationCheckpoint(input),
     'agent.spawn starts one durable Child and immediately returns a childId. Continue useful independent work, use agent.result for a non-blocking status check, agent.wait for all/any/quorum completion, agent.steer when evidence changes the objective, and agent.cancel when a branch no longer has value. Child transcripts and reasoning are not shared; consume durable result references before answering.',
     'For useful delegation, request only the needed default, worker, or explorer harness, instructions, Tool/Skill/MCP subset, workspace access, model class, reasoning, budget, result contract, and success criteria. These are capability requests only: Runtime policy and inherited authority remain final. Explicit workflow.* graph tools are an advanced coarse-grained business orchestration surface and are supplied only in workflow policy.',
-    'When asked to use/test Planner or subagents, call a supplied collaboration tool, never a nested CLI.',
+    'Use supplied plan.* tools for planning and agent.* tools for delegation; a planning request does not require spawning a Child. In optional policy, a Plan is editable working memory, done is self-reported, and Review is advisory. Only an explicitly required ReviewPlan gates execution and acceptance. Never launch a nested agent CLI.',
   ]
     .filter(Boolean)
     .join('\n\n')

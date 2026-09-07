@@ -51,7 +51,7 @@ export type EvaluationPermissionDecision = {
 }
 
 export type EvaluationTerminalAssertion = {
-  type: 'prompt_completed' | 'prompt_failed' | 'prompt_aborted'
+  type: 'prompt_completed' | 'prompt_failed' | 'prompt_blocked' | 'prompt_aborted'
   code?: string
   stopReason?: string
   reason?: CancellationReason | string
@@ -204,7 +204,9 @@ export function parseEvaluationScenario(input: unknown): EvaluationScenarioV1 {
       ...candidate,
       budget:
         'maxSubagents' in candidate.budget
-          ? adaptLegacyExecutionBudgetV1(candidate.budget, { maxParallelChildren: 0 })
+          ? adaptLegacyExecutionBudgetV1(candidate.budget, {
+              maxParallelChildren: 0,
+            })
           : candidate.budget,
     }
     assertUniqueTurnIds(scenario.providerReplay)

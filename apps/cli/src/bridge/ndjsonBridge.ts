@@ -318,6 +318,10 @@ export class NdjsonRuntimeBridge implements RuntimeBridge {
     return this.request('session.plan', { sessionId })
   }
 
+  async manageMemory(input: import('@praxis/core-sdk').MemoryManageRequestV1): Promise<unknown> {
+    return this.request('memory.manage', input)
+  }
+
   async listWorkflows(sessionId?: string): Promise<WorkflowUpdateV1[]> {
     return this.request('workflow.list', sessionId === undefined ? {} : { sessionId })
   }
@@ -543,6 +547,7 @@ function isTerminalEvent(event: SessionEvent): boolean {
   return (
     event.type === 'prompt_completed' ||
     event.type === 'prompt_failed' ||
+    event.type === 'prompt_blocked' ||
     event.type === 'prompt_aborted'
   )
 }

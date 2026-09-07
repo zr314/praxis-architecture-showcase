@@ -270,6 +270,9 @@ export class ToolRuntime {
       cwd: prepared.cwd,
       ...(descriptor.target === undefined ? {} : { resolvedTarget: descriptor.target }),
       signal,
+      ...(prepared.executionContext === undefined
+        ? {}
+        : { executionContext: prepared.executionContext }),
       ...(descriptor.timeoutMs === undefined
         ? {}
         : { deadlineAt: canonicalDeadlineAfter(Date.now(), descriptor.timeoutMs) }),

@@ -58,11 +58,11 @@ praxis --provider mock --model mock-v1 --print "installed smoke"
 1. 为要改变的行为先添加一个聚焦的失败测试；
 2. 做最小实现，使该测试通过；
 3. 补充无效输入、取消、并发、持久化或权限失败路径；
-4. 更新用户文档、Schema/Fixture 或 ADR；
+4. 更新对应职责页、Schema/Fixture 和必要的版本化测评记录；
 5. 运行与风险相称的本地门禁。
 
 测试放在 `test/`。跨 Workspace 的变化必须包含 Integration 或 Dependency-boundary 测试。协议变化必须
-同时更新 TypeScript types、JSON Schema、fixtures、兼容测试和相关 ADR；不能只改其中一层。
+同时更新 TypeScript types、JSON Schema、fixtures、兼容测试和对应架构/协议页；不能只改其中一层。
 
 推荐先运行聚焦测试，再运行完整门禁：
 
@@ -74,7 +74,9 @@ npm run build
 npm run verify:pack
 ```
 
-PR CI 只保留一个 Ubuntu/Node 24 打包门禁：供应链检查、`package:npm`、公共 Workspace import 和打包后 CLI smoke。完整 `npm test`、`npm run test:compat`、静态检查与确定性评估仍是本地和发布前验证命令，但不再阻塞普通 PR。Feature branch 的 `push` 不单独触发 CI，PR 事件是唯一分支检查入口。
+PR CI 只保留一个 Ubuntu/Node 24 质量门：依次运行 `npm run check`、`npm test` 和 `npm run build`。打包、供应链、原生二进制与发布 smoke 只在各自 release/security workflow 执行，普通 CI 不重复这些工作。Feature branch 的 `push` 不单独触发 CI，PR 事件是唯一分支检查入口。
+
+源码进程与顶层测试共用 `tsconfig.source.json`：根 `tsconfig.json` 和 `tsconfig.check.json` 都继承该映射，仓库根目录启动的 `node --import tsx` Child 不再读取陈旧的公共包 `dist`。新增公共导出只需更新源码映射；构建/发布仍使用各 Workspace 自己的配置和导出。`source-process-resolution.test.ts` 在无构建输出和旧导出两种临时环境中验证这条路径。自定义启动器若改变 cwd 或指定另一份 tsconfig，应显式选择源码配置；`CHILD_RUNTIME_EXITED` 仍需检查真实启动错误，不能一律归为模型失败。
 
 Provider/网络行为应尽量通过 Mock 和离线合同测试验证。真实 Provider Smoke 必须有小 Token/Timeout 上限，
 不得成为普通贡献的必需条件。
@@ -107,7 +109,7 @@ Provider/网络行为应尽量通过 Mock 和离线合同测试验证。真实 P
 ### 文档
 
 - 新手指南写清楚前置条件、命令、预期结果和失败后的下一步；
-- Current 文档只描述已经接线的行为，未来设计放 ADR 或明确标注内部边界；
+- Current 文档只描述已经接线的行为；未实现项只在项目状态说明边界，不再另建与当前实现竞争的设计草案；
 - 不重新引入完成的实施计划、超长 TODO 或与状态页竞争的 Roadmap；
 - 修复所有本地 Markdown Link，运行文档合同测试；
 - 命令、路径、类型、Schema、环境变量和错误码保持精确英文。
@@ -178,6 +180,6 @@ channels.
 Install with `npm ci`, prove the local path with the Mock Provider, begin from
 the owning workspace guide, and use a failing-test/minimal-change/passing-test
 loop. Cross-workspace and protocol changes need boundary tests and synchronized
-types, schemas, fixtures, ADRs, and documentation. Run `npm run check`,
+types, schemas, fixtures, and the canonical documentation. Run `npm run check`,
 `npm test`, `npm run build`, and `npm run verify:pack` before handoff. Never put
 real credentials or private session content in tests or reports.

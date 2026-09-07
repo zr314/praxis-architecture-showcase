@@ -3,7 +3,29 @@
 All notable changes are recorded here. This project follows Keep a Changelog
 and semantic versioning.
 
+以下带版本号章节是已发布版本的记录，不是当前工作树的能力说明。当前行为见[文档索引](docs/README.md)；过时的独立设计草案已移除，测评历史仍保留。
+
 ## Unreleased
+
+### Fixed
+
+- Workspace write effects now deduplicate by Runtime invocation rather than input
+  content, so a new A → B → A edit restores A while a retry reuses its receipt.
+- Root source launches and the test runner share `tsconfig.source.json`, avoiding
+  stale or missing workspace `dist` exports in `node --import tsx` child processes.
+- Corrected current documentation for opt-in cross-session memory and the actual
+  isolation boundaries of Process plugins, MCP stdio, and the built-in Shell.
+
+### Changed
+
+- Default optional planning now uses an editable Working Plan and advisory-v1
+  review, separate from the host-required strict ReviewPlan execution gates.
+- Advisory review freezes paired Tool requests/results and the original task;
+  reports remain snapshot-scoped advice rather than acceptance certificates.
+- Ordinary CI is one `npm ci → check → test → build` quality job; release,
+  native packaging and supply-chain workflows remain separate.
+- Reorganized documentation into usage, architecture, reference and evaluations;
+  removed superseded non-evaluation designs and consolidated versioned reports.
 
 ### Added
 

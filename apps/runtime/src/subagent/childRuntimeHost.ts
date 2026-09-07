@@ -52,7 +52,11 @@ import {
 } from './index.js'
 import { ChildMcpBrokerIpcServer, type ChildMcpBrokerPort } from './mcpBrokerIpc.js'
 
-export type ChildRuntimeLaunch = { command: string; args?: string[]; cwd?: string }
+export type ChildRuntimeLaunch = {
+  command: string
+  args?: string[]
+  cwd?: string
+}
 
 export type ChildRuntimeHostOptions = {
   ledger: SubagentAdmissionLedger
@@ -124,7 +128,10 @@ export type ChildRuntimeRun = {
   permissionDecisions?: ChildPermissionDecisionPort
 }
 
-export type ChildRuntimeRequest = { method: string; params: Record<string, unknown> }
+export type ChildRuntimeRequest = {
+  method: string
+  params: Record<string, unknown>
+}
 
 export type ChildRuntimeTraceEventV1 = Readonly<{
   schemaVersion: 1
@@ -156,7 +163,9 @@ export type ChildRuntimeFixtureRun = ChildRuntimeBaseRun & {
 
 export type ChildRuntimeTerminalEvent = Extract<
   SessionEvent,
-  { type: 'prompt_completed' | 'prompt_failed' | 'prompt_aborted' }
+  {
+    type: 'prompt_completed' | 'prompt_failed' | 'prompt_blocked' | 'prompt_aborted'
+  }
 >
 
 type ClosableChildConnection = {
@@ -303,7 +312,10 @@ export class ChildRuntimeHost {
         )
         const client = new PraxisClient(async () => connection, {
           reconnectAttempts: 0,
-          client: { name: '@praxis/runtime-child-host', version: PRAXIS_PRODUCT_VERSION },
+          client: {
+            name: '@praxis/runtime-child-host',
+            version: PRAXIS_PRODUCT_VERSION,
+          },
         })
         const control = new FormalChildControl(connection, client, this.shutdownGraceMs)
         context.attachConnection(control)
@@ -670,7 +682,9 @@ export class ChildRuntimeHost {
       }
       if (bootstrapLaunch) {
         try {
-          await cleanupChildRuntimeComposition(bootstrapLaunch.profile, { failed })
+          await cleanupChildRuntimeComposition(bootstrapLaunch.profile, {
+            failed,
+          })
         } catch (error) {
           finalizationErrors.push(error)
         }
@@ -1116,6 +1130,24 @@ function terminalResult(
       },
     })
   }
+  if (terminal.type === 'prompt_blocked') {
+    return createSubagentResultV1({
+      childRunId: packet.childRunId,
+      status: 'failed',
+      summary: 'Child Runtime execution is blocked pending trusted recovery.',
+      evidenceRefs,
+      changedFiles,
+      checks: [],
+      usage,
+      retryable: false,
+      error: {
+        code: stableTerminalCode(terminal.code),
+        category: 'execution',
+        message: 'The child prompt ended in a recoverable blocked state.',
+        retryable: false,
+      },
+    })
+  }
   const failureCode = stableTerminalCode(terminal.code)
   const retryable =
     failureCode === 'CHILD_CREDENTIAL_RATE_LIMITED' ||
@@ -1383,6 +1415,7 @@ function isTerminalEvent(event: SessionEvent): event is ChildRuntimeTerminalEven
   return (
     event.type === 'prompt_completed' ||
     event.type === 'prompt_failed' ||
+    event.type === 'prompt_blocked' ||
     event.type === 'prompt_aborted'
   )
 }

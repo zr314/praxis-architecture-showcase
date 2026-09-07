@@ -347,6 +347,7 @@ test('V2 migration validates first, then backs up and preserves messages/memory 
       {
         runId: 'run-legacy',
         clientRequestId: 'request-1',
+        planPolicy: 'optional',
         state: 'completed',
         usage: { inputTokens: 4, outputTokens: 2 },
       },

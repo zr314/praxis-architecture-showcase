@@ -7,6 +7,7 @@ import type {
   DelegateProposalV1,
   GraphPatchProposalV1,
   GraphProposalV1,
+  ReserveWorkflowEffectRequestV1,
   WorkflowAuthorityPortV1,
   WorkflowBudgetV1,
   WorkflowHumanTaskV1,
@@ -732,6 +733,10 @@ export class WorkflowOrchestratorV1 {
       claim.lease.expiresAt,
       at,
     )
+  }
+
+  reserveEffectRequest(input: ReserveWorkflowEffectRequestV1) {
+    return this.authority.reserveEffectRequest(input)
   }
 
   async admitDelegate(

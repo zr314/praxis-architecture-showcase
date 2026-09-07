@@ -1,3 +1,6 @@
+import type { VerifiedPlanControlFactV1 } from './review-plan.js'
+import type { PlanExecutionBindingV1 } from './workflow-execution.js'
+
 export type ToolDefinition = {
   name: string
   description: string
@@ -46,8 +49,23 @@ export type ToolRequest = {
   resolvedTarget?: string
   signal: AbortSignal
   deadlineAt?: string
+  executionContext?: ToolExecutionContextV1
   onUpdate?: (update: ToolProgressUpdate) => void
 }
+
+export type PlanToolInvocationContextV1 = Readonly<{
+  invocationId: `pti_${string}`
+  sessionId: string
+  runId: string
+  providerTurnId: string
+  providerToolCallId: string
+}>
+
+export type ToolExecutionContextV1 = Readonly<{
+  invocation: PlanToolInvocationContextV1
+  planBinding?: PlanExecutionBindingV1
+  planControlGrant?: VerifiedPlanControlFactV1
+}>
 
 export type ToolExecutionDescriptor = {
   sideEffect: NonNullable<ToolDefinition['execution']>['sideEffect']
@@ -78,6 +96,7 @@ export type PreparedToolInvocation = {
   descriptor: ToolExecutionDescriptor
   targetIdentity?: ToolTargetIdentity
   permission?: PermissionRequirement
+  executionContext?: ToolExecutionContextV1
 }
 
 /** Capability-neutral tool contract used by plugins and execution loops. */

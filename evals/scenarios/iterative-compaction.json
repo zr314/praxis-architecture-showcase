@@ -126,9 +126,11 @@
     },
     "eventOrder": [
       "prompt_started",
+      "message_committed",
       "tool_planning",
       "tool_start",
       "tool_end",
+      "message_committed",
       "tool_planning",
       "tool_start",
       "tool_end",

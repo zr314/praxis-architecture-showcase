@@ -1,4 +1,5 @@
 import { runtimeError } from './contracts.js'
+import type { VersionedWorkflowRefV1 } from './workflow-types.js'
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/
 const MAX_TEXT_BYTES = 32 * 1024
@@ -64,11 +65,7 @@ export type WorkflowEffectClassV1 =
   | 'external_idempotent'
   | 'external_non_idempotent'
 
-export type VersionedWorkflowRefV1 = Readonly<{
-  id: string
-  version: number
-  digest?: `sha256:${string}`
-}>
+export type { VersionedWorkflowRefV1 } from './workflow-types.js'
 
 export type WorkflowArtifactRefV1 = Readonly<{
   artifactId: string
@@ -334,6 +331,13 @@ export type WorkflowEventDataV1 =
       state: 'allowed' | 'denied' | 'expired' | 'cancelled'
     }>
   | Readonly<{ type: 'graph.patched'; spec: WorkflowSpecV1 }>
+  | Readonly<{
+      type: 'execution.task_admitted'
+      requestId: string
+      requestDigest: `sha256:${string}`
+      node: WorkflowNodeSpecV1
+      attempt: WorkflowAttemptProjectionV1
+    }>
   | Readonly<{
       type: 'node.state_changed'
       nodeId: string
@@ -653,6 +657,36 @@ export function applyWorkflowEventV1(
         nodes: spec.nodes.map(
           ({ nodeId }) => existing.get(nodeId) ?? { nodeId, state: 'proposed', attemptIds: [] },
         ),
+      }
+      break
+    }
+    case 'execution.task_admitted': {
+      if (
+        !safeId(data.requestId) ||
+        !/^sha256:[a-f0-9]{64}$/u.test(data.requestDigest) ||
+        current.nodes.some(({ nodeId }) => nodeId === data.node.nodeId) ||
+        current.attempts.some(({ attemptId }) => attemptId === data.attempt.attemptId) ||
+        data.attempt.nodeId !== data.node.nodeId ||
+        data.attempt.ordinal !== 1
+      ) {
+        fail('WORKFLOW_TASK_REQUEST_CONFLICT')
+      }
+      const spec = validateWorkflowSpecV1({
+        ...current.spec,
+        nodes: [...current.spec.nodes, data.node],
+      })
+      next = {
+        ...next,
+        spec,
+        nodes: [
+          ...current.nodes,
+          {
+            nodeId: data.node.nodeId,
+            state: 'scheduled',
+            attemptIds: [data.attempt.attemptId],
+          },
+        ],
+        attempts: [...current.attempts, freeze(data.attempt)],
       }
       break
     }

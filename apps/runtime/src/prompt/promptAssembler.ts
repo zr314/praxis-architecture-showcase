@@ -27,6 +27,8 @@ import {
   selectContextWindow,
   type TokenizerAdapter,
 } from '../memory/index.js'
+import { type RecapContext, renderRecapContext } from '../recap/recapContext.js'
+import { type MemoryContextV1, renderMemoryContextV1 } from './memoryContext.js'
 
 export type PromptAssemblyInput = Readonly<{
   envelope: PromptEnvelope
@@ -38,6 +40,10 @@ export type PromptAssemblyInput = Readonly<{
   messages: readonly ProviderMessage[]
   /** Runtime-authenticated task context kept outside compactable conversation history. */
   pinnedContextMessages?: readonly ProviderMessage[]
+  /** Fresh Runtime state that is rebuilt each Provider turn and never compacted. */
+  dynamicContextMessages?: readonly ProviderMessage[]
+  memoryContext?: MemoryContextV1
+  recapContext?: RecapContext
   nativeContext?: ProviderNativeContext
   checkpoint?: SummaryCheckpoint
   tools: readonly ProviderToolDefinition[]
@@ -72,6 +78,13 @@ export class PromptAssembler {
       (total, message) => total + input.tokenizer.countMessage(message),
       0,
     )
+    const dynamicContextMessages = (input.dynamicContextMessages ?? []).map((message) =>
+      structuredClone(message),
+    )
+    const dynamicContextTokens = dynamicContextMessages.reduce(
+      (total, message) => total + input.tokenizer.countMessage(message),
+      0,
+    )
     const contextViewMessages = renderContextView(input.contextView, variant)
     const contextViewTokens = contextViewMessages.reduce(
       (total, message) => total + input.tokenizer.countMessage(message),
@@ -79,7 +92,8 @@ export class PromptAssembler {
     )
     const budget = {
       ...input.budget,
-      systemTokens: input.budget.systemTokens + contextViewTokens + pinnedContextTokens,
+      systemTokens:
+        input.budget.systemTokens + contextViewTokens + pinnedContextTokens + dynamicContextTokens,
     }
     const nativeContext = usableNativeContext(input)
     const messageStart = activeHistoryStart(
@@ -115,6 +129,30 @@ export class PromptAssembler {
       budget,
       promptVariant: variant,
     })
+    // Spend only residual capacity after the normal task/history selection. Optional
+    // memory must not evict policy, task text, complete Tool pairs or recent history.
+    const memory =
+      input.memoryContext === undefined
+        ? undefined
+        : renderMemoryContextV1(
+            input.memoryContext,
+            input.tokenizer,
+            Math.max(0, selected.report.availableMessageTokens - selected.report.selectedTokens),
+          )
+    const recap =
+      input.recapContext === undefined
+        ? undefined
+        : renderRecapContext(
+            input.recapContext,
+            input.tokenizer,
+            Math.max(
+              0,
+              selected.report.availableMessageTokens -
+                selected.report.selectedTokens -
+                (memory?.manifest.tokens ?? 0),
+            ),
+          )
+    const optionalTokens = (memory?.manifest.tokens ?? 0) + (recap?.manifest.tokens ?? 0)
     // A pinned task contract may also be present in the selected journal history.
     // Keep that copy in its chronological position. Only replay a pinned copy as
     // non-compactable context when selection/compaction actually omitted it.
@@ -123,6 +161,22 @@ export class PromptAssembler {
     )
     const report: ContextSelectionReport = {
       ...selected.report,
+      ...(optionalTokens === 0
+        ? {}
+        : {
+            reserved: {
+              ...selected.report.reserved,
+              systemTokens: selected.report.reserved.systemTokens + optionalTokens,
+            },
+            reservedTokens: selected.report.reservedTokens + optionalTokens,
+            availableMessageTokens: Math.max(
+              0,
+              selected.report.availableMessageTokens - optionalTokens,
+            ),
+            pressure:
+              selected.report.selectedTokens /
+              Math.max(1, selected.report.availableMessageTokens - optionalTokens),
+          }),
       uncompactedTokens,
       contextEditing: edited.report,
       reasoningEditing: reasoningEdited.report,
@@ -190,6 +244,8 @@ export class PromptAssembler {
         toolSchemaTokens,
         bundleScoped: input.bundleScoped,
       },
+      ...(memory === undefined ? {} : { memory: memory.manifest }),
+      ...(recap === undefined ? {} : { recap: recap.manifest }),
       target: { ...input.target },
       budget: {
         tokenizerId: report.tokenizerId,
@@ -211,7 +267,10 @@ export class PromptAssembler {
       })),
       contextMessages: [
         ...replayedPinnedContextMessages,
+        ...dynamicContextMessages,
         ...contextViewMessages,
+        ...(memory?.messages ?? []),
+        ...(recap?.messages ?? []),
         ...selected.contextMessages,
       ],
       messages: selected.messages,

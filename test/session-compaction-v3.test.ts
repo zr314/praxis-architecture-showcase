@@ -51,6 +51,8 @@ const SUMMARY: SessionCompactionSummaryV3 = {
 const PROVENANCE = {
   schemaVersion: 1 as const,
   generator: { kind: 'deterministic' as const, id: 'deterministic-v1' },
+  failureCode: 'COMPACTION_GENERATOR_DEADLINE',
+  failedGeneratorDurationMs: 120_000,
   fallbackFrom: {
     kind: 'model' as const,
     id: 'summary-model-v1',

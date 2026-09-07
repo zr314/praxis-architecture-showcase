@@ -9,6 +9,7 @@ import {
   validateSessionEntryV3,
   type ProviderMessage,
   type ProviderUsage,
+  type MessageCommitReceiptV1,
   type SessionCompactionSummaryV3,
   type SessionJournalArchiveStoreV3,
   type SessionJournalV3,
@@ -206,10 +207,30 @@ export class SessionRepositoryV3 implements SessionRepository, SessionManagement
     })
   }
 
-  async appendMessage(sessionId: string, message: ProviderMessage): Promise<void> {
-    await this.append(sessionId, 'message', (projection) => ({
-      drafts: [messageDraft(requireOpen(projection), message)],
-    }))
+  async appendMessage(
+    sessionId: string,
+    message: ProviderMessage,
+    input: Readonly<{ messageId?: string }> = {},
+  ): Promise<MessageCommitReceiptV1> {
+    const messageId = input.messageId ?? `message-${randomUUID()}`
+    return this.append<MessageCommitReceiptV1>(sessionId, `message-${messageId}`, (projection) => {
+      const current = requireOpen(projection)
+      const existing = current.snapshot.messages.find((entry) => entry.messageId === messageId)
+      if (existing !== undefined) {
+        if (!sameJson(existing.message, message)) {
+          throw runtimeError(
+            'MESSAGE_ID_CONFLICT',
+            'protocol',
+            'Message ID is already bound to different content.',
+          )
+        }
+        return { drafts: [], result: Object.freeze({ messageId }) }
+      }
+      return {
+        drafts: [messageDraft(current, message, messageId)],
+        result: Object.freeze({ messageId }),
+      }
+    })
   }
 
   async appendRequestMessage(
@@ -217,30 +238,37 @@ export class SessionRepositoryV3 implements SessionRepository, SessionManagement
     clientRequestId: string,
     runId: string,
     message: ProviderMessage,
-  ): Promise<{ duplicateRunId?: string }> {
-    return this.append<{ duplicateRunId?: string }>(
-      sessionId,
-      `request-${clientRequestId}`,
-      (projection) => {
-        const current = requireOpen(projection)
-        const duplicate = current.snapshot.runs.find(
-          (candidate) => candidate.clientRequestId === clientRequestId,
-        )
-        if (duplicate !== undefined) {
-          return { drafts: [], result: { duplicateRunId: duplicate.runId } }
-        }
-        if (current.snapshot.runs.some((candidate) => candidate.state === 'running')) {
-          throw runtimeError('SESSION_BUSY', 'protocol', 'Session already has an active run.')
-        }
+    planPolicy: 'optional' | 'required' = 'optional',
+  ): Promise<{ duplicateRunId?: string; duplicatePlanPolicy?: 'optional' | 'required' }> {
+    const messageId = `message-${randomUUID()}`
+    return this.append<{
+      duplicateRunId?: string
+      duplicatePlanPolicy?: 'optional' | 'required'
+    }>(sessionId, `request-${clientRequestId}`, (projection) => {
+      const current = requireOpen(projection)
+      const duplicate = current.snapshot.runs.find(
+        (candidate) => candidate.clientRequestId === clientRequestId,
+      )
+      if (duplicate !== undefined) {
         return {
-          drafts: [
-            { type: 'run.started', runId, data: { clientRequestId } },
-            messageDraft(current, message),
-          ],
-          result: {},
+          drafts: [],
+          result: {
+            duplicateRunId: duplicate.runId,
+            duplicatePlanPolicy: duplicate.planPolicy,
+          },
         }
-      },
-    )
+      }
+      if (current.snapshot.runs.some((candidate) => candidate.state === 'running')) {
+        throw runtimeError('SESSION_BUSY', 'protocol', 'Session already has an active run.')
+      }
+      return {
+        drafts: [
+          { type: 'run.started', runId, data: { clientRequestId, planPolicy } },
+          messageDraft(current, message, messageId),
+        ],
+        result: {},
+      }
+    })
   }
 
   async loadMessages(sessionId: string): Promise<ProviderMessage[]> {
@@ -252,6 +280,32 @@ export class SessionRepositoryV3 implements SessionRepository, SessionManagement
     const projection = requireExisting(await this.loadProjection(sessionId))
     return Object.fromEntries(
       projection.snapshot.runs.map((run) => [run.clientRequestId, run.runId]),
+    )
+  }
+
+  async loadClientRequestPolicies(
+    sessionId: string,
+  ): Promise<Record<string, 'optional' | 'required'>> {
+    const projection = requireExisting(await this.loadProjection(sessionId))
+    return Object.fromEntries(
+      projection.snapshot.runs.map((run) => [run.clientRequestId, run.planPolicy]),
+    )
+  }
+
+  async loadProjectionForControl(controlEventId: string): Promise<SessionProjectionV3> {
+    for (const session of await this.list()) {
+      const projection = await this.loadProjection(session.sessionId)
+      if (
+        projection?.reviewControls?.some((control) => control.controlEventId === controlEventId) ===
+        true
+      ) {
+        return projection
+      }
+    }
+    throw runtimeError(
+      'PLAN_CONTROL_AUTHORIZATION_NOT_FOUND',
+      'permission',
+      'Plan control authorization was not found.',
     )
   }
 
@@ -409,6 +463,33 @@ export class SessionRepositoryV3 implements SessionRepository, SessionManagement
       const batch = messages.slice(offset, offset + MAX_FORK_MESSAGES_PER_COMMIT)
       await this.append(target.sessionId, `fork-messages-${offset}`, (projection) => ({
         drafts: batch.map(({ message }) => messageDraft(requireExisting(projection), message)),
+      }))
+    }
+    // A branch inherits model-owned working memory at its selected point, not live
+    // executions, review authority, or a certificate for the new workspace state.
+    const lastMessageId = messages.at(-1)?.messageId
+    const cutoff =
+      throughMessage === undefined
+        ? source.snapshot.sequence
+        : (sourceEntries.find(
+            (entry) => entry.type === 'message.committed' && entry.data.messageId === lastMessageId,
+          )?.sequence ?? 0)
+    const sourcePlan = sourceEntries
+      .filter((entry) => entry.type === 'working_plan.saved' && entry.sequence <= cutoff)
+      .at(-1)
+    if (sourcePlan?.type === 'working_plan.saved') {
+      const plan = { ...sourcePlan.data.plan, planId: `wp_fork_${target.sessionId}`, revision: 1 }
+      await this.append(target.sessionId, 'fork-working-plan', () => ({
+        drafts: [
+          {
+            type: 'working_plan.saved',
+            data: {
+              operationId: `fork_${target.sessionId}`,
+              inputDigest: `sha256:${createHash('sha256').update(JSON.stringify({ sourceSessionId, cutoff, plan })).digest('hex')}`,
+              plan,
+            },
+          },
+        ],
       }))
     }
     await this.append(sourceSessionId, `fork-${target.sessionId}`, () => ({
@@ -600,11 +681,15 @@ export function sessionStoreFromEnvironment(environment: NodeJS.ProcessEnv): Ses
   )
 }
 
-function messageDraft(projection: SessionProjectionV3, message: ProviderMessage): EntryDraft {
+function messageDraft(
+  projection: SessionProjectionV3,
+  message: ProviderMessage,
+  messageId = `message-${projection.snapshot.messages.length + 1}-${randomUUID()}`,
+): EntryDraft {
   return {
     type: 'message.committed',
     data: {
-      messageId: `message-${projection.snapshot.messages.length + 1}-${randomUUID()}`,
+      messageId,
       message: structuredClone(message),
     },
   }

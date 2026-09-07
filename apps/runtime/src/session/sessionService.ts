@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import {
   runtimeError,
   type ProviderMessage,
+  type MessageCommitReceiptV1,
   type RuntimeError,
   type SessionMemory,
   type SessionRecord,
@@ -13,10 +15,11 @@ import type {
   SessionRetentionPolicy,
 } from '../session-db/sessionV2.js'
 
-export type IdentifiedRun = { id: string }
+export type IdentifiedRun = { id: string; planPolicy?: 'optional' | 'required' }
 
 export type ManagedSession<TRun extends IdentifiedRun> = SessionRecord & {
   clientRequests: Map<string, string>
+  clientRequestPolicies?: Map<string, 'optional' | 'required'>
   messages: ProviderMessage[]
   memory: SessionMemory
   activeRun?: TRun
@@ -33,7 +36,13 @@ export type CreateSessionInput = Pick<SessionRecord, 'sessionId' | 'cwd' | 'prov
 
 export type BeginRunResult<TRun extends IdentifiedRun> =
   | { accepted: true; duplicate: false; session: ManagedSession<TRun>; run: TRun }
-  | { accepted: true; duplicate: true; session: ManagedSession<TRun>; runId: string }
+  | {
+      accepted: true
+      duplicate: true
+      session: ManagedSession<TRun>
+      runId: string
+      planPolicy: 'optional' | 'required'
+    }
 
 export type SessionTranscriptPage = {
   sessionId: string
@@ -81,6 +90,7 @@ export class SessionService<TRun extends IdentifiedRun> {
       messageCount: 0,
       usage: {},
       clientRequests: new Map(),
+      clientRequestPolicies: new Map(),
       messages: [],
       memory: { sessionId: input.sessionId },
     }
@@ -110,16 +120,25 @@ export class SessionService<TRun extends IdentifiedRun> {
       const stored = await this.repositoryCall('get', () => this.repository.get(sessionId))
       if (!stored) throw sessionError('SESSION_NOT_FOUND', 'Session not found.', { sessionId })
 
+      const restoredRequests = this.repository.loadClientRequests
+        ? await this.repositoryCall('load_client_requests', () =>
+            this.repository.loadClientRequests!(stored.sessionId),
+          )
+        : {}
+      const restoredPolicies = this.repository.loadClientRequestPolicies
+        ? await this.repositoryCall('load_client_request_policies', () =>
+            this.repository.loadClientRequestPolicies!(stored.sessionId),
+          )
+        : {}
+
       const restored: ManagedSession<TRun> = {
         ...stored,
-        clientRequests: new Map(
-          Object.entries(
-            this.repository.loadClientRequests
-              ? await this.repositoryCall('load_client_requests', () =>
-                  this.repository.loadClientRequests!(stored.sessionId),
-                )
-              : {},
-          ),
+        clientRequests: new Map(Object.entries(restoredRequests)),
+        clientRequestPolicies: new Map(
+          Object.keys(restoredRequests).map((requestId) => [
+            requestId,
+            restoredPolicies[requestId] ?? 'optional',
+          ]),
         ),
         messages: await this.repositoryCall('load_messages', () =>
           this.repository.loadMessages(stored.sessionId),
@@ -177,7 +196,15 @@ export class SessionService<TRun extends IdentifiedRun> {
         })
       }
       const existing = session.clientRequests.get(clientRequestId)
-      if (existing) return { accepted: true, duplicate: true, session, runId: existing }
+      if (existing) {
+        return {
+          accepted: true,
+          duplicate: true,
+          session,
+          runId: existing,
+          planPolicy: session.clientRequestPolicies?.get(clientRequestId) ?? 'optional',
+        }
+      }
       const durableMessage = options.durableMessage ?? message
 
       if (this.repository.appendRequestMessage) {
@@ -187,6 +214,7 @@ export class SessionService<TRun extends IdentifiedRun> {
             clientRequestId,
             run.id,
             durableMessage,
+            run.planPolicy ?? 'optional',
           ),
         )
         if (persisted.duplicateRunId) {
@@ -196,6 +224,7 @@ export class SessionService<TRun extends IdentifiedRun> {
             duplicate: true,
             session,
             runId: persisted.duplicateRunId,
+            planPolicy: persisted.duplicatePlanPolicy ?? 'optional',
           }
         }
       } else {
@@ -212,6 +241,10 @@ export class SessionService<TRun extends IdentifiedRun> {
       session.activeRun = run
       session.state = 'running'
       session.clientRequests.set(clientRequestId, run.id)
+      if (session.clientRequestPolicies === undefined) {
+        session.clientRequestPolicies = new Map()
+      }
+      session.clientRequestPolicies.set(clientRequestId, run.planPolicy ?? 'optional')
       return { accepted: true, duplicate: false, session, run }
     })
   }
@@ -219,11 +252,14 @@ export class SessionService<TRun extends IdentifiedRun> {
   async commitMessage(
     session: ManagedSession<TRun>,
     message: ProviderMessage,
-    options: { durableMessage?: ProviderMessage } = {},
-  ): Promise<void> {
-    await this.withSessionLock(session.sessionId, async () => {
-      await this.repositoryCall('append_message', () =>
-        this.repository.appendMessage(session.sessionId, options.durableMessage ?? message),
+    options: { durableMessage?: ProviderMessage; messageId?: string } = {},
+  ): Promise<MessageCommitReceiptV1> {
+    return this.withSessionLock(session.sessionId, async () => {
+      const messageId = options.messageId ?? `message-${randomUUID()}`
+      const persisted = await this.repositoryCall('append_message', () =>
+        this.repository.appendMessage(session.sessionId, options.durableMessage ?? message, {
+          messageId,
+        }),
       )
       const messageIndex = session.messages.length
       session.messages.push(message)
@@ -236,6 +272,7 @@ export class SessionService<TRun extends IdentifiedRun> {
         )
       }
       session.messageCount = (session.messageCount ?? 0) + 1
+      return persisted ?? Object.freeze({ messageId })
     })
   }
 

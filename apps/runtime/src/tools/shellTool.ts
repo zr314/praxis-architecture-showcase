@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
 import { scheduleLongDurationTimer } from '../longDurationTimer.js'
@@ -22,7 +23,7 @@ export class ShellTool implements RuntimeTool {
 
   readonly definition = {
     name: 'shell',
-    description: `Run one ${LOCAL_SHELL} command in the workspace with bounded inline output and a 10-minute default safety deadline. Set timeoutMs to a shorter or longer positive duration for exploratory, external, or long-running commands. This per-command lease does not limit the lifetime of the Agent Run. Pass multiline process input directly with stdin.`,
+    description: `Run one ${LOCAL_SHELL} command in the workspace with bounded inline output and a 10-minute default safety deadline. Set timeoutMs to a shorter or longer positive duration for exploratory, external, or long-running commands. This per-command lease does not limit the lifetime of the Agent Run. Pass multiline process input directly with stdin. On POSIX hosts with Bash, pipeline failure is propagated instead of reporting only the last command's exit status.`,
     parameters: {
       type: 'object',
       properties: {
@@ -205,6 +206,9 @@ function shellInvocation(command: string): { executable: string; args: string[] 
         utf8Command,
       ],
     }
+  }
+  if (existsSync('/bin/bash')) {
+    return { executable: '/bin/bash', args: ['-o', 'pipefail', '-lc', command] }
   }
   return { executable: '/bin/sh', args: ['-lc', command] }
 }

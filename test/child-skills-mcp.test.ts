@@ -19,7 +19,7 @@ import {
   type ChildSkillCandidate,
   type McpToolGrant,
 } from '../apps/runtime/src/subagent/childCapabilityBundle.js'
-import type { ChildBootstrapMethod } from '../apps/runtime/src/subagent/childBootstrapProfile.js'
+import { CHILD_BOOTSTRAP_METHODS } from '../apps/runtime/src/subagent/childBootstrapProfile.js'
 import {
   ChildRuntimeHost,
   type ChildRuntimeRun,
@@ -33,15 +33,7 @@ import { mockChildCapabilityBundle } from './support/child-capability.js'
 
 const runtimeEntry = fileURLToPath(new URL('../apps/runtime/src/entry.ts', import.meta.url))
 const mcpServer = fileURLToPath(new URL('./fixtures/mcp-modern-server.mjs', import.meta.url))
-const methods = [
-  'initialize',
-  'events.subscribe',
-  'session.create',
-  'session.prompt',
-  'permission.decide',
-  'session.abort',
-  'shutdown',
-] as const satisfies readonly ChildBootstrapMethod[]
+const methods = CHILD_BOOTSTRAP_METHODS
 
 test('shipping child explicitly invokes one signed low-trust Skill with result evidence', async () => {
   const home = await mkdtemp(join(tmpdir(), 'praxis-child-skill-'))

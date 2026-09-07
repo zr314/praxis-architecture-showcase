@@ -22,10 +22,10 @@ npm --version
 git --version
 ```
 
-Node.js 必须至少为 20。然后：
+Node.js 必须为 22.13.0 或更高；Session SQLite 后端依赖该版本提供的 `node:sqlite`。然后：
 
 ```powershell
-git clone https://github.com/uestc-Praxis/praxis.git
+git clone https://github.com/zr314/praxis-architecture-showcase.git praxis
 cd praxis
 npm install
 npm run build
@@ -92,6 +92,7 @@ praxis
 
 - 简单问题：直接回答；
 - 普通代码任务：自己调用 read/edit/shell；
+- 多步工作：可用 `plan.create/update/progress` 维护清单，按需 `plan.review` 咨询；这不是强制验收；
 - 需要独立调查、并行工作或审查：调用 `agent.spawn`，继续自己的工作；
 - 读取或等待 Child：调用 `agent.result` / `agent.wait`；
 - 路线改变：调用 `agent.steer` / `agent.cancel`；
@@ -121,9 +122,9 @@ praxis
 /planner workflow
 ```
 
-- `auto`：推荐。让模型在同一 Workflow 内自主选择。
+- `auto`：默认。在同一执行底座内直接工作、按需建 Working Plan 或派 Child。
 - `solo`：禁止 Child，适合低成本、严格单 Agent 场景。
-- `workflow`：要求复杂副作用前图化，适合审计要求较高的任务。
+- `workflow`：显式开放 legacy 业务图工具；不是默认要求，也不自动等同于 required 严格验收。
 
 活动 Run 期间不能修改。旧命令 `/planner direct` 与 `/planner supervisor` 仍被接受，但会分别保存为 `solo` 与 `workflow`。
 
@@ -136,7 +137,7 @@ praxis --planner workflow
 
 ## 7. 让 Child 修改代码
 
-根 Agent 可把一个实现任务委派给 `coder`。Child 不能直接写主目录：Git 项目使用 worktree，普通目录使用位于 Praxis home 的私有快照仓库；Child 在隔离目录修改和测试，再由父侧验证并合并或回写。
+根 Agent 可把一个实现任务委派给 `worker`。Child 不能直接写主目录：Git 项目使用 worktree，普通目录使用位于 Praxis home 的私有快照仓库；Child 在隔离目录修改和测试，再由父侧验证并合并或回写。
 
 Git 项目要成功合并，需要：
 
@@ -164,7 +165,7 @@ Session 是对话；Workflow 是一次 Prompt 的执行。一个 Session 可以�
 /plan
 ```
 
-`/plan` 显示最新 Workflow，不是模型写的一段“计划文本”。面板状态来自 SQLite projection，节点会显示 `scheduled/leased/running/succeeded/failed/unknown` 等真实状态。
+`/plan` 按最近 Run 策略显示 Working Plan 或严格 ReviewPlan，没有对应 Plan 时才回退执行 projection。轻量 items/status 是模型自报进度；Workflow 面板的 Node 状态才是执行事实。两者不能混为验收成功。
 
 退出再运行 `praxis` 后，可从 Session 列表恢复对话。Workflow authority 会在 Runtime 启动时回收过期 Lease；安全任务可重试，未知副作用不会盲目重复。
 

@@ -296,7 +296,7 @@ test('core contracts support provider-neutral adapters and implementation-free p
     get: async () => undefined,
     create: async (_session) => {},
     update: async (_session) => {},
-    appendMessage: async () => {},
+    appendMessage: async () => undefined,
     loadMessages: async () => [],
     loadMemory: async (sessionId) => ({ sessionId }),
     saveMemory: async () => {},

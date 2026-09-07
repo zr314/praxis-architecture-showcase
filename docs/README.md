@@ -1,132 +1,71 @@
-# Praxis 文档中心 / Documentation
+# Praxis 文档
 
-本文档中心按“你现在要完成什么”组织，而不是按代码目录堆文件。中文是主要教学语言；类型名、命令、
-Schema、错误码和必要英文摘要保留原文，避免产生第二套技术合同。
+以当前代码为准，最后核对：2026-09-06。English summary: current behavior, source references, and versioned evaluation evidence.
 
-## 我想先看懂整个项目
+只想理解新 Planner：先读[Working Plan](working-plan.md)，再读[当前架构](architecture.md)。默认是自主 ReAct + 可选动态清单 + 咨询 Review，不是必须先设计 DAG，也不是默认严格验收。
 
-如果你是第一次接触 Agent Runtime，建议先读[模块地图](module-map.md)。它从一次 Prompt 的生命周期出发，解释顶层目录、七个 Workspace、Runtime 全部源码域、CLI 模块、公共包和常见纵向改动路径。想集中理解执行与记忆主链路，再读
-[Praxis 当前分层架构](planner-prompt-context-storage-guide.md)；其中为新手解释了
-Planner、Workflow、ContextView、Checkpoint、Authority、Journal 和 Lease 等术语。
+## 1. 使用指南
 
-最短阅读顺序是：
+最新研究记录：[固定历史与操作经验机制实验](evaluations/archive/project-memory-mechanism-20260906.md)。包含真实 MiniMax 对照、提炼失败、成本及经验语义错误；未证明稳定收益。
 
-1. [根 README](../README.md)：知道产品能做什么；
-2. [模块地图](module-map.md)：知道代码放在哪里、为什么这样分层；
-3. [Praxis 当前分层架构](planner-prompt-context-storage-guide.md)：按模块层次理解一次 Prompt 怎样规划、
-   执行、装配、压缩、落盘和恢复；
-4. [当前架构](architecture.md)：知道已经接入的运行链路；
-5. [项目状态](project-status.md)：区分已交付、条件可用和未提供；
-6. [持续维护的测评档案](evaluations/README.md)：查看实际题目、逐题结果、问题修复和证据边界。
+| 文档 | 回答的问题 |
+| --- | --- |
+| [快速入门](quickstart.md) | 怎样安装、登录、开始和恢复会话？ |
+| [Provider 配置](provider-setup.md) | 模型、凭据、默认选择与环境变量放哪里？ |
+| [CLI 参考](cli-reference.md) | 命令、参数、TUI 操作和退出码是什么？ |
+| [Session 恢复](session-recovery.md) | 两个存储后端、分支、迁移和 doctor 怎样用？ |
+| [本地长期记忆](long-term-memory.md) | 怎样启用项目记忆、纠正、删除和控制跨项目偏好？ |
+| [故障排查](troubleshooting.md) | 怎样区分模型、网络、工具和 Runtime 错误？ |
+| [Tool 权限](tool-policy.md) | 文件和 Shell 的参数、审批与安全约束是什么？ |
+| [插件开发](plugin-authoring.md) | 怎样安装、授权和编写扩展？ |
 
-## 我第一次使用 Praxis
+## 2. 架构与源码阅读
 
-按这个顺序阅读：
+推荐按前四页顺序阅读；不用一次读完全部源码。
 
-1. [根 README](../README.md)：项目全功能地图、边界和十分钟上手；
-2. [详细快速开始](quickstart.md)：逐条命令、预期结果和第一次安全任务；
-3. [Provider 配置](provider-setup.md)：API key、模型、区域端点和隐私；
-4. [CLI 参考](cli-reference.md)：全部命令、Slash Command、按键、退出码和环境变量；
-5. [会话恢复](session-recovery.md)：如何查找、恢复、派生、导出和删除会话；
-6. [工具与权限](tool-policy.md)：允许一次、持久规则、文件修改和 Shell 风险；
-7. [故障排查](troubleshooting.md)：从症状到命令的排查路径。
+| 文档 | 唯一职责 |
+| --- | --- |
+| [名词表](runtime-glossary.md) | 新手术语和容易混淆的概念 |
+| [当前架构](architecture.md) | 组件、进程、状态的归属 |
+| [Working Plan](working-plan.md) | 默认 optional 计划和 advisory Review 合同 |
+| [运行全链路](agent-runtime-lifecycle.md) | 一次 Prompt 从开始到终态和恢复 |
+| [Prompt 装配](prompt-assembly.md) | 固定指令、动态数据、缓存与 compaction 规则 |
+| [模型请求目录](model-request-catalog.md) | 当前代码中的精确 Prompt 与请求结构，包括未接线兼容入口 |
+| [Child 与 Workflow](workflow-platform.md) | Run Tree、授权、等待、工作区隔离及 legacy 图接口 |
+| [严格 ReviewPlan](strict-review-plan.md) | 仅 Host 显式 required 的验收约束，不是默认模式 |
+| [模块地图](module-map.md) | 包、源码目录与改动落点 |
+| [项目状态](project-status.md) | 已实现和未实现的能力，不复述测试分数 |
+| [Runtime 源码导航](../apps/runtime/readme.md) | 按调用链进入具体实现 |
+| [CLI 源码导航](../apps/cli/readme.md) | 交互和 Bridge 的实现入口 |
 
-不知道从哪里开始时，只需要先完成前两项。
+## 3. 接口、扩展与维护参考
 
-## 我想写 Skill、Prompt 或插件
+- [Agent SDK](agent-sdk.md)、[Runtime middleware](runtime-middleware.md)。
+- [协议总览](protocol.md)、[协议客户端](protocol-client.md)、[前端通信全表](frontend-runtime-communication.md)。
+- [插件系统](plugin-system.md)、[安全威胁模型](security-threat-model.md)。
+- [Monorepo 与发布](monorepo.md)、[兼容策略](compatibility-policy.md)、[贡献指南](../CONTRIBUTING.md)、[安全报告](../SECURITY.md)。
 
-- [插件系统](plugin-system.md)：安装、启用、健康、能力快照、隔离与信任边界；
-- [插件开发](plugin-authoring.md)：从 manifest 和最小示例开始；
-- [`examples/resources`](../examples/resources)：Prompt、Skill、Theme 示例；
-- [`examples/plugins`](../examples/plugins)：MCP server、process Tool、process Provider 示例；
-- [Prompt 与上下文](prompt-assembly.md)：当前 Prompt variant、最终装配顺序、cache 与 compaction 规范；
-- [兼容性策略](compatibility-policy.md)：版本和 Schema 兼容边界。
+## 4. 测评记录
 
-## 我想编写自己的客户端
+[测评索引](evaluations/README.md)管理已通过题目、平台实验、运行总账、问题处理和带日期报告。这里保留历史题目原文、分数及失败过程；不同模型、构建、策略和任务版本不能混算。
 
-- [Agent SDK 教程](agent-sdk.md)：用 `defineAgent` 构建、流式运行、恢复和取消可嵌入 Agent，并配置 typed middleware；
-- [Runtime Middleware](runtime-middleware.md)：在可信 Runtime 宿主中拦截模型回合和 Tool 执行；
-- [Runtime 协议 v1](protocol.md)：initialize、订阅、会话、Prompt、事件和安全规则；
-- [协议客户端教程](protocol-client.md)：如何使用 `@praxis/client`；
-- [`@praxis/protocol`](../packages/protocol)：类型、JSON Schema 和协议版本；
-- [`@praxis/client`](../packages/client)：连接状态机、序列、replay 与重连。
+旧设计草案、旧 Prompt 审计副本和被取代的路线图已从仓库移除。当前架构规则不再另存一份“历史设计”供读者猜测哪个有效。
 
-## 我想修改 Runtime
+## 5. 调研与后续设计
 
-- [模块地图](module-map.md)：七个 Workspace、Runtime/CLI 全部源码域和常见改动路径；
-- [当前架构](architecture.md)：进程、权威、组合根、存储和能力边界；
-- [Praxis 当前分层架构](planner-prompt-context-storage-guide.md)：面向新手的 Runtime 分层与完整主链路导读；
-- [Agent Run Tree 与可选 Workflow](workflow-platform.md)：默认 `auto` 的 spawn/wait/result/cancel/steer、显式 DAG、持久 mailbox、Child 和写隔离；
-- [Planner Platform 历史 RFC](planner-platform-rfc.md)：旧目标设计背景；默认模型可见编排面已由 ADR-008 取代；
-- [Runtime 源码总览](../apps/runtime/readme.md)：新手代码阅读地图；
-- [内核与 AgentLoop](../apps/runtime/docs/01-kernel-and-loop.md)；
-- [Runtime Middleware](runtime-middleware.md)：`beforeModel/afterModel` 与 `beforeTool/afterTool`；
-- [会话、Prompt 与上下文](../apps/runtime/docs/02-session-memory-prompt.md)；
-- [Provider 与路由](../apps/runtime/docs/03-providers-and-routing.md)；
-- [Tool、Policy 与安全](../apps/runtime/docs/04-tools-policy-security.md)；
-- [扩展、MCP 与 Subagent](../apps/runtime/docs/05-extensions-plugins-subagents.md)；
-- [Trace、Evaluation 与运维](../apps/runtime/docs/06-trace-evaluation-operations.md)；
-- [CLI 源码导读](../apps/cli/readme.md)；
-- [Monorepo 指南](monorepo.md)。
+源码审计与外部框架对比见[2026-09-06 Harness 调研](research/harness-landscape-20260906.md)。它是带日期的研究判断，区分当前工作区、历史测评和官方滚动文档，不替代产品操作合同。
 
-## 我想贡献、审计安全或发布
+- [长期记忆路线图](long-term-memory-roadmap.md)：本地显式记忆的阶段状态与后续自动提炼/检索计划；当前操作合同见上面的本地长期记忆页。
+- [同项目经验继承实验](research/project-recap-experiment.md)：独立 recap 模块、四组对照、共享快照消融与运行命令；[首轮真实 pilot](evaluations/archive/project-recap-live-pilot-20260906.md)未观察到净收益，并发现空消融问题。
+- [MiniMax 新题型实验](evaluations/archive/project-recap-minimax-transfer-20260906.md)：已用 Token Plan 执行事务恢复、批处理与日志边界场景；区分任务错误、提炼失败及超预算未注入。
+- [原文摘录记忆与新题复验](evaluations/archive/project-recap-extractive-20260906.md)：异步 cleanup 和约束排程，记录提炼接口简化、读回过滤、题面歧义与分批对照。
+- [冻结策略后的错题型扩展](evaluations/archive/project-recap-frozen-expansion-20260906.md)：堆分配、HTML 片段和闭包求值，固定 extractive-v2 后对照无记忆。
+- [取消执行预算后的复验](evaluations/archive/project-recap-unlimited-20260906.md)：40 个配置、G-code/字节序新题、无执行上限与记忆候选数量门槛修复。
 
-- [贡献指南](../CONTRIBUTING.md)：第一次本地开发、测试策略和变更清单；
-- [Monorepo 指南](monorepo.md)：七个 Workspace、依赖方向和发行合同；
-- [安全策略](../SECURITY.md)与[威胁模型](security-threat-model.md)：私下报告和实际信任边界；
-- [兼容性策略](compatibility-policy.md)：Protocol、Session、Plugin 与平台支持；
-- [CHANGELOG](../CHANGELOG.md)：已发布版本和当前 Unreleased 变化；
-- [Verdaccio 运维](../infra/verdaccio/README.md)：Windows 私有 Registry 启动、备份和恢复。
+## 文档维护规则
 
-## 当前状态与长期决策
-
-- [项目状态](project-status.md)：唯一的“现在可用 / 条件可用 / 内部组件 / 未提供”功能表；
-- [持续维护的测评档案](evaluations/README.md)：当前权威入口，包含实际题目、逐题结果、完整运行总账、问题修复、术语和维护规则；
-- [2026-08 阶段测评快照](evaluation-final-2026-08-09.md)：保留当时的统一结论，后续结果以持续档案为准；
-- [Agent Run Tree 与可选 Workflow](workflow-platform.md)：当前执行入口、Child/Subagent、Task/Lease、隔离写入与恢复；
-- [安全威胁模型](security-threat-model.md)：信任边界、隔离声明和非目标；
-- [架构决策记录](adr/README.md)：已经接受、长期有效的决策；
-- [Supervisor 名称迁移](supervisor.md)：旧 `direct/supervisor` 名称怎样映射到当前 `solo/workflow`；
-- [兼容性策略](compatibility-policy.md)：协议、存储和插件版本演进。
-
-## 审计材料与历史执行证据
-
-- [Prompt 审计索引](prompt-audit/README.md)：Praxis、Pi 与 Claude copy 的 Prompt/装配对照、优化台账和后续上下文研究；
-- [持续维护的测评档案](evaluations/README.md)：当前统一结论、实际题目和证据索引；
-- [2026-08 阶段测评快照](evaluation-final-2026-08-09.md)：历史阶段结论；
-- [架构决策记录](adr/README.md)：仍然有效的长期设计决策。
-
-审计台账记录当时的输入、版本和结论，不是当前产品功能表。遇到表述冲突时，以 `project-status.md`、current architecture 和现行合同/测试为准。
-
-已完成的实施计划、超长 TODO 和阶段路线图不再放在当前文档树中。它们仍可从 Git 历史恢复，但不会与
-当前产品事实竞争权威。
-
-## 文档类型
-
-| 类型 | 回答什么 | 例子 |
-| --- | --- | --- |
-| 用户指南 | “我怎样完成任务？” | quickstart、provider、session、troubleshooting |
-| Reference | “精确命令/字段是什么？” | CLI、protocol、tool policy |
-| Current architecture | “现在代码怎样工作？” | architecture、plugin system、源码导读 |
-| Module map | “目录、包和源码域分别负责什么？” | module-map、monorepo、源码导读 |
-| Historical RFC | “过去为什么这样设计、哪些部分已被替代？” | planner platform RFC；不能覆盖 current architecture 与 ADR |
-| ADR | “为什么长期选择这个方向？” | `docs/adr/` |
-| Status | “已交付还是内部组件？” | project status、workflow platform |
-
-## 维护规则
-
-1. 先改代码和合同，再改 current 文档；文档不能承诺尚未接线的行为。
-2. 用户可见命令以真实 `praxis --help` 和测试为准。
-3. 类型、RPC、环境变量、错误码和路径保持英文原名。
-4. 新手指南解释“为什么、预期看到什么、失败怎么办”，Reference 不复制长教程。
-5. 一个事实只有一个权威入口；历史实施计划留在 Git 历史，不保留在当前导航。
-6. 新增、移动或删除文档时必须修复全仓本地链接并运行文档合同测试。
-
-## English summary
-
-Documentation is organized by reader task: onboarding, operation, extension
-authoring, client integration, Runtime development, status, and durable ADRs.
-Chinese is the primary teaching language; commands, types, schemas, error
-codes, and concise English summaries retain exact technical vocabulary.
-Completed implementation plans and oversized backlogs live in Git history,
-not in the current documentation authority tree.
+- 行为改变时更新其唯一职责页；其他页面用链接引用，不复制长篇规则。
+- 源码是行为依据，Schema 是输入输出合同，测试是特定条件下的证据；三者不能互相代替。
+- 当前页面不堆积“某日补充”或已经结束的迁移计划。保留兼容行为时明确入口和适用条件。
+- 数字成绩、Token 和缺陷修复经过放入测评目录；未完成的实验不得写为通过。
+- Prompt 文本以源码为准，修改后同步模型请求目录；不要通过改文档宣称已经改了模型行为。

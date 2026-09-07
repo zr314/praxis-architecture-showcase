@@ -11,8 +11,14 @@ import type {
   WorkflowSpecV1,
   WorkflowTimeoutPolicyV1,
 } from './workflow.js'
+import type {
+  PlanExecutionBindingV1,
+  ReviewPlanExecutionRequestV1,
+  WorkflowTaskSpecV1,
+} from './workflow-execution.js'
+import type { WorkflowTaskKindV1 } from './workflow-types.js'
 
-export type WorkflowTaskKindV1 = 'agent' | 'tool' | 'verification' | 'compensation' | 'subworkflow'
+export type { WorkflowTaskKindV1 } from './workflow-types.js'
 export type WorkflowTaskStateV1 =
   | 'ready'
   | 'leased'
@@ -43,6 +49,7 @@ export type WorkflowTaskV1 = Readonly<{
   lease?: WorkflowTaskLeaseV1
   createdAt: string
   updatedAt: string
+  executionBinding?: PlanExecutionBindingV1
 }>
 
 export type WorkflowTaskLeaseV1 = Readonly<{
@@ -144,13 +151,22 @@ export type WorkflowEffectReceiptV1 = Readonly<{
   workflowId: string
   nodeId: string
   attemptId: string
-  effectClass: Extract<EffectContractV1['class'], 'external_idempotent' | 'external_non_idempotent'>
+  effectClass: Extract<
+    EffectContractV1['class'],
+    'workspace_write' | 'external_idempotent' | 'external_non_idempotent'
+  >
   idempotencyKey?: string
   state: 'committed' | 'compensated'
   artifactRef: WorkflowArtifactRefV1
   createdAt: string
   compensatedAt?: string
   compensationReceiptRef?: WorkflowArtifactRefV1
+  requestId?: string
+  executionBinding?: PlanExecutionBindingV1
+  changedFilesDigest?: `sha256:${string}`
+  workspaceEvidenceRef?: WorkflowArtifactRefV1
+  source?: 'tool' | 'child' | 'host_resolution'
+  attestationDigest?: `sha256:${string}`
 }>
 
 export type WorkflowEffectReservationV1 = Readonly<{
@@ -162,6 +178,38 @@ export type WorkflowEffectReservationV1 = Readonly<{
   leaseExpiresAt: string
   receiptRef?: WorkflowArtifactRefV1
   updatedAt: string
+  requestId?: string
+}>
+
+export type WorkflowEffectRequestV1 = Readonly<{
+  schemaVersion: 1
+  workflowId: string
+  requestId: string
+  requestDigest: `sha256:${string}`
+  effectKind: Extract<
+    EffectContractV1['class'],
+    'workspace_write' | 'external_idempotent' | 'external_non_idempotent'
+  >
+  executionBinding: PlanExecutionBindingV1
+  externalIdempotencyKey?: string
+  state: 'reserved' | 'committed' | 'unknown' | 'released' | 'failed' | 'cancelled'
+  leaseExpiresAt?: string
+  receiptId?: string
+  receiptRef?: WorkflowArtifactRefV1
+  resolutionRequestId?: string
+  controlEventId?: string
+  blockId?: string
+  createdAt: string
+  updatedAt: string
+}>
+
+export type ReserveWorkflowEffectRequestV1 = Readonly<{
+  request: ReviewPlanExecutionRequestV1
+  requestDigest: `sha256:${string}`
+  effectKind: WorkflowEffectRequestV1['effectKind']
+  externalIdempotencyKey?: string
+  leaseExpiresAt?: string
+  at: string
 }>
 
 export type WorkflowEffectAdmissionV1 = Readonly<{
@@ -236,6 +284,11 @@ export interface WorkflowAuthorityPortV1 {
       limit?: number
     }>,
   ): Promise<readonly WorkflowTaskV1[]>
+  admitTaskForRequest(input: {
+    request: ReviewPlanExecutionRequestV1
+    taskSpec: WorkflowTaskSpecV1
+  }): Promise<{ task: WorkflowTaskV1; replayed: boolean }>
+  getTaskByRequestId(workflowId: string, requestId: string): Promise<WorkflowTaskV1 | undefined>
   bindTaskCapabilityBundle(
     taskId: string,
     leaseToken: string,
@@ -288,6 +341,18 @@ export interface WorkflowAuthorityPortV1 {
   getEffectReceipt(
     workflowId: string,
     idempotencyKey: string,
+  ): Promise<WorkflowEffectReceiptV1 | undefined>
+  reserveEffectRequest(input: ReserveWorkflowEffectRequestV1): Promise<{
+    request: WorkflowEffectRequestV1
+    replayed: boolean
+  }>
+  getEffectRequestByRequestId(
+    workflowId: string,
+    requestId: string,
+  ): Promise<WorkflowEffectRequestV1 | undefined>
+  getEffectReceiptByRequestId(
+    workflowId: string,
+    requestId: string,
   ): Promise<WorkflowEffectReceiptV1 | undefined>
   listEffectReceipts(workflowId: string): Promise<readonly WorkflowEffectReceiptV1[]>
   reserveEffect(

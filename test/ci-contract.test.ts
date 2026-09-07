@@ -12,56 +12,33 @@ function validateCiWorkflow(source: string): void {
   const workflow = parseWorkflow(source)
   assert.deepEqual(workflow.permissions, { contents: 'read' })
   const jobs = workflow.jobs ?? {}
-  assert.deepEqual(Object.keys(jobs), ['package'])
-  const packageJob = jobs.package
-  assertDefaultSuccessJob(packageJob, 'package')
-  assert.equal(packageJob.permissions, undefined)
-  assert.equal(packageJob['runs-on'], 'ubuntu-latest')
-  assert.equal(packageJob.needs, undefined)
+  assert.deepEqual(Object.keys(jobs), ['quality'])
+  const qualityJob = jobs.quality
+  assertDefaultSuccessJob(qualityJob, 'quality')
+  assert.equal(qualityJob.permissions, undefined)
+  assert.equal(qualityJob['runs-on'], 'ubuntu-latest')
+  assert.equal(qualityJob.needs, undefined)
   assert.equal(
-    packageJob.steps?.find((step) => step.uses?.startsWith('actions/setup-node@'))?.with?.[
+    qualityJob.steps?.find((step) => step.uses?.startsWith('actions/setup-node@'))?.with?.[
       'node-version'
     ],
     24,
   )
-  const steps = packageJob.steps ?? []
+  const steps = qualityJob.steps ?? []
   const installIndex = steps.findIndex((step) => step.run === 'npm ci')
-  const supplyChainIndex = steps.findIndex((step) => step.run === 'npm run verify:supply-chain')
-  const packageIndex = steps.findIndex((step) => step.run === 'npm run package:npm')
-  const importIndex = steps.findIndex(
-    (step) =>
-      step.run?.includes("await import('@praxis/core-sdk')") === true &&
-      step.run.includes("await import('@praxis/runtime')"),
-  )
-  const smokeIndex = steps.findIndex(
-    (step) => step.run?.includes('packaged monorepo smoke') === true,
-  )
+  const checkIndex = steps.findIndex((step) => step.run === 'npm run check')
+  const testIndex = steps.findIndex((step) => step.run === 'npm test')
+  const buildIndex = steps.findIndex((step) => step.run === 'npm run build')
 
   for (const step of steps) {
     assert.equal(step.if, undefined)
     assert.equal(step['continue-on-error'], undefined)
   }
   assert.ok(installIndex >= 0)
-  assert.equal(supplyChainIndex, installIndex + 1)
-  assert.equal(packageIndex, supplyChainIndex + 1)
-  assert.equal(importIndex, packageIndex + 1)
-  assert.equal(smokeIndex, importIndex + 1)
-  assert.equal(
-    steps.some((step) => step.run === 'npm test'),
-    false,
-  )
-  assert.equal(
-    steps.some((step) => step.run === 'npm run test:compat'),
-    false,
-  )
-  assert.equal(
-    steps.some((step) => step.run === 'npm run check'),
-    false,
-  )
-  assert.equal(
-    steps.some((step) => step.run === 'npm run eval'),
-    false,
-  )
+  assert.equal(checkIndex, installIndex + 1)
+  assert.equal(testIndex, checkIndex + 1)
+  assert.equal(buildIndex, testIndex + 1)
+  assert.equal(steps.length, buildIndex + 1)
   assertNoSecretsOrProviderEnvironment(workflow)
   assert.deepEqual(workflow.concurrency, {
     group: `ci-\${{ github.event.pull_request.number || github.ref }}`,
@@ -76,7 +53,7 @@ function replaceRequired(source: string, before: string, after: string): string 
   return source.replace(before, after)
 }
 
-test('CI workflow satisfies the packaging contract', async () => {
+test('CI workflow has one concise quality gate', async () => {
   const source = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')
   validateCiWorkflow(source)
 })
@@ -86,32 +63,32 @@ test('CI workflow contract rejects gating and security mutations', async () => {
   const source = raw.replaceAll('\r\n', '\n')
   const mutations = [
     [
-      'package continue-on-error',
+      'build continue-on-error',
       replaceRequired(
         source,
-        '      - run: npm run package:npm\n',
-        '      - run: npm run package:npm\n        continue-on-error: true\n',
+        '      - run: npm run build\n',
+        '      - run: npm run build\n        continue-on-error: true\n',
       ),
     ],
-    ['package always', replaceRequired(source, '  package:\n', '  package:\n    if: always()\n')],
+    ['quality always', replaceRequired(source, '  quality:\n', '  quality:\n    if: always()\n')],
     [
       'write-all permission',
-      replaceRequired(source, '  package:\n', '  package:\n    permissions: write-all\n'),
+      replaceRequired(source, '  quality:\n', '  quality:\n    permissions: write-all\n'),
     ],
     [
       'Provider secret environment',
       replaceRequired(
         source,
-        '  package:\n',
-        `  package:\n    env:\n      NEW_PROVIDER_API_KEY: \${{ secrets.NEW_PROVIDER_API_KEY }}\n`,
+        '  quality:\n',
+        `  quality:\n    env:\n      NEW_PROVIDER_API_KEY: \${{ secrets.NEW_PROVIDER_API_KEY }}\n`,
       ),
     ],
     [
       'bracket GitHub token',
       replaceRequired(
         source,
-        '  package:\n',
-        `  package:\n    env:\n      CI_TOKEN: \${{ github['token'] }}\n`,
+        '  quality:\n',
+        `  quality:\n    env:\n      CI_TOKEN: \${{ github['token'] }}\n`,
       ),
     ],
     [
@@ -134,7 +111,7 @@ test('CI workflow contract rejects gating and security mutations', async () => {
         'on:\n  workflow_call:\n    secrets:\n      auth:\n        required: true\n',
       ),
     ],
-    ['package step removed', replaceRequired(source, '      - run: npm run package:npm\n', '')],
+    ['test step removed', replaceRequired(source, '      - run: npm test\n', '')],
   ] as const
 
   for (const [name, mutated] of mutations) {
@@ -154,19 +131,16 @@ test('CI workflow scanner accepts uppercase GitHub shell environment names', asy
   assert.doesNotThrow(() => validateCiWorkflow(withShellEnvironment))
 })
 
-test('CI smoke imports the current Praxis workspace packages', async () => {
+test('CI does not duplicate release packaging or supply-chain jobs', async () => {
   const source = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')
   const workflow = parseWorkflow(source)
-  const runs = (workflow.jobs?.package?.steps ?? []).map((step) => step.run)
+  const runs = (workflow.jobs?.quality?.steps ?? []).map((step) => step.run)
 
-  assert.equal(runs.includes("await import('@taichu/core-sdk')"), false)
+  assert.equal(runs.includes('npm run package:npm'), false)
+  assert.equal(runs.includes('npm run verify:supply-chain'), false)
   assert.equal(
-    runs.some(
-      (run) =>
-        run?.includes("await import('@praxis/core-sdk')") === true &&
-        run.includes("await import('@praxis/protocol')"),
-    ),
-    true,
+    runs.some((run) => run?.includes('packaged monorepo smoke') === true),
+    false,
   )
 })
 

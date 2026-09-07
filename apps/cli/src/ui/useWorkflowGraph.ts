@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { RuntimeBridge, SessionEvent, WorkflowUpdateV1 } from '@praxis/protocol'
-import { type WorkflowPlanView, workflowPlanGraph } from './tuiModel.js'
+import { type WorkflowPlanView, workflowPlanGraph, workflowPlanSnapshot } from './tuiModel.js'
 
 /** Keeps durable PlanGraph state separate from the bounded transcript event buffer. */
 export function useWorkflowGraph(
@@ -10,8 +10,34 @@ export function useWorkflowGraph(
   events: readonly SessionEvent[],
 ): WorkflowPlanView | undefined {
   const [snapshot, setSnapshot] = useState<WorkflowPlanView>()
+  const [working, setWorking] = useState<WorkflowPlanView>()
+  const planRefreshKey = events
+    .filter(
+      (event) =>
+        event.type === 'tool_end' ||
+        event.type === 'prompt_completed' ||
+        event.type === 'prompt_blocked',
+    )
+    .at(-1)
   const requestedPlanId = useRef<string | undefined>(undefined)
   const livePlanId = latestPlanId(events)
+
+  useEffect(() => {
+    void runtimeEpoch
+    void planRefreshKey
+    let cancelled = false
+    setWorking(undefined)
+    if (bridge.sessionPlan !== undefined)
+      void bridge
+        .sessionPlan(sessionId)
+        .then((value) => {
+          if (!cancelled) setWorking(workflowPlanSnapshot(value))
+        })
+        .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [bridge, sessionId, runtimeEpoch, planRefreshKey])
 
   useEffect(() => {
     void runtimeEpoch
@@ -51,7 +77,7 @@ export function useWorkflowGraph(
     }
   }, [bridge, livePlanId])
 
-  return useMemo(() => workflowPlanGraph(events, snapshot), [events, snapshot])
+  return useMemo(() => working ?? workflowPlanGraph(events, snapshot), [events, snapshot, working])
 }
 
 function latestPlanId(events: readonly SessionEvent[]): string | undefined {

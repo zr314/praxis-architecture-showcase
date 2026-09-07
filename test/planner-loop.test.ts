@@ -8,6 +8,7 @@ import {
   providerToolCalls,
   reasoningText,
   runtimeError,
+  type RuntimeTool,
   type SystemPromptBuild,
   type TraceContext,
   type TraceRecord,
@@ -942,6 +943,54 @@ test('AgentLoop traces an existing allow-always rule before the timed Tool compl
   assert.equal(harness.toolExecutions, 1)
 })
 
+for (const strict of [true, false])
+  test(`AgentLoop ${strict ? 'strict Plan rejects' : 'working Plan permits'} sibling work in its batch`, async () => {
+    let planExecutions = 0
+    const planTool: RuntimeTool = {
+      definition: {
+        name: 'plan.create',
+        description: 'create plan',
+        parameters: { type: 'object' },
+        execution: {
+          sideEffect: 'none',
+          target: { kind: 'none' },
+          parallelSafe: false,
+          conflictScope: 'global',
+          maxInlineBytes: 65_536,
+        },
+      },
+      async execute() {
+        planExecutions += 1
+        return { ok: true, summary: 'plan created', output: { planRevision: 1 } }
+      },
+    }
+    const provider = scriptedProvider([
+      [
+        {
+          type: 'tool_calls',
+          calls: [
+            { id: 'ordinary-sibling', name: 'inspect', input: { path: 'must-not-run' } },
+            { id: 'plan-control', name: 'plan.create', input: {} },
+          ],
+        },
+      ],
+      [{ type: 'completed', stopReason: 'end_turn' }],
+    ])
+    const harness = createHarness(provider, {
+      additionalTools: [planTool],
+      strictPlanControls: () => strict,
+    })
+
+    await harness.loop.execute(harness.session, harness.run)
+
+    assert.equal(planExecutions, 1)
+    assert.equal(harness.toolExecutions, strict ? 0 : 1)
+    assert.equal(
+      JSON.stringify(harness.session.messages).includes('PLAN_CREATE_BATCH_BARRIER'),
+      strict,
+    )
+  })
+
 test('AgentLoop correlates run, Provider, policy, and Tool records without retaining content', async () => {
   const provider = scriptedProvider([
     [
@@ -1369,6 +1418,47 @@ test('AgentLoop follows Runtime completion guidance before accepting a final res
     true,
   )
   assert.equal(harness.events.at(-1)?.type, 'prompt_completed')
+})
+
+test('AgentLoop ends a durably blocked Run after one explanation without reinjecting guidance', async () => {
+  let calls = 0
+  const harness = createHarness(
+    {
+      id: 'blocked-fixture',
+      defaultModel: 'test',
+      authState: () => ({ status: 'authenticated' }),
+      async *stream() {
+        calls += 1
+        assert.equal(calls, 1, 'Unchanged durable block must not call the model again')
+        yield {
+          type: 'text_delta',
+          text: 'The review is blocked and requires external resolution.',
+        }
+        yield {
+          type: 'completed',
+          stopReason: 'end_turn',
+          usage: { inputTokens: 7, outputTokens: 3 },
+        }
+      },
+    },
+    {
+      completionGuidance: async () => ({
+        kind: 'blocked',
+        code: 'PLAN_REVIEW_BLOCKED',
+        reason: 'Review exhausted.',
+      }),
+    },
+  )
+  await harness.loop.execute(harness.session, harness.run)
+  assert.equal(calls, 1)
+  assert.equal(harness.events.at(-1)?.type, 'prompt_blocked')
+  assert.equal(harness.events.filter(({ type }) => type === 'prompt_blocked').length, 1)
+  assert.equal(
+    harness.session.messages.some(
+      (message) => message.role === 'user' && contentText(message.content) === 'Review exhausted.',
+    ),
+    false,
+  )
 })
 
 test('AgentLoop sends composed instructions and a content-free manifest for every provider request', async () => {
@@ -1831,10 +1921,12 @@ function createHarness(
     terminalTool?: Readonly<{ name: string }>
     acknowledgeSteer?: AgentLoopPorts['acknowledgeSteer']
     completionGuidance?: AgentLoopPorts['completionGuidance']
+    strictPlanControls?: AgentLoopPorts['strictPlanControls']
     beforeModel?: AgentLoopPorts['beforeModel']
     afterModel?: AgentLoopPorts['afterModel']
     beforeTool?: AgentLoopPorts['beforeTool']
     afterTool?: AgentLoopPorts['afterTool']
+    additionalTools?: readonly RuntimeTool[]
   } = {},
 ) {
   const events: SessionEvent[] = []
@@ -1929,6 +2021,7 @@ function createHarness(
             },
           },
         ]),
+    ...(options.additionalTools ?? []),
   ])
   const toolPort = {
     definitions: () => tools.definitions(),
@@ -1971,8 +2064,9 @@ function createHarness(
     ...(options.afterTool === undefined ? {} : { afterTool: options.afterTool }),
     tools: () => toolPort,
     ...(options.terminalTool === undefined ? {} : { terminalTool: () => options.terminalTool }),
-    commitMessage: async (target, _run, message) => {
+    commitMessage: async (target, _run, message, input) => {
       target.messages.push(message)
+      return { messageId: input?.messageId ?? `test-message-${target.messages.length}` }
     },
     ...(options.acknowledgeSteer === undefined
       ? {}
@@ -1980,6 +2074,9 @@ function createHarness(
     ...(options.completionGuidance === undefined
       ? {}
       : { completionGuidance: options.completionGuidance }),
+    ...(options.strictPlanControls === undefined
+      ? {}
+      : { strictPlanControls: options.strictPlanControls }),
     emit: (event) => {
       events.push(event)
     },

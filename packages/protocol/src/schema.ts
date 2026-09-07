@@ -25,6 +25,7 @@ const resultDefinitionByMethod: Record<RuntimeMethod, string> = {
   'settings.get': 'settingsResult',
   'settings.model.set': 'settingsResult',
   'runtime.doctor': 'doctorResult',
+  'memory.manage': 'memoryManageResult',
   'commands.list': 'commandCatalogResult',
   'commands.invoke': 'commandInvokeResult',
   'plugin.install': 'pluginStatusResult',

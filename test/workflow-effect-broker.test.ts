@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import type { RuntimeTool } from '@praxis/core-sdk'
 import { ArtifactStore } from '../apps/runtime/src/artifacts/artifactStore.js'
+import { planToolInvocationContextV1 } from '../apps/runtime/src/loop/toolInvocation.js'
 import { ToolRuntime } from '../apps/runtime/src/tools/toolRuntime.js'
+import { WriteTool } from '../apps/runtime/src/tools/writeTool.js'
 import { SqliteWorkflowAuthorityV1 } from '../apps/runtime/src/workflow/sqliteWorkflowAuthority.js'
 import { WorkflowCompensationToolV1 } from '../apps/runtime/src/workflow/workflowCompensationTool.js'
 import { WorkflowInboxToolV1 } from '../apps/runtime/src/workflow/workflowCoordinationTools.js'
@@ -185,6 +187,67 @@ test('idempotency is reserved before invocation and committed results replay wit
   }
 })
 
+for (const withInvocation of [true, false]) {
+  test(`workspace writes distinguish new A-B-A edits from replay (invocation=${withInvocation})`, async () => {
+    const fixture = await createFixture()
+    let calls = 0
+    const write = new WriteTool()
+    const runtime = new ToolRuntime(
+      [
+        {
+          definition: write.definition,
+          execute: async (request) => {
+            calls += 1
+            return write.execute(request)
+          },
+        },
+      ],
+      {
+        artifactStore: fixture.artifacts,
+        exposeArtifactTool: false,
+        executionBroker: new WorkflowEffectBrokerV1(
+          fixture.orchestrator,
+          fixture.artifacts,
+          fixture.workflowId,
+        ),
+      },
+    )
+    const writeContent = (content: string, turn: string) => {
+      const prepared = runtime.prepare('write', { path: 'state.txt', content }, fixture.root)
+      if (withInvocation) {
+        prepared.executionContext = {
+          invocation: planToolInvocationContextV1({
+            sessionId: 'session-effect',
+            runId: 'run-effect',
+            providerTurnId: turn,
+            providerToolCallId: 'write-call',
+            toolName: 'write',
+          }),
+        }
+      }
+      return runtime.executePrepared(prepared, new AbortController().signal)
+    }
+    try {
+      for (const [index, content] of ['A', 'B', 'A'].entries()) {
+        const result = await writeContent(content, `turn-${index}`)
+        assert.equal(result.ok, true, JSON.stringify(result))
+        assert.equal(await readFile(join(fixture.root, 'state.txt'), 'utf8'), content)
+      }
+      assert.equal(calls, 3, 'a new restoration write must not reuse the first A receipt')
+      if (withInvocation) {
+        const replay = await writeContent('A', 'turn-2')
+        assert.equal(replay.ok, true, JSON.stringify(replay))
+        assert.equal(calls, 3, 'retrying the same invocation must still replay its receipt')
+        const conflict = await writeContent('different', 'turn-2')
+        assert.equal(conflict.error?.code, 'WORKFLOW_EFFECT_IDEMPOTENCY_CONFLICT')
+        assert.equal(calls, 3)
+      }
+    } finally {
+      await fixture.close()
+    }
+  })
+}
+
 test('Saga compensation requires a second committed effect receipt and links both durably', async () => {
   const fixture = await createFixture()
   try {
@@ -254,6 +317,7 @@ async function createFixture(modePolicy: 'auto' | 'solo' = 'auto') {
   await orchestrator.markRunning(rootClaim)
   const artifacts = new ArtifactStore(join(root, 'artifacts'))
   return {
+    root,
     authority,
     orchestrator,
     artifacts,

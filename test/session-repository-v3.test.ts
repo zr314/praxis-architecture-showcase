@@ -28,10 +28,23 @@ test('product V3 repository persists planner, transcript, exact checkpoint, and 
       activeLeafId: 'session-product',
       labels: ['v3'],
     })
-    await repository.appendRequestMessage('session-product', 'request-1', 'run-1', {
-      role: 'user',
-      content: 'hello',
-    })
+    await repository.appendRequestMessage(
+      'session-product',
+      'request-1',
+      'run-1',
+      { role: 'user', content: 'hello' },
+      'required',
+    )
+    assert.deepEqual(
+      await repository.appendRequestMessage(
+        'session-product',
+        'request-1',
+        'replacement-run',
+        { role: 'user', content: 'replacement' },
+        'optional',
+      ),
+      { duplicateRunId: 'run-1', duplicatePlanPolicy: 'required' },
+    )
     await repository.appendMessage('session-product', { role: 'assistant', content: 'world' })
     await repository.saveMemory({
       sessionId: 'session-product',
@@ -88,6 +101,9 @@ test('product V3 repository persists planner, transcript, exact checkpoint, and 
     assert.deepEqual(await repository.loadClientRequests('session-product'), {
       'request-1': 'run-1',
     })
+    assert.deepEqual(await repository.loadClientRequestPolicies('session-product'), {
+      'request-1': 'required',
+    })
   } finally {
     await repository.close()
     await rm(root, { recursive: true, force: true })
@@ -127,6 +143,7 @@ test('product V3 repository persists the real terminal failure code', async () =
       {
         runId: 'run-coded-failure',
         clientRequestId: 'request-coded-failure',
+        planPolicy: 'optional',
         state: 'failed',
         usage: { outputTokens: 8_192 },
         errorCode: 'PROVIDER_OUTPUT_TRUNCATED',
@@ -237,6 +254,7 @@ test('a concurrent Runtime never recovers a live peer run as restarted', async (
       {
         runId: 'run-live',
         clientRequestId: 'request-live',
+        planPolicy: 'optional',
         state: 'interrupted',
         usage: {},
         errorCode: 'RUNTIME_RESTARTED',

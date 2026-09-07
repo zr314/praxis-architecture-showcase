@@ -1,6 +1,6 @@
 # Praxis 模块地图 / Module Map
 
-本文面向第一次阅读 Praxis 源码的人，回答三个问题：仓库为什么这样分层、每个模块负责什么、修改一项功能应该从哪里开始。它是源码导航，不替代各领域的详细合同。
+本文面向第一次阅读 Praxis 源码的人，回答三个问题：仓库为什么这样分层、每个模块负责什么、修改一项功能应该从哪里开始。它是源码导航，不替代各领域的详细合同。第一次阅读先查 [Runtime 名词表](runtime-glossary.md)；默认轻量计划的跨模块路径见[Working Plan](working-plan.md)。
 
 - 想知道产品现在能不能做某件事，查[项目状态](project-status.md)。
 - 想理解运行时如何协作，查[当前架构](architecture.md)。
@@ -23,7 +23,7 @@ flowchart TD
     AL --> PA
     PA --> PR["ProviderRouter"]
     AL --> TR["ToolRuntime + Policy + effect"]
-    AL --> WF["Workflow topology tools"]
+    AL --> WF["Child handles / explicit legacy graph tools"]
     WF --> CH["受授权 Child Runtime"]
     CH --> WA
     PR --> AL
@@ -60,7 +60,7 @@ Session 与 Workflow 是不同逻辑模型。默认部署中 Session 可选 JSON
 | `apps/cli` | 产品应用 | Commander CLI、Ink TUI、Runtime 子进程连接、非交互输出 | 想改命令、终端 UI、事件展示时 |
 | `apps/runtime` | 产品应用 | Agent 执行、Workflow、Provider、Tool、权限、存储、扩展与恢复 | 想理解或修改 Agent 行为时 |
 | `packages/*` | 公共合同 | 领域类型、Wire Schema、客户端和插件 SDK | 改跨进程/跨 Workspace 合同时 |
-| `docs` | 当前文档与审计材料 | 入门、Reference、Current Architecture、ADR、RFC、评测 | 先从[文档中心](README.md)选阅读路径 |
+| `docs` | 当前文档与测评 | 使用指南、架构、接口参考、版本化测评记录 | 先从[文档中心](README.md)选阅读路径 |
 | `examples` | 可运行示例 | Prompt、Skill、MCP、Process Tool/Provider、插件资源 | 写扩展时先复制最小示例 |
 | `test` | 跨模块验证 | 单元、契约、集成、PTY、恢复、安全和 Provider 测试 | 改代码前找同领域测试 |
 | `evals` | 评测输入 | Scenario、外部 benchmark 适配或固定评测资产 | 评估 Agent 效果和回归时 |
@@ -74,7 +74,7 @@ Session 与 Workflow 是不同逻辑模型。默认部署中 Session 可选 JSON
 
 ## 3. 七个 Workspace 与真实依赖方向
 
-下图是 2026-08-09 各 Workspace manifest 中的直接生产依赖；不包含传递依赖。`A --> B` 表示 A 导入 B：
+下图是 当前各 Workspace manifest 中的直接生产依赖；不包含传递依赖。`A --> B` 表示 A 导入 B：
 
 ```mermaid
 flowchart TD
@@ -110,16 +110,15 @@ flowchart TD
 
 ## 4. Runtime 的全部直接源码域
 
-`apps/runtime/src` 是最大的代码树。以下分组覆盖 2026-08-09 的 29 个直接子目录和 7 个根文件；先按层理解，不要按文件名字母顺序阅读。维护者可用 `Get-ChildItem apps/runtime/src -Directory` 对照新增目录并同步本文。
+`apps/runtime/src` 是最大的代码树。以下分组覆盖 当前实际接线的源码域；先按层理解，不要按文件名字母顺序阅读。表格只把产品入口和明确的评测入口列为主要入口。
 
 ### 4.1 入口、协议与组合层
 
 | 模块 | 负责 | 主要入口 |
 | --- | --- | --- |
-| 根文件 | 包入口、独立进程、Server 与 Storage 导出；长期计时和显式长生命周期策略 | `entry.ts`、`run.ts`、`process.ts`、`server.ts`、`storage.ts`、`longDurationTimer.ts`、`longLivedExecutionPolicy.ts` |
+| 根文件 | 包入口、独立进程与 Storage 导出；长期计时和显式长生命周期策略 | `entry.ts`、`run.ts`、`process.ts`、`storage.ts`、`longDurationTimer.ts`、`longLivedExecutionPolicy.ts` |
 | `framework` | 唯一产品 composition root、RPC dispatch、产品接线和可信宿主 middleware pipeline | `runtimeKernel.ts`、`runtimeMiddleware.ts` |
 | `process` | NDJSON 进程连接、进程树、正式 Runtime 协议连接 | `runtimeProtocolConnection.ts` |
-| `server` | 本地 Runtime Server 边界 | `localRuntimeServer.ts` |
 | `commands` | 内置命令目录、审计、Prompt/外部 Tool 命令适配 | `commandService.ts`、`builtinCommandRegistry.ts` |
 | `settings` | 用户设置的读取、验证与兼容迁移 | `userSettingsStore.ts` |
 
@@ -129,6 +128,8 @@ flowchart TD
 | --- | --- | --- |
 | `workflow` | 每个 Prompt 的 durable execution container、默认 Run Tree Tool、显式 Workflow DAG、Task/Lease、Local/远程 Worker、effect receipt | `autoWorkflowPlanner.ts`、`agentRunTreeTools.ts`、`workflowOrchestrator.ts` |
 | `loop` | 单个 AgentTask 的 Provider/Tool ReAct、stream、usage、steer、abort、compaction 和唯一终态 | `index.ts` |
+| `working-plan` | 默认动态清单与独立咨询 Reviewer | `workingPlanService.ts`、`tools.ts`、`advisoryReviewer.ts` |
+| `review-plan` | 显式 required 的严格验收、冻结证据和持久调用存储 | `planControlService.ts`、`reviewCoordinator.ts`、`semanticReviewer.ts`、`reviewCallStore.ts` |
 | `subagent` | Child admission、bootstrap、Capability Bundle、进程 host、MCP/credential broker、结果提交 | `childRuntimeHost.ts`、`childComposition.ts`、`childResultSubmissionTool.ts` |
 | `planner` | 活跃的 policy adapter、AgentLoop adapter、workspace 隔离与 verifier，以及保留的 Plan/DAG 库 | `plannerRouter.ts`、`agentTaskPlanner.ts`、`controlledWorkspaceMerge.ts`；旧 Plan/Supervisor 类不是第二条产品路径 |
 | `planner-api` | Planner 能力的窄导出边界 | `index.ts` |
@@ -141,9 +142,10 @@ flowchart TD
 | --- | --- | --- |
 | `session` | Session 生命周期和 Run 协调 | `sessionService.ts`、`runCoordinator.ts` |
 | `session-db` | `SessionJournalV3` 的 JSONL/SQLite 实现、Repository、迁移与 composition | `sessionRepositoryV3.ts`、`sessionJournalComposition.ts` |
-| `store` | SQLite 加载和兼容 Session Store 适配 | `nodeSqlite.ts`、`sessionStore.ts` |
+| `store` | SQLite 动态加载 | `nodeSqlite.ts` |
 | `prompt` | 项目指令、ContextView、Prompt registry/assembly/persistence 和 system composer | `promptAssembler.ts`、`systemPromptComposer.ts`、`promptRegistry.ts` |
 | `memory` | token/context window、semantic/native compaction、reasoning 与 Tool-result editing | `compactionService.ts`、`contextWindow.ts`、`contextEditing.ts` |
+| `long-term-memory` | opt-in 跨 Session 记忆、项目身份、显式写入、CAS/回执、撤销和关键词检索 | `memoryService.ts`、`projectIdentity.ts`、`tools.ts`；Prompt 接线位于 `prompt/memoryContext.ts` |
 | `artifacts` | 大结果和执行证据的内容寻址存储 | `artifactStore.ts` |
 
 这里的 `sessionJournalComposition.ts`、`childComposition.ts` 是领域内部的组装 helper；产品级 composition root 仍只有 `RuntimeKernel`。必须保持：canonical SessionJournal 不被 Provider-only editing 改写；Workflow 恢复不依赖自然语言 compaction。详见[会话、Prompt 与上下文](../apps/runtime/docs/02-session-memory-prompt.md)。
@@ -152,9 +154,9 @@ flowchart TD
 
 | 模块 | 负责 | 主要入口 |
 | --- | --- | --- |
-| `providers` | Anthropic、OpenAI Responses/Compatible、Kimi、MiniMax、DeepSeek、Mock 等 adapter 与 SSE/content conversion | `registry.ts`、`modelCatalog.ts`、各 `*Provider.ts` |
+| `providers` | Anthropic、OpenAI Responses/Compatible、Kimi、MiniMax、DeepSeek、Mock 等 adapter 与 SSE/content conversion | `modelCatalog.ts`、各 `*Provider.ts` |
 | `provider-router` | Provider 选择、fallback、能力/错误/usage 归一 | `providerRouter.ts` |
-| `llm-provider` | 内置 Provider 能力注册表 | `builtinProviders.ts`、`providerRegistry.ts` |
+| `llm-provider` | 创建内置 Provider 集合 | `builtinProviders.ts` |
 | `credentials` | 凭证解析、加密持久化和服务接口 | `credentialService.ts`、`encryptedCredentialStore.ts` |
 | `extensions` | Capability/Resource registry、Skill、MCP、Process activation 与监督 | `extensionService.ts`、`mcpActivationService.ts`、`skillInvocationService.ts` |
 | `plugin` | 插件安装后的 Runtime 管理、Process host 与协议适配 | `pluginManager.ts`、`processPluginHost.ts` |
@@ -165,7 +167,7 @@ Provider 的精确配置见[Provider 配置](provider-setup.md)，扩展边界�
 
 | 模块 | 负责 | 主要入口 |
 | --- | --- | --- |
-| `builtin-tools` | 组装内置 Tool 目录 | `builtinTools.ts`、`toolRegistry.ts` |
+| `builtin-tools` | 组装内置 Tool 目录 | `builtinTools.ts` |
 | `tools` | read/find/grep/write/edit/shell/artifact Tool、Schema、路径解析、并发修改协调 | `toolRuntime.ts`、各 `*Tool.ts` |
 | `policy` | Tool 风险判断、allow/deny 与 permission decision | `policyEngine.ts` |
 | `security` | 路径安全和隔离后端合同 | `pathSafety.ts`、`isolationBackend.ts` |
@@ -177,8 +179,8 @@ Tool 不是一个随意调用的函数：descriptor、Schema、target、side eff
 | 模块 | 负责 | 主要入口 |
 | --- | --- | --- |
 | `trace` | 关联 Run、Provider、Tool、Policy 和持久化操作的 Trace | `traceService.ts`、`jsonlTraceSink.ts` |
-| `operations` | Runtime 指标和性能剖析 | `operationalMetrics.ts`、`performanceProfiler.ts` |
-| `evaluation` | Scenario、ReplayProvider、Runner、grader、报告和 CLI | `scenarioRunner.ts`、`productionRuntime.ts`、`cli.ts` |
+| `operations` | 评测辅助指标和性能剖析；不在 Runtime 产品入口可达图中 | `operationalMetrics.ts`、`performanceProfiler.ts` |
+| `evaluation` | `npm run eval` 的 Scenario/Replay/Runner/Report；另有仅测试引用的 production grader/runtime 辅助 | 产品评测入口 `cli.ts`；测试辅助 `productionRuntime.ts` |
 
 Trace、指标和 benchmark 回答的问题不同，不能互相替代。详见[Trace、运维指标与评测](../apps/runtime/docs/06-trace-evaluation-operations.md)。
 
@@ -187,8 +189,7 @@ Trace、指标和 benchmark 回答的问题不同，不能互相替代。详见[
 | 模块 | 负责 | 主要入口 |
 | --- | --- | --- |
 | 根文件 | Commander 命令、进程模式、管理动作、读取 policy-file、收集权限输入和安全密钥输入 | `cli.tsx`、`runCli.tsx`、`cliActions.ts` |
-| `bridge` | 启动/连接 Runtime，把 RPC 和事件转换成 CLI 使用的接口 | `localRuntime.ts`、`ndjsonBridge.ts` |
-| `protocol` | 对 `@praxis/protocol` 的 CLI 兼容导入 | `schema.ts` |
+| `bridge` | 启动/连接 Runtime，把 RPC 和事件转换成 CLI 使用的接口 | `localRuntime.ts`、`ndjsonBridge.ts`；`mockBridge.ts` 仅供测试 |
 | `render` | `text/json/stream-json` 非交互输出与退出码 | `nonInteractive.ts` |
 | `ui` | Ink App、Transcript、Composer、Picker、事件状态、终端编辑和差分输出 | `App.tsx`、`EventList.tsx`、`Composer.tsx`、`terminalOutput.ts` |
 
@@ -206,8 +207,9 @@ CLI 可以读取自动化 policy-file 或把用户的 allow/deny 选择传给 Ru
 | --- | --- |
 | Agent/命令 | `contracts.ts`、`command.ts`、`command-execution.ts`、`input-router.ts` |
 | LLM/Provider | `llm.ts`、`provider-stream.ts` |
-| Prompt/Plan | `prompt.ts`、`plan.ts` |
+| Prompt/Plan | `prompt.ts`、legacy `plan.ts`、`working-plan.ts`、严格 `review-plan.ts` / `review-plan-events.ts` |
 | Session | `session-journal.ts`、`session-journal-port.ts`、`session-journal-transfer.ts`、`session-compaction.ts` |
+| 长期记忆 | `long-term-memory.ts`；区别于会话内 checkpoint 和 Working Plan |
 | Tool/扩展 | `tool.ts`、`plugin.ts`、`subagent.ts` |
 | Workflow | `workflow.ts`、`workflow-port.ts` |
 | Trace | `trace.ts` |
@@ -231,6 +233,7 @@ CLI 可以读取自动化 policy-file 或把用户的 allow/deny 选择传给 Ru
 | 新增内置 Tool | `runtime/tools` 实现 → `runtime/builtin-tools` 注册 → policy/security/effect → CLI 展示（按需） | Schema、路径、权限、并行/副作用测试；公共 Tool 合同按需修改 |
 | 修改 Workflow | authority/orchestrator/worker → `core-sdk/workflow*`、Protocol projection、client/TUI（仅暴露面变化时） | 事务、Lease、恢复、幂等与投影测试 |
 | 修改 Prompt/Compaction | `runtime/prompt`/`memory` → Provider adapter → `core-sdk/prompt/llm`（合同变化时） | Prompt 合同、cache、fidelity、恢复不变量 |
+| 修改跨 Session 记忆 | `core-sdk/long-term-memory` → `runtime/long-term-memory` → Kernel/Prompt → RPC/Client/CLI（按暴露面） | Project/User 隔离、权限、CAS、重启、撤销/分支、上下文预算 |
 | 新增 Slash Command | CLI command catalog/handler → Runtime command/RPC（若需） | 命令面、交互、非交互边界 |
 | 新增 Process 插件能力 | `plugin-protocol` → `plugin-sdk` → Runtime host/activation → 示例和文档 | manifest/handshake、授权、超时与关闭 |
 

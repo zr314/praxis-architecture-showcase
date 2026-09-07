@@ -287,6 +287,14 @@ export type SessionEvent =
       stopReason?: string
     }
   | { type: 'prompt_failed'; runId: string; error: string; code?: string; usage?: UsageSummary }
+  | {
+      type: 'prompt_blocked'
+      runId: string
+      code: string
+      reason: string
+      recoverable: true
+      usage?: UsageSummary
+    }
   | { type: 'prompt_aborted'; runId: string; reason?: string; usage?: UsageSummary }
   | { type: 'supervisor_update'; update: SupervisorUpdateV1 }
   | { type: 'workflow_update'; runId?: string; update: WorkflowUpdateV1 }
@@ -336,6 +344,7 @@ export type UsageSummary = {
 export type PromptInput = {
   sessionId: string
   text: string
+  planPolicy?: 'optional' | 'required'
   clientRequestId?: string
   commandInvocationId?: string
   /** Trusted host-application identity and instructions for this Run. */
@@ -586,6 +595,8 @@ export interface RuntimeBridge {
   getSettings(): Promise<UserSettingsInfo>
   setDefaultModel(provider: string, model: string): Promise<UserSettingsInfo>
   doctor(workspace?: string, deep?: boolean): Promise<DoctorResult>
+  /** Optional for compatibility with Hosts predating local memory. */
+  manageMemory?(input: import('@praxis/core-sdk').MemoryManageRequestV1): Promise<unknown>
   listCommands(workspace: string): Promise<CommandCatalogSnapshotV1>
   invokeCommand(input: CommandInvokeRequestV1): Promise<CommandInvokeResultV1>
   installPlugin(source: string): Promise<PluginStatus>

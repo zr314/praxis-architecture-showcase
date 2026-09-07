@@ -45,6 +45,26 @@ const TEST_RUNTIME_COMMAND_CATALOG = createMockRuntimeCommandRegistryV1().snapsh
   workspaceTrusted: true,
   capabilityIds: MOCK_COMMAND_CAPABILITIES_V1,
 })
+
+test('working checklist renders self-reported statuses without translating done into verified acceptance', () => {
+  const view = workflowPlanSnapshot({
+    plan: {
+      planId: 'wp-test',
+      state: 'active',
+      objective: 'Investigate',
+      items: [
+        { id: 'a', title: 'Read evidence', status: 'done' },
+        { id: 'b', title: 'Recheck', status: 'pending' },
+      ],
+    },
+  })
+  assert.equal(view?.steps[0]?.state, 'done')
+  assert.equal(view?.steps[1]?.state, 'pending')
+  assert.equal(
+    workflowPlanSnapshot({ plan: { planId: 'bad', state: 'active', items: [{ id: 7 }] } }),
+    undefined,
+  )
+})
 const TEST_CLIENT_COMMAND_CATALOG = createClientCommandRegistryV1().snapshot({
   workspaceId: TEST_RUNTIME_COMMAND_CATALOG.workspaceId,
   workspaceTrusted: TEST_RUNTIME_COMMAND_CATALOG.workspaceTrusted,

@@ -112,7 +112,9 @@ test('SystemPromptComposer produces stable ordered instructions and a content-fr
   assert.match(first.instructions, /Do not delegate merely because work is long/u)
   assert.match(first.instructions, /Continue useful independent work/u)
   assert.match(first.instructions, /agent\.wait/u)
-  assert.match(first.instructions, /never a nested CLI/u)
+  assert.match(first.instructions, /Never launch a nested agent CLI/u)
+  assert.match(first.instructions, /a planning request does not require spawning a Child/u)
+  assert.match(first.instructions, /done is self-reported, and Review is advisory/u)
   assert.match(first.instructions, /Self-authored tests do not redefine the requested result/u)
   assert.equal(first.instructions.includes('Read a UTF-8 text file'), false)
   assert.deepEqual(first.contextMessages, [])
@@ -124,7 +126,7 @@ test('SystemPromptComposer produces stable ordered instructions and a content-fr
   assert.equal(first.manifest.program.trustedInstructions.blockCount, 1)
   assert.equal(
     promptDigest(first.instructions),
-    'sha256:a3f6583218006ceac8fac7e4db45cc34499e2c9cbfe6a89511f5de719f653247',
+    'sha256:c5d9cf312af2d736ac268c4f60ebb4cae14a20101227b9e066db927207ca6edd',
   )
 })
 

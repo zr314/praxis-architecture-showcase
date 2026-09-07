@@ -1,6 +1,6 @@
 # Agent SDK 教程 / Agent SDK Tutorial
 
-`@praxis/client` 现在同时提供两层 API：
+`@praxis/client` 现在同时提供两层 API。新手术语见 [Runtime 名词表](runtime-glossary.md)：
 
 - `PraxisClient`：Runtime NDJSON 协议、事件 Sequence、replay 和 Session 控制；
 - `defineAgent`：面向应用的 `run / stream / resume / abort`、typed state/output 和 middleware。
@@ -51,6 +51,22 @@ if (result.status === 'completed') {
 }
 ```
 
+需要强制 Plan + Review 时，传入受信 Run policy：
+
+默认省略 policy（optional）使用[轻量 Working Plan](working-plan.md)：计划可编辑、进度可自报、Review 按需咨询，不自动成为执行门槛。下面的 required 示例才保留严格验收；不能再把普通 `plan.create` 等同于开启该模式。
+
+```ts
+const result = await reviewer.run({
+  input: 'Implement and verify the change.',
+  planPolicy: 'required',
+})
+
+if (result.status === 'blocked') {
+  console.error(result.error?.code, result.error?.message)
+  // 外部条件修复后，可在同一 Session follow-up。
+}
+```
+
 `instructions` 作为当前 Run 的 host-application instructions 进入 Runtime Trusted Instructions，
 但始终低于 Runtime policy、权限和用户请求。它不是拼接到用户 Prompt 的低信任文本。恢复同一 Session
 时，SDK 会在每次 follow-up 重新声明同一 Agent 配置，所以配置不会依赖客户端进程内的历史状态。
@@ -78,8 +94,8 @@ for await (const event of reviewer.stream({
 await reviewer.abort('r-known-run-id')
 ```
 
-Runtime 终态 `prompt_completed / prompt_failed / prompt_aborted` 分别映射为
-`completed / failed / aborted`。业务失败以 `AgentRunResult.status` 返回；transport、middleware 和
+Runtime 终态 `prompt_completed / prompt_failed / prompt_blocked / prompt_aborted` 分别映射为
+`completed / failed / blocked / aborted`。`blocked` 是可恢复非成功，不会执行 `parseOutput`。业务失败以 `AgentRunResult.status` 返回；transport、middleware 和
 `parseOutput` 错误会 reject Promise。
 
 ## 恢复 Session

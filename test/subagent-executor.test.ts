@@ -27,6 +27,7 @@ import type {
   ChildPermissionDecisionLifecyclePort,
   ChildPermissionRequestV1,
 } from '../apps/runtime/src/subagent/childPermissionGate.js'
+import { CHILD_BOOTSTRAP_METHODS } from '../apps/runtime/src/subagent/childBootstrapProfile.js'
 import {
   ChildRuntimeHost,
   type ChildRuntimeRun,
@@ -386,15 +387,7 @@ function cancelledResult(childRunId: string): SubagentResultV1 {
 
 function materializedExecution(): ChildRuntimeRun {
   const workspace = resolve(process.cwd())
-  const methods = [
-    'initialize',
-    'events.subscribe',
-    'session.create',
-    'session.prompt',
-    'permission.decide',
-    'session.abort',
-    'shutdown',
-  ] as const
+  const methods = CHILD_BOOTSTRAP_METHODS
   const bundle = mockChildCapabilityBundle({ workspace, methods, toolNames: ['read'] })
   const deadlineAt = '2099-01-01T00:00:00.000Z'
   return {

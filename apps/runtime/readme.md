@@ -1,214 +1,33 @@
-# Praxis Runtime 源码导读
-
-本目录是独立 Runtime 进程。它接收 CLI 的 NDJSON JSON-RPC，管理 Session、Provider、Prompt、Tool、权限、扩展、Workflow、Child Runtime、Artifact 和 Trace。
-
-如果你是新手，先读根 [README](../../README.md)、[快速入门](../../docs/quickstart.md)和[模块地图](../../docs/module-map.md)，再按本文顺序看代码。模块地图解释七个 Workspace 与 Runtime 全部源码域；本文只深挖 Runtime 主链路。
-
-## 一句话架构
-
-每条 Prompt 都由 `AutoWorkflowPlannerV1` 创建内部 durable execution container 和根 `AgentTask`，再进入 `AgentLoop`。默认 `auto` 的模型面只有普通 Tool 与 `agent.spawn/wait/result/cancel/steer`；完整 delegate、DAG、loop、durable wait 和 subworkflow 只在显式 `workflow` policy 注册。`PlannerRouter` 只解析 policy，不选择不同 Planner。
-
-`workflow.expand` 只负责提交模型 Proposal；图、Task、Attempt 和依赖状态由 `DurableWorkflowSchedulerV1` 推进。SQLite claim 必须看到 Node 已持久化为 `scheduled`，不能依赖调用 Tool 的进程内 completed 集合。Agent 结果先存 Artifact，再写 projection，scheduler 重建后会跳过已经成功的节点。
-
-## 推荐阅读顺序
-
-1. `src/framework/runtimeKernel.ts`：composition root、协议 dispatch、Prompt 启动和产品接线。
-2. `src/workflow/autoWorkflowPlanner.ts`：每条 Prompt 怎样变成 Workflow。
-3. `src/workflow/workflowOrchestrator.ts`：确定性 admission、Node/Attempt/Task 推进。
-4. `src/workflow/sqliteWorkflowAuthority.ts`：SQLite 事务、Lease 与恢复。
-5. `src/loop/index.ts`：一个 AgentTask 内部的 ReAct。
-6. `src/workflow/*Tool.ts`：delegate、handoff、DAG、bounded loop、durable wait 与 subworkflow 的模型入口。
-7. `src/workflow/localWorkflowAgentWorker.ts`：Child Runtime、Capability Bundle、MCP broker 和 worktree/snapshot merge。
-8. `src/session-db/`、`src/prompt/`、`src/tools/`、`src/extensions/`。
-
-## 启动与初始化
-
-`src/entry.ts` 创建 `RuntimeKernel`。父 Runtime 初始化：
-
-- SessionRepositoryV3（JSONL 或 SQLite）；
-- Workflow SQLite authority，并执行 expired Lease recovery；
-- Credential、ProviderRouter、ModelCatalog；
-- ExtensionService、CapabilityRegistry、MCP/Process activation；
-- AgentLoop、AutoWorkflowPlanner、Policy、Artifact、Trace；
-- JSON-RPC handlers。
-
-受授权 Child Runtime 会收到 `RuntimeAuthority` 和 bootstrap profile，使用独立 ephemeral Session/Trace/Artifact root。Child 不打开父 Workflow DB，Session policy 固定为 `solo`。
-
-## 统一 Workflow 主链路
-
-```mermaid
-sequenceDiagram
-    participant C as CLI
-    participant K as RuntimeKernel
-    participant W as WorkflowAuthority
-    participant A as Root AgentLoop
-    participant O as Orchestrator
-    participant H as ChildRuntimeHost
-
-    C->>K: session.prompt
-    K->>W: create Workflow + root Task
-    K->>W: claim root Lease / mark running
-    K->>A: execute root AgentTask
-    opt model spawns a Child
-        A->>O: agent.spawn proposal
-        O->>W: graph patch + Attempt + ready Task
-        O->>W: claim / mark running
-        O->>H: authenticated Child Runtime
-        H-->>O: result / artifacts / changed files
-        O->>W: complete Attempt and Node
-        O-->>A: childId; later wait/result
-    end
-    A-->>K: terminal outcome
-    K->>W: complete root and Workflow
-```
-
-`solo` 不添加协作工具；`auto` 添加 Run Tree 句柄工具；`workflow` 在同一实现上再添加 delegate、handoff、DAG、loop 与 subworkflow。切换 policy 不会实例化旧 Supervisor。
-
-## Workflow SQLite
-
-文件默认为 `%USERPROFILE%\.praxis\workflow-platform-v1.sqlite`。表包括：
-
-- `workflows`、`workflow_events`、`workflow_transactions`；
-- `workflow_tasks` 与 Lease 字段；
-- `workflow_outbox`、`workflow_timers`、`workflow_signals`；
-- `workflow_human_tasks`；
-- `agent_profiles`。
-
-所有 projection/event/task enqueue/ack 使用 `BEGIN IMMEDIATE`。Claim 检查 readyAt、kind、workflow/node filter 和 conflict keys。Heartbeat 同时记录存活与进展时间。
-
-Recovery 按 effect 处理：pure/read/idempotent 可以在 retry budget 内创建新 Attempt；workspace write/non-idempotent 失联进入 unknown，避免重复副作用。
-
-## Root 与 Child 的能力
-
-根 Agent 从当前 capability snapshot 获得 Tool、Skill、MCP 和 workspace grant。委派时 Runtime 求交集：父 grant ∩ Profile allowlist ∩ proposal request。
-
-模型面对的是一个统一的装配申请，而不是五种 Child Runtime。`agent.delegate` 和 `workflow.expand.nodes[]` 都可逐 Child 声明：
-
-- `profile: default | worker | explorer` 与任务专用 `instructions`；
-- `tools`、`skills`、`mcpServers`、`workspace`、`network`；
-- 显式模型或 `fast | balanced | powerful` 档位，以及 `none | low | medium | high` 推理强度；
-- wall-clock/token/tool/turn 预算、`text | markdown | json` 结果合同和成功标准；
-- DAG dependencies，用于并行、串行与独立交叉审查。
-
-Runtime 把这些字段当作不可信 Request，编译为 effective assembly。Task 保存原请求；不可变 execution snapshot 保存请求、最终 Provider/模型/推理、有效 Capability Bundle 和拒绝项。模型可以申请能力，不能更改父 grant、沙箱、模型目录、剩余预算或 descendant 禁令。
-
-Child 能使用被授权的：
-
-- read/write/edit/shell 等 Builtin；
-- 当前 Turn 已选择并 digest-pinned 的 Skills；
-- 通过父 broker 的 MCP；
-- 父 Provider 权限范围内、当前模型目录可用的模型 target，凭证由 credential broker 提供短期 handle；
-- interactive permission 转发。
-
-Child 唯一强制能力差异是不能创建 descendant。它的 `maxChildRuns/maxParallelChildren/maxDepth` 为零；正常 Tool/turn 上限保持宽松并受父 budget 收紧。
-
-## 写任务
-
-`LocalWorkflowAgentWorkerV1` 对 Git 工作区中的 `workspace_write`：
-
-1. 验证主目录是 Git repo 并读取 HEAD；
-2. 用 `WorkspaceIsolationManagerV1` 创建受管 detached worktree；
-3. 将 Child Bundle workspace 绑定到 worktree；
-4. Child 成功后 stage 并创建候选 commit；
-5. `ControlledWorkspaceMergeV1` 重新计算 binary patch、changed paths 和 commit shape；
-6. 父 Runtime 重新校验主工作区仍在原 base 且 clean 后，才执行 fast-forward；
-
-非 Git 工作区不会失败，也不会被隐式 `git init`。`DirectoryWorkspaceIsolationManagerV1` 复制安全文件到 `workflow-snapshots` 私有仓库，Child 只写快照；权限请求会把快照目标映射回用户工作区，父侧再使用目录基线摘要、授权路径、changed files、RuleVerifier 和单写锁校验后回写。敏感文件与依赖目录不进入快照，失败时保留 recovery path。Child 若在完成写工具后才超时，已完成变更不会被丢弃：只有候选差异、工具结果和 changed files 一致时才继续父侧校验与回写。
-7. blocked/failure 时保留 recovery path。
-
-不要把“Child 有 write Tool”理解为它能直接覆盖主目录。
-
-## AgentLoop
-
-`AgentLoop` 负责一个 AgentTask 内部的模型回合：Prompt assembly、Provider stream、Tool schema/policy、并行安全 Tool batch、usage、steer、abort、compaction 和唯一 terminal claim。可信宿主可通过 `RuntimeKernelOptions.middleware` 在逻辑模型回合与 Tool 边界注册 middleware；Tool name/input 改写发生在 schema 和权限之前。每 Hook 有 deadline，连续失败触发冷却/half-open 熔断，健康快照不记录原始内容。Child 默认不继承；只有认证 bootstrap 中的稳定 ID 能由 Child 入口 registry 重建。Middleware 不拥有跨 Agent 调度或 Workflow state。
-
-内部 `AgentTaskPlanner` 仅把一个已准入 execution 交给 AgentLoop，是 ExtensionService 的 Planner capability adapter，不是用户可选 Direct 模式。
-
-## Session 双后端
-
-`SessionRepositoryV3` 暴露统一 SessionJournal：
-
-- JSONL：commit + Catalog/Projection；Catalog 增量更新，普通启动走快速路径；
-- SQLite：同一领域合同的事务实现。
-
-一次 Runtime 只使用一个 Session authority，不双写。完整 JSONL replay 在 `doctor --deep` 或 scrub 中执行。Workflow SQLite 与 Session 后端独立。
-
-## Prompt 与 Compaction
-
-父 Runtime 使用 `journalContextView`。默认 `iron-law-lean-v1` 的装配顺序是：唯一 Trusted Instructions；`runtime_facts/skill_catalog/project_guidance`；本次 Root/Child Run 的逐字 pinned task contract；Child 可选签名 ContextPacket；Run-stable Session ContextView；native/semantic checkpoint；最近完整消息；独立 Tool definitions。task contract 与 canonical live message 会去重，不能被 compact 删除；reasoning/Tool-result editing 只生成 Provider 发送视图，成功 compact 后才更换 ContextView。旧 `SessionMemory.plan` 只在读取旧数据时被清理，不再进入 compaction 或模型 Prompt。完整规范见 [`docs/prompt-assembly.md`](../../docs/prompt-assembly.md)。
-
-本轮真实 Provider 小样本已覆盖 Harness-Bench、Harbor、AgentDojo、quorum、cross-review、局部 synthesis recovery、DeepSeek compaction/cache 和 MiniMax CN smoke。Restart recovery 的持久接管机制已观察，但一次最终 projection 不一致，因此仍是部分验证。见[最终测评总结](../../docs/evaluation-final-2026-08-09.md)。
-
-Compaction checkpoint 只压缩对话 Context。Workflow projection、Task、Lease 和副作用 receipt 永远从 Workflow authority 恢复。
-
-## Provider 错误
-
-Provider Router 统一能力、认证、模型目录、usage 和 fallback。429/暂时性 5xx 保留稳定分类与 retryable 标志；是否重试由 Run/Task Budget、RetryPolicy 和 deadline 决定。任何 Planner/Child 失败都应以真实 code 进入 Tool result、Workflow Node 和终态。
-
-## Protocol 投影
-
-Runtime handlers：`workflow.get/list/events/signal`。`workflow_update` 事件是 TUI 的实时投影。`session.plan` 返回最近 Workflow 的兼容视图。旧 `supervisor_update` 只为 v1 历史兼容保留。
-
-## 目录说明
-
-下面按职责合并展示源码域；逐目录边界、主要入口和跨模块修改路径见[模块地图](../../docs/module-map.md)。
-
-| 目录 | 职责 |
-| --- | --- |
-| `framework/` | composition root 与协议入口 |
-| `workflow/` | 统一 Workflow、SQLite/远程 authority、durable worker、model tools、Local Worker |
-| `loop/` | AgentTask ReAct |
-| `planner/` | 可复用 Graph/Verifier/Worktree 底层组件；不再有 ProductSupervisor 总控 |
-| `session/`、`session-db/` | Session 生命周期和 JSONL/SQLite V3 |
-| `prompt/`、`memory/` | Prompt view、assembly、token 与 compaction |
-| `tools/`、`builtin-tools/` | ToolRuntime 与内置工具 |
-| `subagent/` | Child host、bundle、broker、credential、permission、result contract |
-| `extensions/`、`plugin/` | 插件、Skill、MCP、Process activation |
-| `providers/`、`provider-router/` | Provider adapters 与路由 |
-| `policy/`、`security/` | 权限与平台隔离 |
-| `trace/`、`evaluation/` | 可观测性与评测 |
-
-## 远程 Worker
-
-Authority 进程：
-
-```powershell
-$env:PRAXIS_WORKFLOW_AUTHORITY_LISTEN='127.0.0.1:7777'
-$env:PRAXIS_WORKFLOW_AUTHORITY_TOKEN='replace-with-at-least-32-random-characters'
-praxis
-```
-
-远程 Runtime/Worker：
-
-```powershell
-$env:PRAXIS_WORKFLOW_AUTHORITY_URL='http://authority-host:7777'
-$env:PRAXIS_WORKFLOW_AUTHORITY_TOKEN='replace-with-the-same-random-token'
-praxis
-```
-
-远程端通过认证 RPC claim/heartbeat/commit Task，并通过同一边界读写内容寻址 Artifact；不要把 SQLite 文件放到网络共享目录。生产公网部署仍应在该端口前增加 TLS/mTLS、网络 ACL 与密钥轮换。
-
-## 测试
-
-核心新增测试：
-
-- `test/workflow-contract.test.ts`
-- `test/workflow-sqlite-authority.test.ts`
-- `test/workflow-orchestrator.test.ts`
-- `test/workflow-delegate-tool.test.ts`
-- 既有 `workspace-isolation-manager` 与 `controlled-workspace-merge` 测试
-
-常用命令：
-
-```powershell
-npm run typecheck
-npm run lint
-npm run build
-node --import tsx --test test/workflow-contract.test.ts test/workflow-sqlite-authority.test.ts
-```
-
-完整测试会启动真实 Runtime/PTY，必须关注子进程清理。
-
-## 当前边界
-
-本目录已交付默认 auto Agent Run Tree、模型驱动的 `default/worker/explorer` Child 装配、逐 Child Prompt/Tool/Skill/MCP/模型/推理/结果合同、显式 Workflow 的条件与 `all/any/quorum` join、loop、handoff、durable wait、统一 effect broker、双 receipt Saga、不可变执行快照、重启恢复 Worker pump 和认证远程 Authority/Artifact 协议。默认 `agent.spawn` 的数值预算继承父 Run/组织策略；显式 Workflow 节点仍可申请预算。PostgreSQL、高可用外部通知、任意递归 Child、跨 Provider 凭证授权、租户级分布式熔断和连接器驱动自动补偿仍是部署/扩展边界。准确状态见 [项目状态](../../docs/project-status.md)。
+# Praxis Runtime 源码导航
+
+English summary: source entry points for the current Runtime, not a second architecture specification.
+
+Runtime 是独立进程，管理 Session、Provider、工具、权限、持久执行和扩展。先读[架构](../../docs/architecture.md)、[Working Plan](../../docs/working-plan.md)，再按下表追源码。
+
+| 先看什么 | 源码 | 要理解的问题 |
+| --- | --- | --- |
+| 接入与组装 | src/entry.ts、src/framework/runtimeKernel.ts | session.prompt 如何连接服务？ |
+| Run 生命周期 | src/session/runCoordinator.ts、src/session/sessionService.ts | 如何启动、结束、取消和恢复？ |
+| 执行底座 | src/workflow/autoWorkflowPlanner.ts、workflowOrchestrator.ts、sqliteWorkflowAuthority.ts | AutoWorkflowPlannerV1、SqliteWorkflowAuthorityV1 如何保存 Task/Lease？ |
+| 模型循环 | src/loop/index.ts | 一轮 Provider 与 Tool 如何闭环？ |
+| 默认计划 | src/working-plan/workingPlanService.ts、tools.ts、advisoryReviewer.ts | 可编辑记忆与快照咨询为何不约束执行？ |
+| 严格验收 | src/review-plan/ | required 的 Attempt、证据、ReviewCallStore 和完成门 |
+| Child | src/subagent/childRuntimeHost.ts、src/workflow/localWorkflowAgentWorker.ts | ChildRuntimeHost、Capability Bundle、credential broker 和写隔离 |
+| 存储与上下文 | src/session-db/、src/prompt/、src/memory/ | SessionJournalV3、JSONL/SQLite、Projection、压缩和任务保护 |
+| 跨 Session 记忆 | src/long-term-memory/、src/prompt/memoryContext.ts | 默认 off 的项目记忆、显式授权、关键词召回与撤销；见[操作合同](../../docs/long-term-memory.md) |
+| 工具和扩展 | src/tools/、src/extensions/、src/plugin/ | Schema、授权、Skill/MCP/Process activation |
+
+普通 Session 的 JSONL 与 SQLite 不双写；Workflow SQLite 另存执行事实，事务使用 BEGIN IMMEDIATE。doctor --deep 用于完整校验，不是每轮重放。默认 optional 不要求 Plan Item Attempt；required 保留严格约束。
+
+Child 当前不能再创建 Child。Git 写入由父侧校验候选后 fast-forward；非 Git 使用 DirectoryWorkspaceIsolationManagerV1，受管内容在 workflow-snapshots 下。显式 workflow 才暴露 agent.delegate、workflow.expand 等图工具，不能把它们描述为默认 auto 的要求。
+
+## 分域导航
+
+1. [Kernel 与 Loop](docs/01-kernel-and-loop.md)
+2. [Session 与上下文](docs/02-session-memory-prompt.md)
+3. [Provider](docs/03-providers-and-routing.md)
+4. [Tool 与安全](docs/04-tools-policy-security.md)
+5. [扩展与 Child](docs/05-extensions-plugins-subagents.md)
+6. [观测和测评](docs/06-trace-evaluation-operations.md)
+
+这些页面只解释源码落点。架构规则、Prompt 全文、配置参数和测评分数分别引用主文档，避免同一事实维护多份。

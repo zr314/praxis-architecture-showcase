@@ -13,6 +13,7 @@
         { "$ref": "#/$defs/settingsGetRequest" },
         { "$ref": "#/$defs/settingsModelSetRequest" },
         { "$ref": "#/$defs/runtimeDoctorRequest" },
+        { "$ref": "#/$defs/memoryManageRequest" },
         { "$ref": "#/$defs/commandsListRequest" },
         { "$ref": "#/$defs/commandsInvokeRequest" },
         { "$ref": "#/$defs/pluginInstallRequest" },
@@ -101,7 +102,81 @@
         { "$ref": "#/$defs/pluginDoctorResult" },
         { "$ref": "#/$defs/resourceResult" },
         { "$ref": "#/$defs/resourceListResult" }
+        ,{ "$ref": "#/$defs/memoryManageResult" }
       ]
+    },
+    "memoryManageResult": {
+      "allOf": [
+        { "$ref": "#/$defs/responseEnvelope" },
+        { "properties": { "result": { "anyOf": [
+          { "$ref": "#/$defs/memoryProject" },
+          { "$ref": "#/$defs/memoryRecord" },
+          { "$ref": "#/$defs/memoryReceipt" },
+          { "type": "array", "maxItems": 50, "items": { "anyOf": [{ "$ref": "#/$defs/memoryRecord" }, { "$ref": "#/$defs/memoryReceipt" }] } },
+          { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "scope", "memories", "limit"], "properties": {
+            "schemaVersion": { "const": 1 }, "scope": { "enum": ["project", "user"] },
+            "memories": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/memoryRecord" } }, "limit": { "const": 50 }, "nextCursor": { "type": "string", "maxLength": 128 }
+          } }
+        ] } } }
+      ]
+    },
+    "memoryProject": {
+      "type": "object", "additionalProperties": false, "required": ["projectId", "root", "mode", "userAccess"],
+      "properties": { "projectId": { "type": "string" }, "root": { "type": "string" }, "mode": { "enum": ["off", "read-only", "explicit"] }, "userAccess": { "type": "boolean" } }
+    },
+    "memoryReceipt": {
+      "type": "object", "additionalProperties": false, "required": ["operationId", "id", "revision", "action"],
+      "properties": { "operationId": { "type": "string" }, "id": { "type": "string" }, "revision": { "type": "integer", "minimum": 1 }, "action": { "enum": ["upsert", "forget"] } }
+    },
+    "memoryRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "id", "revision", "scope", "key", "kind", "content", "applicability", "source", "createdAt", "updatedAt"],
+      "properties": {
+        "schemaVersion": { "const": 1 }, "id": { "type": "string" }, "revision": { "type": "integer", "minimum": 1 },
+        "scope": { "enum": ["project", "user"] }, "projectId": { "type": "string" }, "key": { "type": "string", "maxLength": 128 },
+        "kind": { "enum": ["preference", "feedback", "decision", "reference", "experience"] }, "content": { "type": "string", "maxLength": 4096 },
+        "applicability": { "type": "string", "maxLength": 512 }, "createdAt": { "type": "string" }, "updatedAt": { "type": "string" }, "expiresAt": { "type": "string" },
+        "source": { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": {
+          "kind": { "const": "user_explicit" }, "sessionId": { "type": "string" }, "runId": { "type": "string" }, "promptId": { "type": "string" }
+        } }
+      }
+    },
+    "memoryManageRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        { "properties": { "method": { "const": "memory.manage" }, "params": { "$ref": "#/$defs/memoryManageParams" } } }
+      ]
+    },
+    "memoryWrite": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "kind", "content", "expectedRevision"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "kind": { "enum": ["preference", "feedback", "decision", "reference", "experience"] },
+        "content": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "applicability": { "type": "string", "maxLength": 512 },
+        "expiresAt": { "type": "string", "maxLength": 64 },
+        "expectedRevision": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "memoryManageParams": {
+      "type": "object", "additionalProperties": false,
+      "required": ["workspace", "action"],
+      "properties": {
+        "workspace": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "action": { "enum": ["status", "configure", "list", "get", "upsert", "forget", "export", "import", "rebind"] },
+        "scope": { "enum": ["project", "user"] },
+        "mode": { "enum": ["off", "read-only", "explicit"] },
+        "userAccess": { "type": "boolean" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "query": { "type": "string", "maxLength": 2048 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "afterId": { "type": "string", "maxLength": 128 },
+        "operationId": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "expectedRevision": { "type": "integer", "minimum": 0 },
+        "memory": { "$ref": "#/$defs/memoryWrite" },
+        "memories": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/memoryWrite" } }
+      }
     },
     "envelope": {
       "type": "object",
@@ -257,7 +332,7 @@
     "workflowControlParams": { "type": "object", "required": ["workflowId"], "properties": { "workflowId": { "type": "string", "minLength": 1 }, "reason": { "type": "string", "minLength": 1, "maxLength": 128 } }, "additionalProperties": false },
     "workflowNodeParams": { "type": "object", "required": ["workflowId", "nodeId"], "properties": { "workflowId": { "type": "string", "minLength": 1 }, "nodeId": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
     "sessionTranscriptParams": { "type": "object", "required": ["sessionId", "limit"], "properties": { "sessionId": { "type": "string", "minLength": 1 }, "before": { "type": "integer", "minimum": 0 }, "limit": { "type": "integer", "minimum": 1, "maximum": 500 } }, "additionalProperties": false },
-    "promptParams": { "type": "object", "required": ["sessionId", "text", "clientRequestId"], "properties": { "sessionId": { "type": "string" }, "text": { "type": "string", "minLength": 1 }, "clientRequestId": { "type": "string", "minLength": 1 }, "commandInvocationId": { "type": "string", "minLength": 1, "maxLength": 128 }, "agent": { "type": "object", "required": ["instructions"], "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 128 }, "instructions": { "type": "string", "minLength": 1, "maxLength": 16384 } }, "additionalProperties": false }, "budget": { "type": "object", "properties": { "maxTurns": { "type": "integer", "minimum": 1 }, "maxToolCalls": { "type": "integer", "minimum": 0 }, "maxTokens": { "type": "integer", "minimum": 1 } }, "additionalProperties": false }, "timeoutMs": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
+    "promptParams": { "type": "object", "required": ["sessionId", "text", "clientRequestId"], "properties": { "sessionId": { "type": "string" }, "text": { "type": "string", "minLength": 1 }, "clientRequestId": { "type": "string", "minLength": 1 }, "planPolicy": { "enum": ["optional", "required"] }, "commandInvocationId": { "type": "string", "minLength": 1, "maxLength": 128 }, "agent": { "type": "object", "required": ["instructions"], "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 128 }, "instructions": { "type": "string", "minLength": 1, "maxLength": 16384 } }, "additionalProperties": false }, "budget": { "type": "object", "properties": { "maxTurns": { "type": "integer", "minimum": 1 }, "maxToolCalls": { "type": "integer", "minimum": 0 }, "maxTokens": { "type": "integer", "minimum": 1 } }, "additionalProperties": false }, "timeoutMs": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
     "steerParams": { "type": "object", "required": ["sessionId", "runId", "text"], "properties": { "sessionId": { "type": "string" }, "runId": { "type": "string" }, "text": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
     "abortParams": { "type": "object", "required": ["runId"], "properties": { "sessionId": { "type": "string" }, "runId": { "type": "string" }, "reason": { "type": "string" } }, "additionalProperties": false },
     "traceExportParams": { "type": "object", "required": ["traceId", "destination"], "properties": { "traceId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" }, "destination": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
@@ -443,7 +518,8 @@
     "trashResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["trashPath"], "properties": { "trashPath": { "type": "string" } }, "additionalProperties": false } } }] },
     "sessionExportResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["exportVersion", "exportedAt", "session", "messages", "memory"], "properties": { "exportVersion": { "const": 1 }, "exportedAt": { "type": "string" }, "session": { "$ref": "#/$defs/sessionInfo" }, "messages": { "type": "array" }, "memory": {} }, "additionalProperties": false } } }] },
     "sessionTranscriptResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["sessionId", "start", "end", "totalMessages", "hasMore", "messages"], "properties": { "sessionId": { "type": "string", "minLength": 1 }, "start": { "type": "integer", "minimum": 0 }, "end": { "type": "integer", "minimum": 0 }, "totalMessages": { "type": "integer", "minimum": 0 }, "hasMore": { "type": "boolean" }, "messages": { "type": "array", "maxItems": 500 } }, "additionalProperties": false } } }] },
-    "sessionPlanResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["sessionId", "plan", "plannerGeneration"], "properties": { "sessionId": { "type": "string" }, "plan": {}, "plannerGeneration": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/plannerGeneration" }] } }, "additionalProperties": false } } }] },
+    "sessionPlanResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "type": "object", "required": ["sessionId", "plan", "plannerGeneration"], "properties": { "sessionId": { "type": "string" }, "plan": {}, "planPolicy": { "enum": ["optional", "required"] }, "strictReviewPlan": {}, "workingReviews": { "type": "array", "items": { "$ref": "#/$defs/workingReview" } }, "plannerGeneration": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/plannerGeneration" }] } }, "additionalProperties": false } } }] },
+    "workingReview": { "type": "object", "required": ["reviewRequestId", "operationId", "inputDigest", "inputRef", "requestDigest", "planRevision", "snapshotSequence", "evidenceSequence"], "properties": { "reviewRequestId": { "type": "string" }, "operationId": { "type": "string" }, "inputDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }, "inputRef": { "type": "string", "pattern": "^artifact-[a-f0-9]{64}$" }, "requestDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }, "planRevision": { "type": ["integer", "null"], "minimum": 1 }, "snapshotSequence": { "type": "integer", "minimum": 0 }, "evidenceSequence": { "type": "integer", "minimum": 0 }, "reportRef": { "type": "string", "pattern": "^artifact-[a-f0-9]{64}$" }, "verdict": { "enum": ["accepted", "needs_fix", "replan", "blocked", "unavailable"] } }, "additionalProperties": false },
     "plannerGeneration": { "type": "object", "required": ["phase", "generatorId", "source", "status", "fallbackUsed", "runId", "recordedAt"], "properties": { "phase": { "enum": ["initial", "replan"] }, "generatorId": { "type": "string" }, "source": { "enum": ["model", "fallback"] }, "status": { "enum": ["succeeded", "failed"] }, "fallbackUsed": { "type": "boolean" }, "route": { "enum": ["parent_only", "dag"] }, "failureCode": { "type": "string" }, "fallbackFromCode": { "type": "string" }, "runId": { "type": "string" }, "recordedAt": { "type": "string" } }, "additionalProperties": false },
     "workflowProjection": { "type": "object", "required": ["workflowId", "runId", "sessionId", "revision", "sequence", "state", "topology", "objective", "nodes"], "properties": { "workflowId": { "type": "string", "minLength": 1 }, "runId": { "type": "string", "minLength": 1 }, "sessionId": { "type": "string", "minLength": 1 }, "parentWorkflowId": { "type": "string", "minLength": 1 }, "parentNodeId": { "type": "string", "minLength": 1 }, "revision": { "type": "integer", "minimum": 1 }, "sequence": { "type": "integer", "minimum": 1 }, "state": { "type": "string", "minLength": 1 }, "topology": { "type": "string", "minLength": 1 }, "objective": { "type": "string" }, "nodes": { "type": "array", "items": { "type": "object", "required": ["nodeId", "title", "kind", "state"], "properties": { "nodeId": { "type": "string" }, "title": { "type": "string" }, "kind": { "type": "string" }, "state": { "type": "string" }, "errorCode": { "type": "string" } }, "additionalProperties": false } }, "terminalCode": { "type": "string" } }, "additionalProperties": false },
     "workflowResult": { "allOf": [{ "$ref": "#/$defs/responseEnvelope" }, { "properties": { "result": { "$ref": "#/$defs/workflowProjection" } } }] },

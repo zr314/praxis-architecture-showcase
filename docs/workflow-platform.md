@@ -1,14 +1,14 @@
-# Agent Run Tree 与可选 Workflow
+# Child Run Tree 与可选 legacy Workflow
 
-Praxis 的默认通用执行路径正在从“模型编写动态 DAG”转向“plan-guided ReAct + 自主 Agent Run Tree”。每个 Prompt 目前仍创建一个内部 durable execution container 和根 `AgentTask`，用于复用 Authority、Lease、Artifact 和恢复；它不是要求模型维护的业务 Workflow。只有显式 `workflow` policy 才向模型提供完整 DAG、loop、subworkflow 和持久等待等粗粒度编排能力。决策记录见 [ADR-008](adr/ADR-008-agent-run-tree.md)。
+Praxis 的默认通用路径是“自主 ReAct + 可选 Working Plan + 按需 Child”。Plan 与 Child 生命周期互不替代，咨询 Review 不构成完成门。新手先看[Runtime 名词表](runtime-glossary.md)和[Working Plan](working-plan.md)。English summary: durable child handles by default; graph tools only under explicit legacy policy.每个 Prompt 仍创建内部 durable execution container 和根 `AgentTask`，用于复用 Authority、Lease、Artifact 和恢复；它不是要求模型维护的业务 DAG。只有显式、deprecated 的 `workflow` policy 才提供 legacy DAG/loop/subworkflow。
 
 ## 模式不是三套实现
 
 | Policy | 语义 | 实现 |
 | --- | --- | --- |
-| `auto` | 模型保持 plan-guided ReAct，并可自主 spawn/wait/result/cancel/steer Child | AgentLoop + durable Run handles |
-| `solo` | 硬性禁止增加 Child | 同一实现，child budget 为零 |
-| `workflow` | 显式粗粒度业务编排 | Run Tree 工具加完整 Workflow 工具 |
+| `auto` | Root 自选直接执行或 Working Plan，并可 spawn/wait/result/cancel/steer Child | AgentLoop + Plan tools + durable Run handles |
+| `solo` | 同样自选直接执行或 Working Plan，但禁止 Child | AgentLoop + Plan tools，child budget 为零 |
+| `workflow` | deprecated legacy 图编排兼容 | Run Tree 工具加 legacy Workflow tools |
 
 旧 `direct` 与 `supervisor` 只在输入解析时迁移为 `solo` 与 `workflow`。不存在 ProductSupervisor fallback，也不存在先失败再从头运行另一套 Planner 的行为。
 
@@ -24,7 +24,7 @@ Praxis 的默认通用执行路径正在从“模型编写动态 DAG”转向“
 
 ### `agent.cancel` 与 `agent.steer`
 
-`agent.cancel` 终止已经失去价值的分支并保留历史和已有证据。`agent.steer` 先写入 durable instruction；活跃 Child 通过 Runtime 的 `session.steer` 在安全边界接收，尚未启动的 Child 在 bootstrap 前读取。当前 Child 仍不能继续 spawn 后代，因此这是 Root Run Tree 的第一阶段，而不是任意递归已经交付。
+`agent.cancel` 终止已经失去价值的分支并保留历史和已有证据。`agent.steer` 先写入 durable instruction；活跃 Child 通过 Runtime 的 `session.steer` 在安全边界接收，尚未启动的 Child 在 bootstrap 前读取。当前 Child 仍不能继续 spawn 后代，因此当前只支持 Root 加一级 Child，不支持任意递归。
 
 ## 显式 `workflow` policy：高级编排工具
 
@@ -110,7 +110,7 @@ TUI 在等待中的 HumanTask 节点旁显示 `/human-tasks` 提示。进程退�
 - 有类型、定址、排序和确认状态的 Workflow mailbox；
 - Task acknowledgement 与 terminal。
 
-SessionJournal 保存对话，Workflow SQLite 保存执行事实。二者不能互相替代。`session.plan` 是兼容查询，返回该 Session 最新 Workflow projection，不再读取 CompactPlan。
+SessionJournal 保存对话，Workflow SQLite 保存执行事实。二者不能互相替代。`session.plan` 根据最近 Run 的 policy 返回 Working Plan 或严格 ReviewPlan，没有对应 Plan 时才回退最新 Workflow projection，并带咨询记录与严格历史。执行 projection 也可用 workflow.get/list 查询；完整响应见[协议](protocol.md)。
 
 `workflow_outbox` 与 `workflow_messages` 不是同一个概念。Outbox 保存“状态提交后待发布给 Worker/通知系统的基础设施事件”；mailbox 保存“Root、Node、用户和 Runtime 之间可消费的业务协调消息”。前者解决可靠发布，后者解决 Agent 通信、顺序读取和确认。
 
@@ -130,11 +130,11 @@ Child 的能力接近父 Agent，但必须是父授权的子集。当前 Child �
 
 ## 写任务安全
 
-可写 Child 必须在 Git 仓库中运行：
+Git 工作区的可写 Child 使用隔离 worktree，过程如下；非 Git 目录使用本节后文的目录快照路径：
 
 ```mermaid
 flowchart LR
-    A["Git HEAD / directory baseline"] --> B["Managed worktree / snapshot repository"]
+    A["Git HEAD"] --> B["Managed Git worktree"]
     B --> C["Child tools / tests"]
     C --> D["Single candidate commit"]
     D --> E["Parent preflight"]
@@ -199,7 +199,7 @@ Runtime 发送 `workflow_update`，包含 Workflow ID、Run ID、revision、sequ
 
 ## 预算
 
-当前 v4 长生命周期策略采用“默认无预算、显式才限制”：根 Run、Child 和 Workflow 不再因内置 turns、Tool calls、tokens、wall clock、累计 Child、depth、loop 或累计图演化次数而终止。usage 仍逐轮写入 Journal，取消、恢复、公平调度、权限与审计继续生效。内部 v1 数据结构必须携带数字时，用 safe-integer/Date-safe 的 unlimited 哨兵编码，并由 overflow-safe timer 实现；这不是对外配额。Local Runtime 的 256 并行只表达 worker-pool 容量，不限制累计工作量。用户、CLI、组织策略或节点 Proposal 可显式收紧任一维度。Profile v1-v3 的旧预算与 digest 保持不可变，新任务统一钉住 v4。
+当前 v4 长生命周期策略采用“默认无预算、显式才限制”：根 Run、Child 和 Workflow 不再因内置 turns、Tool calls、tokens、wall clock、累计 Child、depth、loop 或累计图演化次数而终止。usage 仍逐轮写入 Journal，取消、恢复、公平调度、权限与审计继续生效。内部 v1 数据结构必须携带数字时，用 safe-integer/Date-safe 的 unlimited 哨兵编码，并由 overflow-safe timer 实现；这不是对外配额。默认 durable Worker/Provider lane 并发为 4，MiniMax lane 为 2；显式前台图调度器的 256 只是单批 claim 内部硬上限。它们都限制瞬时容量，不限制累计工作量。用户、CLI、组织策略或节点 Proposal 可显式收紧任一维度。Profile v1-v3 的旧预算与 digest 保持不可变，新任务统一钉住 v4。
 
 累计任务预算与瞬时资源容量是两件事。新 Workflow 会把 Provider 容量组和 limit 快照写进 Spec；Authority 在 claim 的 SQLite `BEGIN IMMEDIATE` 事务内统计未过期的 Agent/Subworkflow Lease，并原子拒绝超容量 claim。限制因此同时覆盖 Root、前台 DAG、后台 Child、重启恢复和连接同一远程 Authority 的 Worker，不会出现“先占住 Task、再在进程里等待”的悬空状态。不同 Provider 容量组仍可并行；滚动配置期间，同组已持久策略取更严格 limit。默认 Provider lane 为 4，MiniMax 为 Root + 单 Child 的总容量 2，可用 `PRAXIS_WORKFLOW_PROVIDER_CONCURRENCY` 集中覆盖。该容量只限制同时执行数，不限制长任务累计时长或累计 Child 数。
 
@@ -219,4 +219,4 @@ Saga compensation 不允许模型仅用文字宣称“已撤销”。模型必�
 
 远程 Worker 已通过认证的 Authority/Artifact HTTP 边界接线：Authority Runtime 设置 `PRAXIS_WORKFLOW_AUTHORITY_LISTEN` 和 `PRAXIS_WORKFLOW_AUTHORITY_TOKEN`，远程 Runtime 设置 `PRAXIS_WORKFLOW_AUTHORITY_URL` 和同一 token；所有 Worker 竞争同一 durable Lease，SQLite 文件不会跨机器共享。当前公平性以持久 `last_claimed_at` 做跨 Workflow 轮转，Provider capacity admission 与 claim 使用同一事务，Worker 对连续基础设施失败做有界熔断。
 
-尚未宣称交付：PostgreSQL Authority、租户级分布式熔断、高可用外部通知渠道与 HumanTask TUI 一键操作、任意嵌套 Subworkflow，以及连接器声明驱动的自动补偿策略。规模化 restart/soak、远程多 Worker 故障组合和统计成功率也未验证。目标设计见 [Planner Platform RFC](planner-platform-rfc.md)，实际题目和运行证据见[持续维护的测评档案](evaluations/README.md)。
+尚未宣称交付：PostgreSQL Authority、租户级分布式熔断、高可用外部通知渠道与 HumanTask TUI 一键操作、任意嵌套 Subworkflow，以及连接器声明驱动的自动补偿策略。规模化 restart/soak、远程多 Worker 故障组合和统计成功率也未验证。完整能力边界见[项目状态](project-status.md)，实际题目和运行证据见[持续维护的测评档案](evaluations/README.md)。

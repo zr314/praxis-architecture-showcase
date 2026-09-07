@@ -114,11 +114,12 @@ class CoordinatorRepository implements SessionRepository {
     this.sessions.set(session.sessionId, structuredClone(session))
   }
 
-  async appendMessage(sessionId: string, message: ProviderMessage): Promise<void> {
+  async appendMessage(sessionId: string, message: ProviderMessage): Promise<undefined> {
     this.messages.set(sessionId, [
       ...(this.messages.get(sessionId) ?? []),
       structuredClone(message),
     ])
+    return undefined
   }
 
   async loadMessages(sessionId: string): Promise<ProviderMessage[]> {

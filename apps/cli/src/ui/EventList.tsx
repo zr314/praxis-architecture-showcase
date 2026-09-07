@@ -133,6 +133,12 @@ const EventRow = memo(function EventRow({
           {event.code?.startsWith('AGENT_') ? ' Enter a new prompt to continue.' : ''}
         </Notice>
       )
+    case 'prompt_blocked':
+      return (
+        <Notice color={palette.amber}>
+          Blocked [{event.code}]: {event.reason} Enter a follow-up after resolving the condition.
+        </Notice>
+      )
     case 'prompt_aborted':
       return <Notice color={palette.amber}>{event.reason ?? 'Run cancelled'}</Notice>
     case 'permission_request':

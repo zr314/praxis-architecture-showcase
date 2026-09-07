@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   copyFile,
   mkdir,
@@ -19,6 +19,7 @@ import {
   isProviderNativeContext,
   isSkillInvocationEntry,
   type ProviderMessage,
+  type MessageCommitReceiptV1,
   type RuntimeError,
   type SessionMemory,
   type SessionRecord,
@@ -56,8 +57,10 @@ type HistoryEntryV2 = {
   sequence: number
   committedAt: string
   message: ProviderMessage
+  messageId?: string
   clientRequestId?: string
   runId?: string
+  planPolicy?: 'optional' | 'required'
   checksum: string
 }
 
@@ -73,6 +76,8 @@ type HistoryState = {
   modifiedAtMs: number
   messageCount: number
   clientRequests: Map<string, string>
+  clientRequestPolicies: Map<string, 'optional' | 'required'>
+  messageDigests: Map<string, string>
 }
 
 type ParsedHistory = {
@@ -190,18 +195,36 @@ export class JsonlRepository
     )
   }
 
-  async appendMessage(sessionId: string, message: ProviderMessage): Promise<void> {
-    await this.run('append_message', async () => {
+  async appendMessage(
+    sessionId: string,
+    message: ProviderMessage,
+    input: Readonly<{ messageId?: string }> = {},
+  ): Promise<MessageCommitReceiptV1> {
+    const messageId = input.messageId ?? `message-${randomUUID()}`
+    return this.run('append_message', async () => {
       await this.withLock(`history-${sessionId}`, async () => {
         const state = await this.syncHistoryState(sessionId)
         await this.repairTruncatedHistory(sessionId, state)
+        const existingDigest = state.messageDigests.get(messageId)
+        const messageDigest = digest(message)
+        if (existingDigest !== undefined) {
+          if (existingDigest !== messageDigest) {
+            throw runtimeError(
+              'MESSAGE_ID_CONFLICT',
+              'protocol',
+              'Message ID is already bound to different content.',
+            )
+          }
+          return
+        }
         await this.appendHistoryEntry(
           sessionId,
           state,
-          createHistoryEntry(state.messageCount + 1, message),
+          createHistoryEntry(state.messageCount + 1, message, { messageId }),
         )
         await this.setMessageCount(sessionId, state.messageCount)
       })
+      return Object.freeze({ messageId })
     })
   }
 
@@ -210,7 +233,8 @@ export class JsonlRepository
     clientRequestId: string,
     runId: string,
     message: ProviderMessage,
-  ): Promise<{ duplicateRunId?: string }> {
+    planPolicy: 'optional' | 'required' = 'optional',
+  ): Promise<{ duplicateRunId?: string; duplicatePlanPolicy?: 'optional' | 'required' }> {
     return this.run('append_request_message', async () => {
       return this.withLock(`history-${sessionId}`, async () => {
         const state = await this.syncHistoryState(sessionId)
@@ -218,7 +242,10 @@ export class JsonlRepository
         const duplicateRunId = state.clientRequests.get(clientRequestId)
         if (duplicateRunId !== undefined) {
           await this.setMessageCount(sessionId, state.messageCount)
-          return { duplicateRunId }
+          return {
+            duplicateRunId,
+            duplicatePlanPolicy: state.clientRequestPolicies.get(clientRequestId) ?? 'optional',
+          }
         }
         await this.appendHistoryEntry(
           sessionId,
@@ -226,6 +253,7 @@ export class JsonlRepository
           createHistoryEntry(state.messageCount + 1, message, {
             clientRequestId,
             runId,
+            planPolicy,
           }),
         )
         await this.setMessageCount(sessionId, state.messageCount)
@@ -243,6 +271,20 @@ export class JsonlRepository
         }
       }
       return requests
+    })
+  }
+
+  async loadClientRequestPolicies(
+    sessionId: string,
+  ): Promise<Record<string, 'optional' | 'required'>> {
+    return this.run('load_client_request_policies', async () => {
+      const policies: Record<string, 'optional' | 'required'> = {}
+      for (const entry of await this.loadHistoryEntries(sessionId)) {
+        if (entry.version === 2 && entry.clientRequestId && entry.runId) {
+          policies[entry.clientRequestId] = entry.planPolicy ?? 'optional'
+        }
+      }
+      return policies
     })
   }
 
@@ -682,6 +724,10 @@ export class JsonlRepository
       state.messageCount += 1
       if (entry.version === 2 && entry.clientRequestId && entry.runId) {
         state.clientRequests.set(entry.clientRequestId, entry.runId)
+        state.clientRequestPolicies.set(entry.clientRequestId, entry.planPolicy ?? 'optional')
+      }
+      if (entry.version === 2 && entry.messageId) {
+        state.messageDigests.set(entry.messageId, digest(entry.message))
       }
     }
     state.validBytes = offset + parsed.validBytes
@@ -719,7 +765,9 @@ export class JsonlRepository
     state.messageCount += 1
     if (entry.clientRequestId && entry.runId) {
       state.clientRequests.set(entry.clientRequestId, entry.runId)
+      state.clientRequestPolicies.set(entry.clientRequestId, entry.planPolicy ?? 'optional')
     }
+    if (entry.messageId) state.messageDigests.set(entry.messageId, digest(entry.message))
     state.modifiedAtMs = (await stat(path)).mtimeMs
     this.historyStates.set(sessionId, state)
   }
@@ -892,6 +940,8 @@ function emptyHistoryState(): HistoryState {
     modifiedAtMs: 0,
     messageCount: 0,
     clientRequests: new Map(),
+    clientRequestPolicies: new Map(),
+    messageDigests: new Map(),
   }
 }
 
@@ -899,6 +949,8 @@ function cloneHistoryState(state: HistoryState): HistoryState {
   return {
     ...state,
     clientRequests: new Map(state.clientRequests),
+    clientRequestPolicies: new Map(state.clientRequestPolicies),
+    messageDigests: new Map(state.messageDigests),
   }
 }
 
@@ -925,7 +977,12 @@ function cloneRecord(record: SessionRecord): SessionRecord {
 function createHistoryEntry(
   sequence: number,
   message: ProviderMessage,
-  request?: { clientRequestId: string; runId: string },
+  request?: {
+    messageId?: string
+    clientRequestId?: string
+    runId?: string
+    planPolicy?: 'optional' | 'required'
+  },
 ): HistoryEntryV2 {
   const payload = {
     version: 2 as const,
@@ -962,8 +1019,10 @@ function isHistoryEntry(value: unknown): value is HistoryEntryV1 | HistoryEntryV
     Number.isInteger(entry.sequence) &&
     typeof entry.committedAt === 'string' &&
     typeof entry.checksum === 'string' &&
+    (entry.messageId === undefined || typeof entry.messageId === 'string') &&
     (entry.clientRequestId === undefined || typeof entry.clientRequestId === 'string') &&
-    (entry.runId === undefined || typeof entry.runId === 'string')
+    (entry.runId === undefined || typeof entry.runId === 'string') &&
+    (entry.planPolicy === undefined || ['optional', 'required'].includes(entry.planPolicy))
   )
 }
 
@@ -1093,12 +1152,26 @@ function isCompactionProvenance(value: unknown): boolean {
   const provenance = value as Record<string, unknown>
   return (
     Object.keys(provenance).every((key) =>
-      ['schemaVersion', 'generator', 'fallbackFrom'].includes(key),
+      [
+        'schemaVersion',
+        'generator',
+        'fallbackFrom',
+        'failureCode',
+        'failedGeneratorDurationMs',
+      ].includes(key),
     ) &&
     provenance.schemaVersion === 1 &&
     isCompactionGeneratorIdentity(provenance.generator) &&
     (provenance.fallbackFrom === undefined ||
-      isCompactionGeneratorIdentity(provenance.fallbackFrom))
+      isCompactionGeneratorIdentity(provenance.fallbackFrom)) &&
+    (provenance.failureCode === undefined ||
+      (provenance.fallbackFrom !== undefined &&
+        typeof provenance.failureCode === 'string' &&
+        /^[A-Z][A-Z0-9_]{0,127}$/u.test(provenance.failureCode))) &&
+    (provenance.failedGeneratorDurationMs === undefined ||
+      (provenance.fallbackFrom !== undefined &&
+        Number.isSafeInteger(provenance.failedGeneratorDurationMs) &&
+        (provenance.failedGeneratorDurationMs as number) >= 0))
   )
 }
 

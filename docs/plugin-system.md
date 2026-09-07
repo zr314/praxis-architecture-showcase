@@ -22,8 +22,8 @@ Runtime”：
 - Tool 不会因发现而自动成为 Slash Command。只有 Manifest 显式 mapping 才发布
   `plugin:<id>/<command>` 或 `mcp:<id>/<command>`；它仍经过 ToolRuntime、Policy、Deadline、Cancel、
   Output Schema 与 ArtifactStore，且不能覆盖内建命令或声明 Runtime mutation。
-- Linux 只有在 `bubblewrap` 与 `prlimit` 均存在时报告强制隔离；其他平台为
-  `trusted-only`，启用即表示明确批准运行所选不可变 Digest。
+- Process 插件的 Linux 后端只有在 `bubblewrap` 与 `prlimit` 均存在时报告 supported；缺少时为 unavailable 并拒绝启动。Windows/macOS 为
+  `trusted-only`，启用表示明确批准运行所选不可变 Digest。MCP stdio 当前不经过该 OS 隔离后端。
 - CLI 暴露 Install/Inspect/Enable/Disable/Permissions/Doctor/Update/Rollback/Uninstall；
   每个状态变化都必须可检查、可诊断、可逆到已安装版本。
 - 当前不支持 Marketplace、远程插件 URL、远程 MCP，以及 MCP
@@ -54,7 +54,7 @@ namespaced workflow commands; Tool discovery alone remains Tool-only.
 
 ## Scope
 
-The target live plugin release supports:
+The current plugin implementation supports:
 
 - Local directories or executables with an explicit manifest.
 - Immutable global installation and per-workspace enablement.
@@ -98,7 +98,7 @@ Resource Catalog
 Immutable Run Resource Snapshot / Prompt Composer / Session
 ```
 
-In the target activation composition, built-in capabilities stay in process for efficiency, but the registry exposes
+In the current activation composition, built-in capabilities stay in process for efficiency, but the registry exposes
 the same origin, descriptor, and health view for built-in and external
 capabilities. External plugins never receive a `RuntimeKernel`, repository, or
 unrestricted environment object.
@@ -306,15 +306,17 @@ class and structured permission templates. Runtime derives the policy request
 from the validated descriptor and call arguments rather than accepting a
 free-form rule chosen by the plugin. The plugin cannot approve its own call.
 
-Descriptors are still claims made by plugin authors, not enforcement. The OS
-isolation profile limits the process to the manifest's maximum access even when
-a descriptor is incomplete or dishonest; without that backend the plugin is
-reported as trusted-only.
+Descriptors are claims made by plugin authors, not enforcement. For Process
+plugins launched through an enforced IsolationBackend, the prepared OS profile
+constrains process access independently of a Tool descriptor. MCP stdio currently
+uses direct process launch and does not acquire that sandbox. The default Linux
+Process backend rejects launch if its prerequisites are missing; Windows/macOS
+use an explicitly approved trusted-only backend.
 
 Large results become bounded artifacts; the conversation receives only a
-summary and artifact reference. Read-only calls may later run concurrently when
-their descriptors and targets prove non-conflicting. Mutating calls remain
-ordered by default.
+summary and artifact reference. ToolRuntime uses descriptor parallel-safety and
+conflict targets to schedule calls; conservative external descriptors remain
+serialized. This is an execution policy, not permission granted by model text.
 
 ### Tool-backed command mappings
 
@@ -403,7 +405,7 @@ result. Raw SDK failures are converted to stable redacted Runtime errors at the
 plugin boundary.
 
 Runtime owns retry, rate limits, health state, circuit breaking, model fallback,
-and exact usage or cost accounting. A plugin may not silently select another
+and accounting for reported usage. Missing Provider usage is unknown, not an exact bill. A plugin may not silently select another
 provider or model.
 
 Credentials are stored separately from sessions. Runtime injects only the
@@ -436,16 +438,16 @@ Runtime policy and operating-system isolation are separate layers:
 - An `IsolationBackend` enforces filesystem, network, and process access using
   a supported platform mechanism.
 
-A manifest claim such as `filesystem: none` is not isolation by itself. When no
-OS backend is available, Praxis must label the plugin `trusted-only` and require
-an explicit trust override. It must not claim that an unrestricted local
-process is sandboxed.
+A manifest claim such as `filesystem: none` is not isolation by itself. The
+trusted-only backend requires explicit approval and must not describe an
+unrestricted local process as sandboxed. An unavailable enforced backend fails
+closed instead of automatically selecting trusted-only.
 
-The target backends are a bubblewrap or container profile on Linux, a restricted
-process or AppContainer profile on Windows, and an available sandbox or
-container backend on macOS. Broad third-party distribution remains blocked
-until supported platforms have tested enforcement or clearly documented
-trusted-only behavior.
+The shipping enforced backend requires bubblewrap and prlimit on Linux.
+Windows and macOS use trusted-only. Linux without either prerequisite reports
+unavailable and rejects launch with `ISOLATION_UNAVAILABLE`. Built-in Shell and
+MCP stdio are outside this Process plugin backend; see the [威胁模型](security-threat-model.md).
+No Windows AppContainer or macOS/container backend is claimed by this document.
 
 ## CLI Contract
 

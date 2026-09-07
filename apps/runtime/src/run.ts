@@ -23,6 +23,23 @@ export type {
   RuntimeToolCallUpdate,
   RuntimeToolMiddlewareContext,
 } from './framework/runtimeMiddleware.js'
+export { type MemoryAccessV1, MemoryServiceV1 } from './long-term-memory/memoryService.js'
+export { generateRecap } from './recap/providerRecapGenerator.js'
+export type {
+  RecapKind,
+  RecapNote,
+  RecapSnapshot,
+  RecapSource,
+  RecapStrategy,
+} from './recap/recap.js'
+export {
+  makeRecapSnapshot,
+  recapSource,
+  validateRecapSnapshot,
+  validateRecapSource,
+} from './recap/recap.js'
+export type { RecapContext } from './recap/recapContext.js'
+export type { RegisteredReviewCheckV1 } from './review-plan/registeredChecks.js'
 
 export function runRuntime(options: RuntimeKernelOptions = {}): void {
   try {

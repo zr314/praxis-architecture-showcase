@@ -53,7 +53,7 @@ test('durable request idempotency and truncated-tail recovery survive repository
         role: 'user',
         content: 'duplicate',
       }),
-      { duplicateRunId: 'run-1' },
+      { duplicateRunId: 'run-1', duplicatePlanPolicy: 'optional' },
     )
     assert.deepEqual(await restarted.loadClientRequests('recover'), { 'request-1': 'run-1' })
 

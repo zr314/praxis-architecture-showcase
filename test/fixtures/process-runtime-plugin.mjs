@@ -51,7 +51,7 @@ input.on('line', (line) => {
               tools: { mode: 'native', parallelCalls: false },
               modalities: { text: true, vision: false, audio: false },
               output: { jsonSchema: false, citations: false },
-              limits: { maxContextTokens: 16384, maxOutputTokens: 1024 },
+              limits: { maxContextTokens: 65536, maxOutputTokens: 1024 },
             },
           },
         },

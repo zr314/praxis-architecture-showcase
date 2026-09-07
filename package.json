@@ -5,11 +5,11 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/uestc-Praxis/praxis.git"
+    "url": "git+https://github.com/zr314/praxis-architecture-showcase.git"
   },
-  "homepage": "https://github.com/uestc-Praxis/praxis#readme",
+  "homepage": "https://github.com/zr314/praxis-architecture-showcase#readme",
   "bugs": {
-    "url": "https://github.com/uestc-Praxis/praxis/issues"
+    "url": "https://github.com/zr314/praxis-architecture-showcase/issues"
   },
   "type": "module",
   "private": true,
@@ -20,6 +20,9 @@
   "scripts": {
     "dev": "tsx --tsconfig tsconfig.check.json apps/cli/src/cli.tsx",
     "eval": "tsx --tsconfig tsconfig.check.json apps/runtime/src/evaluation/cli.ts",
+    "eval:recap": "tsx --tsconfig tsconfig.check.json apps/runtime/src/evaluation/recap/cli.ts",
+    "eval:memory-mechanism": "tsx --tsconfig tsconfig.check.json apps/runtime/src/evaluation/recap/mechanismCli.ts",
+    "eval:repository-memory": "tsx --tsconfig tsconfig.check.json apps/runtime/src/evaluation/recap/repositoryCli.ts",
     "benchmark:session-storage": "tsx --tsconfig tsconfig.check.json scripts/benchmark-session-storage.ts",
     "audit:prompts": "tsx --tsconfig tsconfig.check.json scripts/audit-prompt-program.ts",
     "format:check": "biome format .",

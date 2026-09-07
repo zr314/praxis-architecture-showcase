@@ -63,11 +63,12 @@ import { useWorkflowGraph } from './useWorkflowGraph.js'
 type Props = {
   bridge: RuntimeBridge
   session: SessionInfo
+  planPolicy?: 'optional' | 'required'
 }
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
 
-export function App({ bridge, session: initialSession }: Props) {
+export function App({ bridge, session: initialSession, planPolicy }: Props) {
   const [session, setSession] = useState(initialSession)
   const { sessionId } = session
   const { exit } = useApp()
@@ -595,6 +596,7 @@ export function App({ bridge, session: initialSession }: Props) {
         ? bridge.followUp({
             sessionId,
             text: promptText,
+            ...(planPolicy === undefined ? {} : { planPolicy }),
             ...(command.commandInvocationId === undefined
               ? {}
               : { commandInvocationId: command.commandInvocationId }),
@@ -602,6 +604,7 @@ export function App({ bridge, session: initialSession }: Props) {
         : bridge.prompt({
             sessionId,
             text: promptText,
+            ...(planPolicy === undefined ? {} : { planPolicy }),
             ...(command.commandInvocationId === undefined
               ? {}
               : { commandInvocationId: command.commandInvocationId }),
@@ -619,6 +622,7 @@ export function App({ bridge, session: initialSession }: Props) {
         if (
           event.type === 'prompt_completed' ||
           event.type === 'prompt_failed' ||
+          event.type === 'prompt_blocked' ||
           event.type === 'prompt_aborted'
         ) {
           if (activeRunIdRef.current === event.runId) updateActiveRunId(undefined)

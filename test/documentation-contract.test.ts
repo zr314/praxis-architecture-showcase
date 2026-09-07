@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { access, readFile, readdir } from 'node:fs/promises'
+import { access, readdir, readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_PROMPT_VARIANT, promptProgram } from '../apps/runtime/src/prompt/promptRegistry.js'
+import { REVIEWER_INSTRUCTIONS_V1 } from '../apps/runtime/src/review-plan/semanticReviewer.js'
+import {
+  ADVISORY_REVIEW_SCHEMA_V1,
+  ADVISORY_REVIEWER_INSTRUCTIONS_V1,
+} from '../apps/runtime/src/working-plan/advisoryReviewer.js'
+import { createWorkingPlanToolsV1 } from '../apps/runtime/src/working-plan/tools.js'
+import type { WorkingPlanServiceV1 } from '../apps/runtime/src/working-plan/workingPlanService.js'
+import { RUNTIME_METHODS, SESSION_EVENT_TYPES } from '../packages/protocol/src/constants.js'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const cliEntry = resolve(root, 'apps', 'cli', 'src', 'cli.tsx')
@@ -163,6 +172,118 @@ test('release documentation describes the unified Workflow and capability regist
   assert.match(architecture, /Capability Bundle/u)
   assert.match(plugins, /Current shipping boundary/u)
   assert.match(cli, /auto\\\|solo\\\|workflow/u)
+})
+
+test('model request catalog covers every production request constructor and exact Reviewer prompt', async () => {
+  const catalog = await readFile(resolve(root, 'docs', 'model-request-catalog.md'), 'utf8')
+  for (const source of [
+    'loop/index.ts',
+    'memory/providerCompactionSummaryGenerator.ts',
+    'providers/openAIResponsesProvider.ts',
+    'planner/providerPlanGenerator.ts',
+    'planner/providerSemanticVerifier.ts',
+    'evaluation/productionRuntime.ts',
+    'subagent/credentialDelegation.ts',
+    'review-plan/semanticReviewer.ts',
+  ]) {
+    assert.ok(catalog.includes(source), `model request catalog omits ${source}`)
+  }
+  for (const line of REVIEWER_INSTRUCTIONS_V1.split('\n')) {
+    assert.ok(catalog.includes(line), `Reviewer instructions omit: ${line}`)
+  }
+  for (const line of ADVISORY_REVIEWER_INSTRUCTIONS_V1) {
+    assert.ok(catalog.includes(line), `Advisory Reviewer instructions omit: ${line}`)
+  }
+  const jsonBlocks = [...catalog.matchAll(/```json\n([\s\S]*?)\n```/gu)].flatMap((match) => {
+    try {
+      return [JSON.parse(match[1]!) as unknown]
+    } catch {
+      return [] // Clearly marked dynamic templates are not concrete JSON objects.
+    }
+  })
+  const workingTools = createWorkingPlanToolsV1({} as WorkingPlanServiceV1).map(
+    ({ definition }) => ({
+      name: definition.name,
+      description: definition.description,
+      parameters: definition.parameters,
+    }),
+  )
+  for (const contract of [workingTools, ADVISORY_REVIEW_SCHEMA_V1]) {
+    assert.ok(
+      jsonBlocks.some((block) => JSON.stringify(block) === JSON.stringify(contract)),
+      'Model request catalog omits the exact current working-plan/advisory schema',
+    )
+  }
+  for (const required of [
+    'contextMessages: []',
+    'tools: []',
+    'review_plan_decision_v1',
+    '786,432',
+    'ReviewCallStore',
+  ]) {
+    assert.ok(catalog.includes(required), `Reviewer request documentation omits ${required}`)
+  }
+})
+
+test('current planning documentation separates working memory from required acceptance', async () => {
+  const [index, working, strict, prompt, communication] = await Promise.all(
+    [
+      'docs/README.md',
+      'docs/working-plan.md',
+      'docs/strict-review-plan.md',
+      'docs/prompt-assembly.md',
+      'docs/frontend-runtime-communication.md',
+    ].map((path) => readFile(resolve(root, path), 'utf8')),
+  )
+  assert.match(index, /\[Working Plan\]\(working-plan\.md\)/u)
+  assert.match(index, /strict-review-plan\.md/u)
+  for (const name of ['create', 'update', 'progress', 'review', 'abandon']) {
+    assert.ok(working.includes(`plan.${name}`), `working Plan omits ${name}`)
+  }
+  assert.match(working, /done.*自报|自报.*done/u)
+  assert.match(working, /unavailable/u)
+  assert.match(strict, /仅显式 required/u)
+  assert.ok(prompt.includes(promptProgram(DEFAULT_PROMPT_VARIANT).version))
+  assert.match(prompt, /动态 Plan 位于稳定 ContextView 之前/u)
+  for (const field of ['planPolicy', 'workingReviews', 'strictReviewPlan']) {
+    assert.ok(communication.includes(field), `session.plan documentation omits ${field}`)
+  }
+})
+
+test('dated evaluation reports have one archive index and no superseded design entry point', async () => {
+  const index = await readFile(resolve(root, 'docs/evaluations/archive/README.md'), 'utf8')
+  for (const path of await markdownFiles(resolve(root, 'docs/evaluations/archive'))) {
+    const filename = path.split('/').at(-1)!
+    if (filename !== 'README.md') assert.ok(index.includes(`](${filename})`), path)
+  }
+  const docsIndex = await readFile(resolve(root, 'docs/README.md'), 'utf8')
+  assert.doesNotMatch(docsIndex, /\]\((?:archive|adr|superpowers)\//u)
+})
+
+test('frontend Runtime communication manual covers the complete protocol surface', async () => {
+  const manual = await readFile(resolve(root, 'docs', 'frontend-runtime-communication.md'), 'utf8')
+  for (const method of RUNTIME_METHODS) {
+    assert.ok(manual.includes(`\`${method}\``), `communication manual omits method ${method}`)
+  }
+  for (const event of SESSION_EVENT_TYPES) {
+    assert.ok(manual.includes(`\`${event}\``), `communication manual omits event ${event}`)
+  }
+  for (const contract of [
+    `全部 ${RUNTIME_METHODS.length} 个 RPC`,
+    '全部 21 个事件',
+    'additionalProperties:false',
+    'subscriptionId',
+    'fromSequence',
+    'EVENT_REPLAY_EXPIRED',
+    '2,048',
+    '4,096',
+    'prompt_completed',
+    'prompt_failed',
+    'prompt_blocked',
+    'prompt_aborted',
+  ]) {
+    assert.ok(manual.includes(contract), `communication manual omits contract ${contract}`)
+  }
 })
 
 test('architecture distinguishes the delivered local slice from future platform stages', async () => {

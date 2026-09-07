@@ -29,7 +29,7 @@ import { SerialSupervisor } from '../apps/runtime/src/planner/serialSupervisor.j
 import { MechanicalVerifierV1, RuleVerifierV1 } from '../apps/runtime/src/planner/verifier.js'
 import { JsonlSessionJournalV3 } from '../apps/runtime/src/session-db/jsonlSessionJournalV3.js'
 import { InMemorySubagentAdmissionLedger } from '../apps/runtime/src/subagent/admission.js'
-import type { ChildBootstrapMethod } from '../apps/runtime/src/subagent/childBootstrapProfile.js'
+import { CHILD_BOOTSTRAP_METHODS } from '../apps/runtime/src/subagent/childBootstrapProfile.js'
 import {
   type ChildCapabilityBundleV1,
   type ChildSkillCandidate,
@@ -53,15 +53,7 @@ import { mockChildCapabilityBundle } from './support/child-capability.js'
 
 const runtimeEntry = fileURLToPath(new URL('../apps/runtime/src/entry.ts', import.meta.url))
 const mcpServer = fileURLToPath(new URL('./fixtures/mcp-modern-server.mjs', import.meta.url))
-const methods = [
-  'initialize',
-  'events.subscribe',
-  'session.create',
-  'session.prompt',
-  'permission.decide',
-  'session.abort',
-  'shutdown',
-] as const satisfies readonly ChildBootstrapMethod[]
+const methods = CHILD_BOOTSTRAP_METHODS
 
 test('fixed serial Supervisor executes one signed Skill and one parent-broker MCP Tool', async () => {
   const home = await mkdtemp(join(tmpdir(), 'praxis-supervisor-capabilities-'))

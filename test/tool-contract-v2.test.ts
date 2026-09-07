@@ -57,6 +57,41 @@ test('ToolRuntime validates input before invocation and output before delivery',
   assert.equal(executions, 1)
 })
 
+test('ToolRuntime propagates the immutable Runtime-only execution context', async () => {
+  let captured: import('@praxis/core-sdk').ToolRequest | undefined
+  const tool: RuntimeTool = {
+    definition: {
+      name: 'capture_context',
+      description: 'capture context',
+      parameters: { type: 'object', additionalProperties: false },
+      execution: {
+        sideEffect: 'none',
+        target: { kind: 'none' },
+        parallelSafe: true,
+        conflictScope: 'target',
+        maxInlineBytes: 1_024,
+      },
+    },
+    async execute(request) {
+      captured = request
+      return { ok: true, summary: 'captured' }
+    },
+  }
+  const runtime = new ToolRuntime([tool])
+  const prepared = runtime.prepare('capture_context', {}, process.cwd())
+  prepared.executionContext = {
+    invocation: {
+      invocationId: `pti_${'a'.repeat(64)}`,
+      sessionId: 'session-1',
+      runId: 'run-1',
+      providerTurnId: 'message-1',
+      providerToolCallId: 'call-1',
+    },
+  }
+  await runtime.executePrepared(prepared, new AbortController().signal)
+  assert.deepEqual(captured?.executionContext, prepared.executionContext)
+})
+
 test('Tool descriptors resolve canonical targets and conservative conflict keys', () => {
   const runtime = new ToolRuntime()
   const workspace = join(process.cwd(), 'workspace')
