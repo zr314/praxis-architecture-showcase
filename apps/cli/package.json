@@ -36,7 +36,7 @@
     "@praxis/plugin-protocol": "^0.2.0",
     "@praxis/protocol": "^0.2.0",
     "@praxis/runtime": "^0.2.0",
-    "chalk": "5.6.2",
+    "chalk": "6.0.0",
     "ink": "6.8.0",
     "react": "19.2.3"
   }
